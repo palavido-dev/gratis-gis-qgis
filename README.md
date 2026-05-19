@@ -57,10 +57,12 @@ with each GratisGIS deployment. Tokens are stored in the QGIS auth
 manager (encrypted, the same store QGIS uses for PostgreSQL and
 WFS credentials). Token refresh is automatic.
 
-For Phase 0 development, the plugin can target the `field-app`
-public client that already exists in the realm. For Phase 1 onward
-it expects a dedicated `qgis-plugin` public client (see the plan
-doc for required realm configuration).
+The plugin targets a dedicated `qgis-plugin` public client that
+ships with the GratisGIS Keycloak realm. PKCE S256 is enforced,
+and both the custom scheme `gratisgis-qgis://auth-callback` and
+the loopback range `http://127.0.0.1:*/*` are registered as valid
+redirect URIs. Re-import or re-render the realm after pulling the
+latest GratisGIS so the client picks up.
 
 ## Contributing
 

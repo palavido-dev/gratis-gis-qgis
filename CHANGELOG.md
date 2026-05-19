@@ -17,3 +17,8 @@ for the client library; the QGIS plugin uses its own version line in
 - Connection management (add/edit/delete portal profiles).
 - QGIS auth manager bridge for encrypted token storage.
 - Plugin file logging.
+- Keycloak realm dependency satisfied: a dedicated `qgis-plugin`
+  public client now ships in the GratisGIS realm (PKCE S256, custom
+  scheme `gratisgis-qgis://auth-callback`, and loopback
+  `http://127.0.0.1:*/*` redirect URIs). The plugin's default
+  `client_id` resolves once the realm is imported.
