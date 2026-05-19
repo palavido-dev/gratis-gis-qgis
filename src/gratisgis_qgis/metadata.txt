@@ -1,0 +1,21 @@
+[general]
+name=GratisGIS
+qgisMinimumVersion=3.34
+qgisMaximumVersion=3.99
+description=Browse, edit, and publish GratisGIS portal content from QGIS.
+about=A native QGIS integration for GratisGIS, the open source self-hosted alternative to ArcGIS Online. Browse portal items from the QGIS Browser panel, drag layers and maps to the canvas, edit hosted feature layers with optimistic sync, and publish vector and raster data with a single dialog. Works online and offline against a local cache.
+version=0.0.1
+author=Matthew Palavido
+email=
+icon=resources/icon.svg
+experimental=True
+deprecated=False
+tracker=https://github.com/palavido-dev/gratis-gis-qgis/issues
+repository=https://github.com/palavido-dev/gratis-gis-qgis
+homepage=https://gratisgis.org
+category=Web
+tags=gratisgis,portal,gis,arcgis alternative,postgis,oauth,publishing
+changelog=Pre-alpha. Phase 0 (foundation). Not yet useful end-to-end.
+hasProcessingProvider=False
+server=False
+supportsQt6=True
