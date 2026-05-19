@@ -74,3 +74,5 @@ plugin-build/
 # Handoff and design notes that live in the main repo
 HANDOFF.md
 DECISIONS.md
+docs/handoff/
+docs/handoff/
