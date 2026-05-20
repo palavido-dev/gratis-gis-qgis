@@ -296,10 +296,14 @@ def _refresh_discovery_and_sign_in(
 ) -> bool:
     """Discover fresh, save, sign in. Used by the main list's Sign In.
 
-    Returns True on success.
+    Returns True on success. On failure, if the profile didn't have a
+    prior authcfg_id (so the user wasn't already signed in), the
+    newly reserved id is cleared so the list does not show a stale
+    "[signed in]" label.
     """
     QApplication.setOverrideCursor(Qt.WaitCursor)
     try:
+        had_prior_auth = bool(profile.authcfg_id)
         info = _discover_or_warn(parent, profile.portal_url, profile.verify_tls)
         if info is None:
             return False
@@ -311,7 +315,22 @@ def _refresh_discovery_and_sign_in(
             authcfg_id=authcfg_id,
         ).with_discovery(info, now=time.time())
         store.save(refreshed)
-        return _run_sign_in(parent, refreshed)
+        if _run_sign_in(parent, refreshed):
+            return True
+        if not had_prior_auth:
+            cleared = ConnectionProfile(
+                name=refreshed.name,
+                portal_url=refreshed.portal_url,
+                verify_tls=refreshed.verify_tls,
+                authcfg_id="",
+                portal_name=refreshed.portal_name,
+                portal_version=refreshed.portal_version,
+                api_base_url=refreshed.api_base_url,
+                oidc_issuer=refreshed.oidc_issuer,
+                discovered_at=refreshed.discovered_at,
+            )
+            store.save(cleared)
+        return False
     finally:
         QApplication.restoreOverrideCursor()
 
@@ -393,8 +412,22 @@ class _PortalEditDialog(QDialog):
                 self._store.save(profile)
                 # The provisional profile is on disk regardless of
                 # sign-in outcome, so the user can retry from the
-                # main list.
-                _run_sign_in(self, profile)
+                # main list. If PKCE fails, clear the authcfg_id we
+                # reserved so the list doesn't falsely show the
+                # connection as signed in.
+                if not _run_sign_in(self, profile):
+                    cleared = ConnectionProfile(
+                        name=profile.name,
+                        portal_url=profile.portal_url,
+                        verify_tls=profile.verify_tls,
+                        authcfg_id="",
+                        portal_name=profile.portal_name,
+                        portal_version=profile.portal_version,
+                        api_base_url=profile.api_base_url,
+                        oidc_issuer=profile.oidc_issuer,
+                        discovered_at=profile.discovered_at,
+                    )
+                    self._store.save(cleared)
             else:
                 refreshed = ConnectionProfile(
                     name=self._initial.name,

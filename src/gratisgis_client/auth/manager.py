@@ -250,10 +250,19 @@ class AuthManager:
         }
         r = await http.post(token_endpoint, data=data)
         if r.status_code != 200:
+            body = _safe_json(r)
+            # Log the body so plugin.log carries the actual Keycloak
+            # reason (e.g. "Offline tokens not allowed for the user
+            # or client"). The exception itself only carries the
+            # short message; QMessageBox shows that, but operators
+            # debugging from the log file need the structured detail.
+            _log.warning(
+                "Code exchange failed: HTTP %s body=%r", r.status_code, body
+            )
             raise AuthError(
                 f"Code exchange failed: HTTP {r.status_code}",
                 status=r.status_code,
-                body=_safe_json(r),
+                body=body,
             )
         try:
             return TokenSet.from_token_response(r.json())
