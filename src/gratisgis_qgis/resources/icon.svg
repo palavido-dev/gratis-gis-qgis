@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!--
+    GratisGIS QGIS plugin icon. Same brand pin and palette as the
+    portal web icon (apps/portal-web/public/icon.svg), with three
+    short "layer" strokes beneath the pin to signal GIS layers at
+    small sizes (16x16 in menus, 24x24 in Plugin Manager).
+    Swap in a proper brand mark when real logo assets land; keep
+    the 512x512 viewBox so any references stay valid.
+  -->
+  <rect width="512" height="512" rx="96" fill="#0f0f10"/>
+  <g fill="none" stroke="#60a5fa" stroke-width="32" stroke-linejoin="round" stroke-linecap="round">
+    <!-- Map pin: matches portal-web/public/icon.svg shape and proportions. -->
+    <path d="M256 64 C 192 64 144 112 144 176 C 144 256 256 384 256 384 C 256 384 368 256 368 176 C 368 112 320 64 256 64 Z"/>
+    <circle cx="256" cy="176" r="40"/>
+    <!-- Layer strokes beneath the pin: three short, lightly offset
+         lines suggesting stacked layers / map sheets. -->
+    <line x1="160" y1="424" x2="352" y2="424"/>
+    <line x1="176" y1="456" x2="336" y2="456"/>
+  </g>
+</svg>
