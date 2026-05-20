@@ -23,6 +23,11 @@ Quick start:
 
 from gratisgis_client.client import GratisGISClient
 from gratisgis_client.config import PortalConfig
+from gratisgis_client.discovery import (
+    PortalDiscoveryError,
+    discover,
+    portal_config_from_discovery,
+)
 from gratisgis_client.errors import (
     AuthError,
     ConflictError,
@@ -31,6 +36,7 @@ from gratisgis_client.errors import (
     PortalError,
     ValidationError,
 )
+from gratisgis_client.models.portal_info import PortalInfo
 
 __all__ = [
     "AuthError",
@@ -39,8 +45,12 @@ __all__ = [
     "GratisGISError",
     "NotFoundError",
     "PortalConfig",
+    "PortalDiscoveryError",
     "PortalError",
+    "PortalInfo",
     "ValidationError",
+    "discover",
+    "portal_config_from_discovery",
 ]
 
 __version__ = "0.0.1.dev0"

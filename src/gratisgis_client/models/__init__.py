@@ -17,6 +17,11 @@ from gratisgis_client.models.item import (
     ItemSummary,
     ItemType,
 )
+from gratisgis_client.models.portal_info import (
+    PortalApiInfo,
+    PortalAuthInfo,
+    PortalInfo,
+)
 
 __all__ = [
     "Item",
@@ -24,4 +29,7 @@ __all__ = [
     "ItemSharingScope",
     "ItemSummary",
     "ItemType",
+    "PortalApiInfo",
+    "PortalAuthInfo",
+    "PortalInfo",
 ]

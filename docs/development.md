@@ -69,19 +69,19 @@ restarting QGIS. Highly recommended during development.
 
 ### Targeting a local portal
 
-The plugin reads connection details from QSettings. For local
-development, point it at:
+Open `Plugins > GratisGIS > Manage GratisGIS connections...` and
+click `New`. Enter the portal URL of your dev portal
+(`http://localhost:3000` for a default local stack) and uncheck
+`Verify TLS certificates` if you're hitting a self-signed dev
+host. Click `Save & Sign in`.
 
-```
-Portal URL: http://localhost:3000
-Keycloak URL: http://localhost:8081
-Realm: gratis-gis
-Client ID: field-app   # or qgis-plugin once that's added to the realm
-```
-
-The first time you sign in, a browser window opens to handle the PKCE
-flow. After that, tokens live in the QGIS auth manager and refresh
-silently.
+The plugin fetches `<portal>/api/portal-info` to learn the OIDC
+issuer, opens your default browser for the PKCE handshake, then
+stores the tokens in the QGIS auth manager. You should not need
+to enter a Keycloak URL, realm name, or client ID anywhere; the
+discovery endpoint serves them. On subsequent saves, the plugin
+re-fetches discovery so portal-side reconfig propagates without a
+manual edit.
 
 ## 3. Running tests inside QGIS
 

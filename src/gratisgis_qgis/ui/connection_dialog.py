@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Connection management dialog.
 
-Phase 0 surface: list connections, add/edit/delete, sign in / sign
-out. The actual sign-in spins up the PKCE flow, opens the user's
-default browser, waits for the loopback callback, and stores tokens
-via the QGIS auth manager bridge.
+Phase 0 surface: list connections, add or edit a connection by
+portal URL alone, sign in / sign out. The portal-info discovery
+endpoint resolves everything else (display name, OIDC issuer, API
+base URL) the moment the user clicks Add or Save, so the user never
+sees "Keycloak realm" or "client id" anywhere in the UI.
 
-This dialog is intentionally a thin wrapper over ``ConnectionStore``
+The dialog is intentionally a thin wrapper over ``ConnectionStore``
 and the portable client. The widgets here own no auth state; they
 read the store, mutate it, and reload.
 """
@@ -14,15 +15,17 @@ read the store, mutate it, and reload.
 from __future__ import annotations
 
 import asyncio
+import time
+from urllib.parse import urlparse
 
 from qgis.PyQt.QtCore import Qt  # type: ignore[import-not-found]
 from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -32,8 +35,13 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QWidget,
 )
 
-from gratisgis_client import GratisGISClient
-from gratisgis_client.errors import AuthError
+from gratisgis_client import (
+    AuthError,
+    GratisGISClient,
+    PortalDiscoveryError,
+    discover,
+)
+from gratisgis_client.models.portal_info import PortalInfo
 
 from ..auth_bridge import make_token_storage
 from ..log import get_logger
@@ -55,12 +63,12 @@ class ConnectionManagerDialog(QDialog):
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
-        label = QLabel("Configured portals:")
-        outer.addWidget(label)
+        outer.addWidget(QLabel("Configured portals:"))
 
         row = QHBoxLayout()
         self._list = QListWidget()
         self._list.itemSelectionChanged.connect(self._update_button_state)
+        self._list.itemDoubleClicked.connect(lambda _: self._on_edit())
         row.addWidget(self._list, stretch=2)
 
         side = QVBoxLayout()
@@ -101,18 +109,28 @@ class ConnectionManagerDialog(QDialog):
             profile = self._store.get(name)
             if profile is None:
                 continue
-            label = name
+            label = profile.display_label
+            if label != name:
+                label = f"{label}  ({name})"
             if profile.authcfg_id:
-                label = f"{name}  (signed in)"
+                label = f"{label}  [signed in]"
             self._list.addItem(label)
         self._update_button_state()
 
     def _selected_name(self) -> str | None:
-        items = self._list.selectedItems()
-        if not items:
+        """Return the QSettings key for the selected row.
+
+        The list shows enriched labels (portal name + key + signed-in
+        flag), so we walk the store by index rather than parsing the
+        label back out.
+        """
+        idx = self._list.currentRow()
+        if idx < 0:
             return None
-        # Strip the trailing "(signed in)" suffix if present.
-        return items[0].text().split("  (", 1)[0]
+        names = self._store.list_names()
+        if 0 <= idx < len(names):
+            return names[idx]
+        return None
 
     def _update_button_state(self) -> None:
         has_sel = self._list.currentRow() >= 0
@@ -124,13 +142,7 @@ class ConnectionManagerDialog(QDialog):
     # ----- Actions -----
 
     def _on_new(self) -> None:
-        profile = _ProfileEditDialog.new_profile(self)
-        if profile is None:
-            return
-        if self._store.get(profile.name) is not None:
-            QMessageBox.warning(self, "Name in use", f"A connection named {profile.name!r} already exists.")
-            return
-        self._store.save(profile)
+        _PortalEditDialog(self, store=self._store, initial=None).exec_()
         self._reload()
 
     def _on_edit(self) -> None:
@@ -140,31 +152,26 @@ class ConnectionManagerDialog(QDialog):
         existing = self._store.get(name)
         if existing is None:
             return
-        profile = _ProfileEditDialog.edit_profile(self, existing)
-        if profile is None:
-            return
-        # Name is the QSettings key; renaming = delete + save.
-        if profile.name != existing.name:
-            self._store.delete(existing.name)
-        self._store.save(profile)
+        _PortalEditDialog(self, store=self._store, initial=existing).exec_()
         self._reload()
 
     def _on_delete(self) -> None:
         name = self._selected_name()
         if name is None:
             return
+        existing = self._store.get(name)
+        if existing is None:
+            return
         button = QMessageBox.question(
             self,
             "Delete connection?",
-            f"Delete connection {name!r}? Stored tokens will be cleared.",
+            f"Delete connection {existing.display_label!r}? Stored tokens will be cleared.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if button != QMessageBox.Yes:
             return
-        # Best-effort token cleanup.
-        existing = self._store.get(name)
-        if existing is not None and existing.authcfg_id:
+        if existing.authcfg_id:
             try:
                 storage = make_token_storage(existing.authcfg_id)
                 asyncio.run(storage.clear())
@@ -180,33 +187,7 @@ class ConnectionManagerDialog(QDialog):
         profile = self._store.get(name)
         if profile is None:
             return
-        # Ensure the profile has an authcfg id reserved before the flow.
-        if not profile.authcfg_id:
-            profile = ConnectionProfile(
-                name=profile.name,
-                portal_url=profile.portal_url,
-                keycloak_url=profile.keycloak_url,
-                realm=profile.realm,
-                client_id=profile.client_id,
-                authcfg_id=ConnectionStore.new_authcfg_id(),
-                verify_tls=profile.verify_tls,
-            )
-            self._store.save(profile)
-
-        async def _run() -> None:
-            storage = make_token_storage(profile.authcfg_id)
-            async with GratisGISClient(profile.to_portal_config(), token_storage=storage) as client:
-                await client.auth.login_interactive()
-
-        try:
-            asyncio.run(_run())
-        except AuthError as exc:
-            QMessageBox.warning(self, "Sign-in failed", str(exc))
-            return
-        except Exception as exc:  # pragma: no cover - defensive
-            _log.exception("Unexpected sign-in error")
-            QMessageBox.critical(self, "Sign-in error", str(exc))
-            return
+        _refresh_discovery_and_sign_in(self, self._store, profile)
         self._reload()
 
     def _on_sign_out(self) -> None:
@@ -228,98 +209,200 @@ class ConnectionManagerDialog(QDialog):
             QMessageBox.warning(self, "Sign-out failed", str(exc))
             return
 
-        # Clear the authcfg pointer on the profile so the list reflects state.
         cleared = ConnectionProfile(
             name=profile.name,
             portal_url=profile.portal_url,
-            keycloak_url=profile.keycloak_url,
-            realm=profile.realm,
-            client_id=profile.client_id,
-            authcfg_id="",
             verify_tls=profile.verify_tls,
+            authcfg_id="",
+            portal_name=profile.portal_name,
+            portal_version=profile.portal_version,
+            api_base_url=profile.api_base_url,
+            oidc_issuer=profile.oidc_issuer,
+            discovered_at=profile.discovered_at,
         )
         self._store.save(cleared)
         self._reload()
 
 
-class _ProfileEditDialog(QDialog):
-    """Small form dialog: name, portal URL, Keycloak URL, realm, client id."""
+def _normalize_portal_url(raw: str) -> str | None:
+    """Return a tidy URL or None if the input is not parseable.
 
-    def __init__(self, parent: QWidget | None, initial: ConnectionProfile | None) -> None:
+    Tidies: trims whitespace, adds https:// if no scheme is given,
+    strips trailing slash. ``None`` covers both empty input and
+    obviously malformed input; callers should show "please enter a
+    portal URL".
+    """
+    url = raw.strip()
+    if not url:
+        return None
+    if "://" not in url:
+        url = f"https://{url}"
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return url.rstrip("/")
+
+
+def _discover_or_warn(
+    parent: QWidget, portal_url: str, verify_tls: bool
+) -> PortalInfo | None:
+    """Run discovery, surface the user-visible error on failure.
+
+    Returns the parsed ``PortalInfo`` on success, ``None`` after the
+    warning has already been shown.
+    """
+    try:
+        return asyncio.run(discover(portal_url, verify_tls=verify_tls))
+    except PortalDiscoveryError as exc:
+        QMessageBox.warning(
+            parent,
+            "Portal not reachable",
+            f"This URL does not look like a GratisGIS portal.\n\n{exc}",
+        )
+        return None
+
+
+def _run_sign_in(parent: QWidget, profile: ConnectionProfile) -> bool:
+    """Run the PKCE flow against the cached discovery; show errors.
+
+    Returns True on success, False on a user-visible failure that has
+    already been surfaced via QMessageBox.
+    """
+    try:
+        config = profile.to_portal_config()
+    except ValueError as exc:
+        QMessageBox.warning(parent, "Profile not configured", str(exc))
+        return False
+    storage = make_token_storage(profile.authcfg_id)
+
+    async def _login() -> None:
+        async with GratisGISClient(config, token_storage=storage) as client:
+            await client.auth.login_interactive()
+
+    try:
+        asyncio.run(_login())
+    except AuthError as exc:
+        QMessageBox.warning(parent, "Sign-in failed", str(exc))
+        return False
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.exception("Unexpected sign-in error")
+        QMessageBox.critical(parent, "Sign-in error", str(exc))
+        return False
+    return True
+
+
+def _refresh_discovery_and_sign_in(
+    parent: QWidget, store: ConnectionStore, profile: ConnectionProfile
+) -> bool:
+    """Discover fresh, save, sign in. Used by the main list's Sign In.
+
+    Returns True on success.
+    """
+    QApplication.setOverrideCursor(Qt.WaitCursor)
+    try:
+        info = _discover_or_warn(parent, profile.portal_url, profile.verify_tls)
+        if info is None:
+            return False
+        authcfg_id = profile.authcfg_id or ConnectionStore.new_authcfg_id()
+        refreshed = ConnectionProfile(
+            name=profile.name,
+            portal_url=profile.portal_url,
+            verify_tls=profile.verify_tls,
+            authcfg_id=authcfg_id,
+        ).with_discovery(info, now=time.time())
+        store.save(refreshed)
+        return _run_sign_in(parent, refreshed)
+    finally:
+        QApplication.restoreOverrideCursor()
+
+
+class _PortalEditDialog(QDialog):
+    """The Add / Edit dialog: one Portal URL field plus a Verify TLS
+    checkbox.
+
+    On Save, the dialog runs discovery against the URL. For new
+    profiles it then kicks off a PKCE sign-in immediately so the
+    user is signed in by the time the list refreshes. For edits, it
+    only refreshes the cached discovery (sign-in stays on the main
+    list's Sign in button).
+    """
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        *,
+        store: ConnectionStore,
+        initial: ConnectionProfile | None,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Edit connection" if initial else "New connection")
-        self.setMinimumWidth(440)
+        self._store = store
         self._initial = initial
+        self.setWindowTitle("Edit connection" if initial else "New connection")
+        self.setMinimumWidth(480)
         self._build_ui()
         if initial is not None:
-            self._name.setText(initial.name)
             self._portal.setText(initial.portal_url)
-            self._keycloak.setText(initial.keycloak_url)
-            self._realm.setText(initial.realm)
-            self._client_id.setText(initial.client_id)
             self._verify.setChecked(initial.verify_tls)
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
+        outer.addWidget(
+            QLabel("Enter the GratisGIS portal URL. Everything else is fetched from the portal.")
+        )
         form = QFormLayout()
-        self._name = QLineEdit()
         self._portal = QLineEdit(placeholderText="https://gratisgis.org")
-        self._keycloak = QLineEdit(placeholderText="https://gratisgis.org")
-        self._realm = QLineEdit("gratis-gis")
-        self._client_id = QLineEdit("qgis-plugin")
+        form.addRow("Portal URL", self._portal)
         self._verify = QCheckBox("Verify TLS certificates")
         self._verify.setChecked(True)
-        form.addRow("Name", self._name)
-        form.addRow("Portal URL", self._portal)
-        form.addRow("Keycloak URL", self._keycloak)
-        form.addRow("Realm", self._realm)
-        form.addRow("Client id", self._client_id)
         form.addRow("", self._verify)
         outer.addLayout(form)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        save_label = "Save & Sign in" if self._initial is None else "Save"
+        self._btn_save = QPushButton(save_label)
+        self._btn_save.setDefault(True)
+        self._btn_save.clicked.connect(self._on_save)
+        buttons.addButton(self._btn_save, QDialogButtonBox.AcceptRole)
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
 
-    def to_profile(self) -> ConnectionProfile | None:
-        name = self._name.text().strip()
-        portal = self._portal.text().strip()
-        keycloak = self._keycloak.text().strip()
-        realm = self._realm.text().strip() or "gratis-gis"
-        client_id = self._client_id.text().strip() or "qgis-plugin"
-        if not name or not portal or not keycloak:
-            return None
-        existing_authcfg = self._initial.authcfg_id if self._initial else ""
-        return ConnectionProfile(
-            name=name,
-            portal_url=portal,
-            keycloak_url=keycloak,
-            realm=realm,
-            client_id=client_id,
-            authcfg_id=existing_authcfg,
-            verify_tls=self._verify.isChecked(),
-        )
+    def _on_save(self) -> None:
+        url = _normalize_portal_url(self._portal.text())
+        if url is None:
+            QMessageBox.warning(
+                self,
+                "Portal URL required",
+                "Please enter an http:// or https:// URL.",
+            )
+            return
+        verify_tls = self._verify.isChecked()
 
-    @classmethod
-    def new_profile(cls, parent: QWidget | None) -> ConnectionProfile | None:
-        dlg = cls(parent, None)
-        if dlg.exec_() != QDialog.Accepted:
-            return None
-        return dlg.to_profile()
-
-    @classmethod
-    def edit_profile(
-        cls, parent: QWidget | None, initial: ConnectionProfile
-    ) -> ConnectionProfile | None:
-        dlg = cls(parent, initial)
-        if dlg.exec_() != QDialog.Accepted:
-            return None
-        return dlg.to_profile()
-
-
-# Suppress unused-import warnings for symbols ruff cannot see through
-# QGIS's dynamic Qt binding (Qt is used by some dialog flags above
-# indirectly).
-_ = Qt
-_ = QInputDialog
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            info = _discover_or_warn(self, url, verify_tls)
+            if info is None:
+                return
+            if self._initial is None:
+                name = self._store.unique_name(info.name or urlparse(url).netloc)
+                profile = ConnectionProfile(
+                    name=name,
+                    portal_url=url,
+                    verify_tls=verify_tls,
+                    authcfg_id=ConnectionStore.new_authcfg_id(),
+                ).with_discovery(info, now=time.time())
+                self._store.save(profile)
+                # The provisional profile is on disk regardless of
+                # sign-in outcome, so the user can retry from the
+                # main list.
+                _run_sign_in(self, profile)
+            else:
+                refreshed = ConnectionProfile(
+                    name=self._initial.name,
+                    portal_url=url,
+                    verify_tls=verify_tls,
+                    authcfg_id=self._initial.authcfg_id,
+                ).with_discovery(info, now=time.time())
+                self._store.save(refreshed)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.accept()

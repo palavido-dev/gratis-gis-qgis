@@ -57,12 +57,20 @@ with each GratisGIS deployment. Tokens are stored in the QGIS auth
 manager (encrypted, the same store QGIS uses for PostgreSQL and
 WFS credentials). Token refresh is automatic.
 
-The plugin targets a dedicated `qgis-plugin` public client that
-ships with the GratisGIS Keycloak realm. PKCE S256 is enforced,
-and both the custom scheme `gratisgis-qgis://auth-callback` and
-the loopback range `http://127.0.0.1:*/*` are registered as valid
-redirect URIs. Re-import or re-render the realm after pulling the
-latest GratisGIS so the client picks up.
+From the user's point of view, signing in is one field. The
+connection dialog asks only for the portal URL; the plugin fetches
+`<portal>/api/portal-info` to discover the OIDC issuer, the API
+base URL, and the portal's display name, then runs the PKCE flow.
+Keycloak realm names, client IDs, and loopback ports never appear
+in the UI.
+
+The plugin sends `client_id=qgis-plugin` on every PKCE handshake.
+That client ships in the realm export under `infra/keycloak/` in
+the main gratis-gis repo, with both the custom scheme
+`gratisgis-qgis://auth-callback` and the loopback prefix
+`http://127.0.0.1*` registered as valid redirect URIs. Re-import
+the realm after pulling the latest GratisGIS so a fresh deployment
+picks the client up.
 
 ## Contributing
 
