@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import builtins
 from typing import TYPE_CHECKING, Any
 
 from gratisgis_client.models.item import (
@@ -76,7 +77,10 @@ class ItemsEndpoint:
         title: str,
         data: dict[str, Any],
         description: str | None = None,
-        tags: list[str] | None = None,
+        # builtins.list because the surrounding class shadows `list`
+        # with a method of that name; the shadowing only affects
+        # annotations parsed after the method definition.
+        tags: builtins.list[str] | None = None,
         access: ItemSharingScope = "private",
     ) -> Item:
         """Create a new item.
@@ -106,7 +110,7 @@ class ItemsEndpoint:
         *,
         title: str | None = None,
         description: str | None = None,
-        tags: list[str] | None = None,
+        tags: builtins.list[str] | None = None,
         data: dict[str, Any] | None = None,
         access: ItemSharingScope | None = None,
     ) -> Item:

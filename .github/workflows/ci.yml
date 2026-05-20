@@ -34,18 +34,14 @@ jobs:
       - name: Pytest (client suite)
         run: pytest tests/client -q
 
-  # mypy is currently crashing on python 3.12 with version 2.1.0 on this
-  # codebase; it's tracked as a Phase 0 follow-up. Re-enable once a known
-  # working pinning lands in pyproject.toml.
-  #
-  # type-check:
-  #   name: mypy
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-python@v5
-  #       with:
-  #         python-version: "3.12"
-  #         cache: pip
-  #     - run: pip install -e ".[dev]"
-  #     - run: mypy
+  type-check:
+    name: mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: mypy

@@ -34,6 +34,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 
 from gratisgis_client import GratisGISClient
 from gratisgis_client.errors import AuthError
+
 from ..auth_bridge import make_token_storage
 from ..log import get_logger
 from ..settings import ConnectionProfile, ConnectionStore

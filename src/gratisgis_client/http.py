@@ -178,6 +178,7 @@ def _safe_json(response: httpx.Response) -> Any:
 def _extract_code(body: Any) -> str | None:
     if isinstance(body, dict):
         for key in ("code", "errorCode", "error"):
-            if key in body and isinstance(body[key], str):
-                return body[key]
+            value = body.get(key)
+            if isinstance(value, str):
+                return value
     return None

@@ -20,7 +20,7 @@ import hashlib
 import secrets
 import socket
 import webbrowser
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -201,7 +201,7 @@ class PKCEFlow:
         client_id: str,
         scope: tuple[str, ...],
         redirect_port: int = 0,
-        browser_opener: callable = webbrowser.open,  # type: ignore[type-arg]
+        browser_opener: Callable[[str], object] = webbrowser.open,
     ) -> None:
         self.authorization_endpoint = authorization_endpoint
         self.client_id = client_id

@@ -13,6 +13,19 @@ import time
 from dataclasses import dataclass
 
 
+def _as_float(value: object) -> float:
+    """Coerce a JSON-decoded value to ``float``.
+
+    Keycloak's token endpoint encodes ``expires_in`` as a JSON number
+    (so we expect ``int``), but the typed JSON view is ``object``;
+    narrowing here keeps the dataclass strict and gives a clean
+    error message if the field is something nonsensical.
+    """
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    raise ValueError(f"expected numeric, got {type(value).__name__}")
+
+
 @dataclass(frozen=True)
 class TokenSet:
     """A complete set of tokens for one signed-in session.
@@ -72,8 +85,8 @@ class TokenSet:
         try:
             access = str(body["access_token"])
             refresh = str(body["refresh_token"])
-            access_in = float(body["expires_in"])
-            refresh_in = float(body.get("refresh_expires_in", access_in))
+            access_in = _as_float(body["expires_in"])
+            refresh_in = _as_float(body.get("refresh_expires_in", access_in))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Malformed token response: missing/invalid field ({exc})") from exc
 

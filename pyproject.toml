@@ -37,7 +37,11 @@ dev = [
   "pytest-asyncio>=0.23",
   "pytest-httpx>=0.30",
   "ruff>=0.5",
-  "mypy>=1.10",
+  # mypy 2.x has a typeshed loading bug ("Failed to find builtin
+  # module '_typeshed'") that breaks our codebase, and 2.1.0 also
+  # has an internal-error crash. Pin to the last 1.x line until
+  # 2.x stabilizes.
+  "mypy>=1.10,<2.0",
   "types-requests",
 ]
 
@@ -94,3 +98,13 @@ files = ["src/gratisgis_client", "tests"]
 [[tool.mypy.overrides]]
 module = "gratisgis_qgis.*"
 ignore_errors = true
+
+# Tests use pytest fixtures and parametrize decorators that are not
+# fully typed in pytest-asyncio and friends. Relaxing the strict-mode
+# rules that complain about those keeps the signal (real type errors
+# in test bodies) without the noise.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+warn_unused_ignores = false
