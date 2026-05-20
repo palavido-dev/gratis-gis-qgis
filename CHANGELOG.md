@@ -22,3 +22,13 @@ for the client library; the QGIS plugin uses its own version line in
   scheme `gratisgis-qgis://auth-callback`, and loopback
   `http://127.0.0.1:*/*` redirect URIs). The plugin's default
   `client_id` resolves once the realm is imported.
+
+### Fixed
+
+- Plugin classFactory failed with `ModuleNotFoundError: No module
+  named 'gratisgis_qgis'` when QGIS loaded the plugin under any
+  folder name other than `gratisgis_qgis`. Internal imports inside
+  `gratisgis_qgis` are now relative, so the QGIS plugin folder name
+  can be anything (`gratisgis`, `gratisgis_qgis`, whatever the
+  Plugin Repository or local install chooses). Smoke tested in
+  QGIS 3.44 (OSGeo4W).

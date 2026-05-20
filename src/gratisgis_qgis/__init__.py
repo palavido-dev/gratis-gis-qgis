@@ -15,6 +15,6 @@ def classFactory(iface):  # type: ignore[no-untyped-def]  # QGIS API name
     dependency in ``plugin.py`` doesn't prevent QGIS from at least
     surfacing the load error in its UI.
     """
-    from gratisgis_qgis.plugin import GratisGISPlugin
+    from .plugin import GratisGISPlugin
 
     return GratisGISPlugin(iface)

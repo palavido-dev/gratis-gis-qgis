@@ -67,7 +67,7 @@ def _init_root_logger() -> None:
     logger.addHandler(handler)
     # Also pipe to the QGIS log panel when running inside QGIS.
     try:
-        from gratisgis_qgis.log_qgis_handler import QGISLogPanelHandler
+        from .log_qgis_handler import QGISLogPanelHandler
 
         logger.addHandler(QGISLogPanelHandler())
     except ImportError:

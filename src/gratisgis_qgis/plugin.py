@@ -20,7 +20,7 @@ from qgis.PyQt.QtCore import QObject  # type: ignore[import-not-found]
 from qgis.PyQt.QtGui import QIcon  # type: ignore[import-not-found]
 from qgis.PyQt.QtWidgets import QAction  # type: ignore[import-not-found]
 
-from gratisgis_qgis.log import get_logger
+from .log import get_logger
 
 if TYPE_CHECKING:
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
@@ -70,7 +70,7 @@ class GratisGISPlugin(QObject):
         """Open the connection management dialog."""
         # Lazy import so a load failure surfaces with a clean stack rather
         # than at plugin import time.
-        from gratisgis_qgis.ui.connection_dialog import ConnectionManagerDialog
+        from .ui.connection_dialog import ConnectionManagerDialog
 
         dlg = ConnectionManagerDialog(self._iface.mainWindow())
         dlg.exec_()
