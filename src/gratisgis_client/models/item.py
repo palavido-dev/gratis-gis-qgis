@@ -20,51 +20,56 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 # Free-form string rather than a closed Literal union. The portal
-# has grown its item-type vocabulary faster than this client could
-# track (kebab-case 'data-layer', 'web-app', 'pick-list',
-# 'geo-boundary' plus newer 'basemap', 'service', 'theme',
-# 'app-template', 'print-template', 'geocoding-service' on prod).
-# A Literal here would reject every list / search response that
-# contains an unrecognized type and stall the whole plugin.
+# adds new item types over time (per packages/shared-types/src/
+# item-types.ts in the main gratis-gis repo). A Literal here
+# would reject any list / search response carrying an
+# unrecognized type and stall the whole plugin.
 #
-# KNOWN_ITEM_TYPES below stays as a documentation aide and powers
-# the search dock's filter dropdown; anything not in the list still
-# round-trips through the API just fine and renders with a generic
-# icon in the Browser tree.
+# KNOWN_ITEM_TYPES below mirrors the authoritative ITEM_TYPES
+# constant in shared-types one-for-one, snake_case only (per the
+# Prisma schema: the on-disk column uses @map("kebab-case") but
+# the API serializes the enum's TypeScript name, which is
+# snake_case). It powers the search dock's filter dropdown and is
+# the canonical "things the plugin knows the portal can emit"
+# list. Anything outside the list still round-trips fine and
+# renders with a generic icon.
 ItemType = str
 
 KNOWN_ITEM_TYPES: tuple[str, ...] = (
     "map",
-    "data-layer",
     "data_layer",
+    "derived_layer",
     "arcgis_service",
-    "service",
     "form",
     "form_submission_collection",
-    "web-app",
     "web_app",
     "report_template",
-    "print-template",
     "dashboard",
     "file",
     "layer_package",
     "tool",
     "widget_package",
-    "pick-list",
     "pick_list",
-    "geo-boundary",
     "geo_boundary",
-    "folder",
-    "tile_layer",
     "basemap",
+    "wms_service",
+    "wfs_service",
+    # #304 unified connected-service item type (replaces the four
+    # protocol-specific *_service entries above, which stay
+    # listed for the deprecation window).
+    "service",
+    "folder",
+    "editor",
+    "data_collection",
+    "geocoding_service",
+    "tile_layer",
+    "app_template",
     "theme",
-    "app-template",
-    "geocoding-service",
+    "print_template",
 )
-"""Best-effort enumeration of item types the portal is known to
-emit, accounting for both the kebab-case and snake_case spellings
-the schema has used over time. New types simply land on the API
-side without requiring a plugin release."""
+"""Mirrors `ITEM_TYPES` in packages/shared-types/src/item-types.ts
+exactly. When a new type lands on the portal, add it here too so
+the search dock's filter dropdown surfaces it."""
 
 
 ItemSharingScope = Literal["private", "org", "public"]

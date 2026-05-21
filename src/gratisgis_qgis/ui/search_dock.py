@@ -51,16 +51,32 @@ _log = get_logger(__name__)
 
 
 # The user-facing type filter. None means "any type". Order is
-# what shows in the dropdown.
+# what shows in the dropdown -- types users reach for most often
+# go on top. The full ITEM_TYPES set (see KNOWN_ITEM_TYPES in
+# gratisgis_client.models.item) round-trips through search even
+# when not listed here; this is just the dropdown shortcuts.
 _TYPE_FILTERS: list[tuple[str, ItemType | None]] = [
     ("Any type", None),
     ("Data layer", "data_layer"),
+    ("Derived layer", "derived_layer"),
     ("Map", "map"),
     ("Tile layer", "tile_layer"),
+    ("Basemap", "basemap"),
+    ("Connected service", "service"),
+    ("Geocoding service", "geocoding_service"),
     ("Web app", "web_app"),
+    ("App template", "app_template"),
+    ("Theme", "theme"),
+    ("Print template", "print_template"),
     ("Form", "form"),
+    ("Editor", "editor"),
+    ("Data collection", "data_collection"),
     ("Dashboard", "dashboard"),
+    ("Report template", "report_template"),
     ("File", "file"),
+    ("Pick list", "pick_list"),
+    ("Boundary", "geo_boundary"),
+    ("Folder", "folder"),
 ]
 
 
