@@ -31,6 +31,8 @@ from gratisgis_client.endpoints.features import FeaturesEndpoint
 from gratisgis_client.endpoints.import_jobs import ImportJobsEndpoint
 from gratisgis_client.endpoints.ingest import IngestEndpoint
 from gratisgis_client.endpoints.items import ItemsEndpoint
+from gratisgis_client.endpoints.storage import StorageEndpoint
+from gratisgis_client.endpoints.tile_layer import TileLayerEndpoint
 from gratisgis_client.http import PortalHttp
 
 
@@ -61,6 +63,8 @@ class GratisGISClient:
         self.ingest = IngestEndpoint(self._http)
         self.import_jobs = ImportJobsEndpoint(self._http)
         self.features = FeaturesEndpoint(self._http)
+        self.storage = StorageEndpoint(self._http)
+        self.tile_layer = TileLayerEndpoint(self._http)
 
     @property
     def config(self) -> PortalConfig:

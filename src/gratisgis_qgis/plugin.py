@@ -80,6 +80,13 @@ class GratisGISPlugin(QObject):
         self._iface.addPluginToMenu(self.PLUGIN_NAME, push_edits_action)
         self._actions.append(push_edits_action)
 
+        publish_raster_action = QAction(
+            icon, "Publish raster / tile layer to GratisGIS...", self._iface.mainWindow()
+        )
+        publish_raster_action.triggered.connect(self._on_publish_raster)
+        self._iface.addPluginToMenu(self.PLUGIN_NAME, publish_raster_action)
+        self._actions.append(publish_raster_action)
+
         publish_action = QAction(
             icon, "Publish current project as GratisGIS map...", self._iface.mainWindow()
         )
@@ -164,6 +171,13 @@ class GratisGISPlugin(QObject):
         from .ui.push_edits_dialog import PushEditsDialog
 
         dlg = PushEditsDialog(self._iface, self._iface.mainWindow())
+        dlg.exec_()
+
+    def _on_publish_raster(self) -> None:
+        """Open the Publish-raster dialog (Phase 5)."""
+        from .ui.publish_raster_dialog import PublishRasterDialog
+
+        dlg = PublishRasterDialog(self._iface, self._iface.mainWindow())
         dlg.exec_()
 
 
