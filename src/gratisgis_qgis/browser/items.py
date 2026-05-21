@@ -413,6 +413,7 @@ class DataLayerItem(QgsDataCollectionItem):
                     self._item,
                     collection_id=self._item.id,
                     label=self._item.title,
+                    has_geometry=True,
                 )
             ]
         children: list[QgsDataItem] = []
@@ -422,6 +423,15 @@ class DataLayerItem(QgsDataCollectionItem):
                 continue
             label = str(lyr.get("label") or layer_id)
             collection_id = f"{self._item.id}__{layer_id}"
+            # Spatial sublayers (geometryType present) default to
+            # vector tiles for fast viewing of huge datasets like
+            # WV Parcels at WV-extent zoom. Non-spatial tables
+            # (geometryType is null/absent) can't render as MVT;
+            # they fall through to OAPIF so QGIS can still pull
+            # rows into the attribute table.
+            has_geometry = isinstance(lyr.get("geometryType"), str) and (
+                str(lyr.get("geometryType")) != ""
+            )
             children.append(
                 _DataLayerSublayerItem(
                     self,
@@ -429,6 +439,7 @@ class DataLayerItem(QgsDataCollectionItem):
                     self._item,
                     collection_id=collection_id,
                     label=label,
+                    has_geometry=has_geometry,
                 )
             )
         return children
@@ -459,8 +470,26 @@ def _extract_v3_layers(full_item: dict[str, object]) -> list[dict[str, object]]:
 
 
 class _DataLayerSublayerItem(QgsLayerItem):
-    """One sublayer leaf under a DataLayerItem. Drag adds an OGC
-    API Features layer pointing at the per-layer collection id.
+    """One sublayer leaf under a DataLayerItem.
+
+    Spatial sublayers (``has_geometry=True``) add as MVT vector
+    tiles by default, pointing at the OGC API Tiles endpoint
+    ``/collections/<collectionId>/tiles/WebMercatorQuad``. Vector
+    tiles scale to county/state-extent zoom on huge layers like
+    WV Parcels (1.4M polygons) where an OAPIF GeoJSON request
+    would either time out or return a multi-megabyte unfiltered
+    dump that QGIS can't render. The engine simplifies geometry
+    and caps features per tile so low-zoom tiles complete in
+    sub-second time; high zoom shows full detail.
+
+    Non-spatial sublayers (tables, ``has_geometry=False``) can't
+    render as MVT -- ST_AsMVTGeom skips them. They fall through
+    to OAPIF so QGIS can still pull rows into an attribute table.
+
+    Editing isn't supported on MVT layers (they're a read-only
+    rendering format). The Editor menu's "Add as editable
+    features" action is the OAPIF escape hatch for users who
+    actually need to edit features on the canvas.
     """
 
     def __init__(
@@ -471,20 +500,30 @@ class _DataLayerSublayerItem(QgsLayerItem):
         *,
         collection_id: str,
         label: str,
+        has_geometry: bool,
     ) -> None:
-        uri = oapif_uri(profile.portal_url, collection_id)
+        if has_geometry:
+            uri = vector_tile_uri(profile.portal_url, collection_id)
+            layer_type = QgsLayerItem.VectorTile
+            provider_key = "vectortile"
+        else:
+            uri = oapif_uri(profile.portal_url, collection_id)
+            layer_type = QgsLayerItem.Vector
+            provider_key = "OAPIF"
         super().__init__(
             parent,
             label,
             f"gratisgis-data-layer-sublayer:/{profile.name}/{collection_id}",
             uri,
-            QgsLayerItem.Vector,
-            "OAPIF",
+            layer_type,
+            provider_key,
         )
         self._profile = profile
         self._item = item
         self._collection_id = collection_id
         self._label = label
+        self._has_geometry = has_geometry
+        self._provider_key = provider_key
 
     @property
     def item(self) -> ItemSummary:
@@ -496,12 +535,16 @@ class _DataLayerSublayerItem(QgsLayerItem):
 
     def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
         u = QgsMimeDataUtils.Uri()
-        u.layerType = "vector"
-        u.providerKey = "OAPIF"
+        if self._has_geometry:
+            u.layerType = "vector-tile"
+        else:
+            u.layerType = "vector"
+        u.providerKey = self._provider_key
         u.uri = self.uri()
         u.name = self._label
-        u.supportedCrs = ["EPSG:4326"]
-        u.supportedFormats = ["application/geo+json"]
+        if not self._has_geometry:
+            u.supportedCrs = ["EPSG:4326"]
+            u.supportedFormats = ["application/geo+json"]
         return [u]
 
 
