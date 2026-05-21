@@ -12,6 +12,14 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+# Sentinel "never expires" timestamp. Year 2286 — well past any
+# plausible install lifetime — chosen as a finite value so the
+# persisted JSON stays standards-compliant (json.dumps of
+# float('inf') emits the non-RFC `Infinity` literal which other
+# JSON consumers reject). The token-refresh check treats any value
+# this large as effectively never-expires.
+_NEVER_EXPIRES_AT: float = 9_999_999_999.0
+
 
 def _as_float(value: object) -> float:
     """Coerce a JSON-decoded value to ``float``.
@@ -90,11 +98,22 @@ class TokenSet:
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Malformed token response: missing/invalid field ({exc})") from exc
 
+        # Keycloak returns refresh_expires_in == 0 for offline tokens
+        # (the offline_access scope), meaning "never expires" per the
+        # OAuth offline-token spec. A literal `t0 + 0` would mark the
+        # refresh token stale the instant it was saved and force
+        # interactive re-sign-in on the next API call. Treat 0 (and,
+        # defensively, any negative value) as "no expiry" by using a
+        # far-future sentinel timestamp.
+        refresh_expires_at = (
+            _NEVER_EXPIRES_AT if refresh_in <= 0 else t0 + refresh_in
+        )
+
         return cls(
             access_token=access,
             refresh_token=refresh,
             access_expires_at=t0 + access_in,
-            refresh_expires_at=t0 + refresh_in,
+            refresh_expires_at=refresh_expires_at,
             id_token=(str(body["id_token"]) if "id_token" in body else None),
             token_type=str(body.get("token_type", "Bearer")),
             scope=(str(body["scope"]) if "scope" in body else None),

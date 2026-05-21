@@ -80,6 +80,30 @@ def test_refresh_is_stale_when_in_the_past() -> None:
     assert tokens.refresh_is_stale() is True
 
 
+def test_offline_token_refresh_in_zero_means_never_expires() -> None:
+    # Keycloak returns refresh_expires_in=0 for offline-access tokens
+    # (the offline_access scope), meaning "never expires" per the
+    # OAuth offline-token spec. Without the special-case, a literal
+    # `t0 + 0` would mark the refresh token stale the instant it was
+    # saved and force interactive re-sign-in on the very next call.
+    body = _sample_response()
+    body["refresh_expires_in"] = 0
+    tokens = TokenSet.from_token_response(body, now=_now())
+    assert tokens.refresh_is_stale() is False
+    # And it stays not-stale well into the future.
+    assert tokens.refresh_expires_at > _now() + 10 * 365 * 24 * 3600
+
+
+def test_offline_token_with_negative_refresh_in_also_treated_as_never() -> None:
+    # Defensive: if a proxy ever rewrites the response to a negative
+    # number, treat it the same as zero (no expiry) rather than
+    # passing a past timestamp through.
+    body = _sample_response()
+    body["refresh_expires_in"] = -1
+    tokens = TokenSet.from_token_response(body, now=_now())
+    assert tokens.refresh_is_stale() is False
+
+
 def test_tokenset_is_frozen() -> None:
     tokens = TokenSet(
         access_token="a",
