@@ -26,6 +26,9 @@ from pathlib import Path
 REWRITES = [
     # (regex pattern, replacement). Use word boundaries to avoid
     # matching the scoped names themselves on a second pass.
+    # PyQt6 dropped the .exec_() Python-2-reserved-word alias;
+    # use plain .exec() instead. PyQt5 accepts both.
+    (r"\.exec_\(", ".exec("),
     (r"\bQt\.ItemIsSelectable\b", "Qt.ItemFlag.ItemIsSelectable"),
     (r"\bQt\.ItemIsEditable\b", "Qt.ItemFlag.ItemIsEditable"),
     (r"\bQt\.ItemIsEnabled\b", "Qt.ItemFlag.ItemIsEnabled"),

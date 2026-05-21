@@ -142,7 +142,7 @@ class ConnectionManagerDialog(QDialog):
     # ----- Actions -----
 
     def _on_new(self) -> None:
-        _PortalEditDialog(self, store=self._store, initial=None).exec_()
+        _PortalEditDialog(self, store=self._store, initial=None).exec()
         self._reload()
 
     def _on_edit(self) -> None:
@@ -152,7 +152,7 @@ class ConnectionManagerDialog(QDialog):
         existing = self._store.get(name)
         if existing is None:
             return
-        _PortalEditDialog(self, store=self._store, initial=existing).exec_()
+        _PortalEditDialog(self, store=self._store, initial=existing).exec()
         self._reload()
 
     def _on_delete(self) -> None:

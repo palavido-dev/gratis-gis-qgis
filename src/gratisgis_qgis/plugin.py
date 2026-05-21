@@ -138,7 +138,7 @@ class GratisGISPlugin(QObject):
         from .ui.connection_dialog import ConnectionManagerDialog
 
         dlg = ConnectionManagerDialog(self._iface.mainWindow())
-        dlg.exec_()
+        dlg.exec()
         # The connection list may have changed; refresh the
         # search dock's connection picker so a freshly added
         # profile shows up without restarting the plugin.
@@ -164,35 +164,35 @@ class GratisGISPlugin(QObject):
         from .ui.publish_project_dialog import PublishProjectDialog
 
         dlg = PublishProjectDialog(self._iface, self._iface.mainWindow())
-        dlg.exec_()
+        dlg.exec()
 
     def _on_publish_vector(self) -> None:
         """Open the Publish-vector-layer dialog (Phase 3)."""
         from .ui.publish_vector_dialog import PublishVectorDialog
 
         dlg = PublishVectorDialog(self._iface, self._iface.mainWindow())
-        dlg.exec_()
+        dlg.exec()
 
     def _on_push_edits(self) -> None:
         """Open the Push-edits dialog (Phase 4)."""
         from .ui.push_edits_dialog import PushEditsDialog
 
         dlg = PushEditsDialog(self._iface, self._iface.mainWindow())
-        dlg.exec_()
+        dlg.exec()
 
     def _on_publish_raster(self) -> None:
         """Open the Publish-raster dialog (Phase 5)."""
         from .ui.publish_raster_dialog import PublishRasterDialog
 
         dlg = PublishRasterDialog(self._iface, self._iface.mainWindow())
-        dlg.exec_()
+        dlg.exec()
 
     def _on_clone_offline(self) -> None:
         """Open the Clone-to-GeoPackage dialog (Phase 7)."""
         from .ui.clone_dialog import CloneToGeoPackageDialog
 
         dlg = CloneToGeoPackageDialog(self._iface, self._iface.mainWindow())
-        dlg.exec_()
+        dlg.exec()
 
 
 def _load_icon() -> QIcon:

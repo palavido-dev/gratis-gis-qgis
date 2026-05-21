@@ -251,7 +251,7 @@ class GratisGISSearchDock(QDockWidget):
             profile=profile,
             item_id=payload.get("id", ""),
         )
-        dlg.exec_()
+        dlg.exec()
 
     def _add_data_layer(self, portal_url: str, summary: ItemSummary) -> None:
         self._iface.addVectorLayer(
