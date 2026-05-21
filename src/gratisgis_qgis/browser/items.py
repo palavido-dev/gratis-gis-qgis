@@ -713,7 +713,8 @@ class ServiceItem(QgsDataCollectionItem):
                     self._profile,
                     self._item,
                     label=self._item.title,
-                    layer_url=base_url,
+                    base_url=base_url,
+                    layer_id=None,
                     is_feature_server=is_feature_server,
                 )
             ]
@@ -731,18 +732,14 @@ class ServiceItem(QgsDataCollectionItem):
                 continue
             layer_id = str(layer_id_raw)
             label = str(lyr.get("title") or lyr.get("label") or layer_id)
-            # ArcGIS REST layer URLs are <baseUrl>/<layerId>, both
-            # for MapServer (raster sublayer) and FeatureServer
-            # (vector sublayer). The provider distinguishes via the
-            # `/FeatureServer` vs `/MapServer` substring in the URL.
-            layer_url = f"{base_url.rstrip('/')}/{layer_id}"
             children.append(
                 _ServiceSublayerItem(
                     self,
                     self._profile,
                     self._item,
                     label=label,
-                    layer_url=layer_url,
+                    base_url=base_url,
+                    layer_id=layer_id,
                     is_feature_server=is_feature_server,
                 )
             )
@@ -754,9 +751,26 @@ class ServiceItem(QgsDataCollectionItem):
 class _ServiceSublayerItem(QgsLayerItem):
     """One ArcGIS REST sublayer leaf under a ServiceItem.
 
-    Each leaf points at ``<baseUrl>/<layerId>`` so dragging it onto
-    the canvas adds just that sublayer, not the whole service.
-    arcgisfeatureserver -> vector, arcgismapserver -> raster.
+    URI construction differs by service type:
+
+      - FeatureServer/N is a first-class endpoint that returns
+        features for layer N. QGIS's arcgisfeatureserver provider
+        takes the full ``<baseUrl>/<layerId>`` URL.
+
+      - MapServer/N is NOT independently fetchable as a map image;
+        only the parent MapServer's ``/export`` endpoint renders
+        rasters, and there's no per-layer export. QGIS's
+        arcgismapserver provider expects the MapServer ROOT URL
+        plus a ``layers='show:N'`` URI key that filters the
+        rendered image. Pointing arcgismapserver at /MapServer/N
+        directly produces "Network error: Invalid URL" because
+        QGIS appends ``/export`` to that path and the server
+        rejects the leaf-layer URL.
+
+    ``layer_id`` is None when the sublayer represents the whole
+    service (no per-layer metadata to drive a filter); in that
+    case we omit the ``layers=`` key and let MapServer return all
+    layers / FeatureServer return its default response.
     """
 
     def __init__(
@@ -766,31 +780,45 @@ class _ServiceSublayerItem(QgsLayerItem):
         item: ItemSummary,
         *,
         label: str,
-        layer_url: str,
+        base_url: str,
+        layer_id: str | None,
         is_feature_server: bool,
     ) -> None:
-        provider = "arcgisfeatureserver" if is_feature_server else "arcgismapserver"
-        # arcgismapserver / arcgisfeatureserver providers want the
-        # OAPIF-style ``key='value' key='value'`` shape, not the
-        # XYZ ``key=value&key=value`` shape. Without the single
-        # quotes QGIS pastes the value of the next key onto the
-        # URL ("url=https://.../MapServer/0&crs=EPSG:3857" comes
-        # back from the server as Invalid URL 400). The quotes
-        # are how QGIS knows where one value ends and the next
-        # key begins, matching the OAPIF builder in uris.py.
-        uri = f"url='{layer_url}' crs='EPSG:3857'"
+        base_root = base_url.rstrip("/")
+        if is_feature_server:
+            provider = "arcgisfeatureserver"
+            layer_type = QgsLayerItem.Vector
+            target_url = (
+                f"{base_root}/{layer_id}" if layer_id is not None else base_root
+            )
+            uri = f"url='{target_url}' crs='EPSG:3857'"
+            path_suffix = layer_id if layer_id is not None else "root"
+        else:
+            provider = "arcgismapserver"
+            layer_type = QgsLayerItem.Raster
+            # Always point at the MapServer root; filter via layers
+            # key. Drop the /N path segment if it slipped in.
+            if base_root.rstrip("/").rsplit("/", 1)[-1].isdigit():
+                map_root = base_root.rsplit("/", 1)[0]
+            else:
+                map_root = base_root
+            uri = f"url='{map_root}' crs='EPSG:3857'"
+            if layer_id is not None:
+                uri = f"{uri} layers='show:{layer_id}'"
+            path_suffix = layer_id if layer_id is not None else "root"
         super().__init__(
             parent,
             label,
-            f"gratisgis-service-sublayer:/{profile.name}/{item.id}/{layer_url}",
+            f"gratisgis-service-sublayer:/{profile.name}/{item.id}/{path_suffix}",
             uri,
-            QgsLayerItem.Vector if is_feature_server else QgsLayerItem.Raster,
+            layer_type,
             provider,
         )
         self._profile = profile
         self._item = item
         self._label = label
-        self._layer_url = layer_url
+        self._base_url = base_url
+        self._layer_id = layer_id
         self._provider = provider
 
     @property
