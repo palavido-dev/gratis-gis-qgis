@@ -98,7 +98,7 @@ class ConnectionManagerDialog(QDialog):
         row.addLayout(side, stretch=1)
         outer.addLayout(row)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         outer.addWidget(buttons)
@@ -301,7 +301,7 @@ def _refresh_discovery_and_sign_in(
     newly reserved id is cleared so the list does not show a stale
     "[signed in]" label.
     """
-    QApplication.setOverrideCursor(Qt.WaitCursor)
+    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
     try:
         had_prior_auth = bool(profile.authcfg_id)
         info = _discover_or_warn(parent, profile.portal_url, profile.verify_tls)
@@ -381,7 +381,7 @@ class _PortalEditDialog(QDialog):
         self._btn_save = QPushButton(save_label)
         self._btn_save.setDefault(True)
         self._btn_save.clicked.connect(self._on_save)
-        buttons.addButton(self._btn_save, QDialogButtonBox.AcceptRole)
+        buttons.addButton(self._btn_save, QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
 
@@ -396,7 +396,7 @@ class _PortalEditDialog(QDialog):
             return
         verify_tls = self._verify.isChecked()
 
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             info = _discover_or_warn(self, url, verify_tls)
             if info is None:
