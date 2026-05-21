@@ -39,6 +39,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 
 from gratisgis_client.models.item import ItemSummary, ItemType
 
+from ..browser.buckets import is_qgis_consumable
 from ..browser.fetch import list_items_sync
 from ..browser.uris import oapif_uri, vector_tile_uri
 from ..log import get_logger
@@ -50,33 +51,21 @@ if TYPE_CHECKING:
 _log = get_logger(__name__)
 
 
-# The user-facing type filter. None means "any type". Order is
-# what shows in the dropdown -- types users reach for most often
-# go on top. The full ITEM_TYPES set (see KNOWN_ITEM_TYPES in
-# gratisgis_client.models.item) round-trips through search even
-# when not listed here; this is just the dropdown shortcuts.
+# The user-facing type filter. None means "any (QGIS-consumable)
+# type". Restricted to types we actually display -- the search
+# dock filters out non-consumable items from results anyway (see
+# is_qgis_consumable below), so offering a filter that returns 0
+# results would be a footgun.
 _TYPE_FILTERS: list[tuple[str, ItemType | None]] = [
     ("Any type", None),
     ("Data layer", "data_layer"),
     ("Derived layer", "derived_layer"),
-    ("Map", "map"),
     ("Tile layer", "tile_layer"),
     ("Basemap", "basemap"),
     ("Connected service", "service"),
-    ("Geocoding service", "geocoding_service"),
-    ("Web app", "web_app"),
-    ("App template", "app_template"),
-    ("Theme", "theme"),
-    ("Print template", "print_template"),
-    ("Form", "form"),
-    ("Editor", "editor"),
-    ("Data collection", "data_collection"),
-    ("Dashboard", "dashboard"),
-    ("Report template", "report_template"),
-    ("File", "file"),
-    ("Pick list", "pick_list"),
-    ("Boundary", "geo_boundary"),
-    ("Folder", "folder"),
+    ("ArcGIS service", "arcgis_service"),
+    ("WMS service", "wms_service"),
+    ("WFS service", "wfs_service"),
 ]
 
 
@@ -204,6 +193,12 @@ class GratisGISSearchDock(QDockWidget):
             self._status.setText(f"Search failed: {e}")
             return
 
+        # Trim to types QGIS can actually consume so the result
+        # list doesn't show items (forms, dashboards, web apps,
+        # themes, templates, pick lists, boundaries) the user has
+        # no add-to-canvas action for. Matches the Browser tree's
+        # same filter (see browser/buckets.is_qgis_consumable).
+        items = [it for it in items if is_qgis_consumable(it)]
         for it in sorted(items, key=lambda i: i.title.lower()):
             row = QListWidgetItem(_format_result_row(it))
             row.setData(Qt.ItemDataRole.UserRole, it.model_dump(mode="json", by_alias=True))

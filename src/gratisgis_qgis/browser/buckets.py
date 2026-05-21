@@ -87,6 +87,50 @@ def filter_for_bucket(
     return []
 
 
+# Item types QGIS can actually consume as a layer on the canvas.
+# Everything else (forms, dashboards, web apps, themes, templates,
+# pick lists, boundaries, etc.) is portal-only content that has no
+# QGIS rendering; hiding it from the Browser tree + search dock
+# avoids cluttering both surfaces with rows the user can do
+# nothing with from QGIS. The dock's "Open item properties"
+# action would still work on filtered-out items, but the wider
+# portal UI is the right place to read them; the plugin's job is
+# to bring layers onto the canvas.
+#
+# Keep this list in sync with the dispatch in browser/items.py:
+# _make_item() -- if a type renders as a draggable layer there,
+# it belongs here too. Both spellings (kebab + snake) accepted
+# defensively even though current portal API serializes snake.
+QGIS_CONSUMABLE_TYPES: frozenset[str] = frozenset({
+    "data_layer",
+    "data-layer",
+    "derived_layer",
+    "derived-layer",
+    "tile_layer",
+    "tile-layer",
+    "basemap",
+    # ArcGIS / OGC connected services are XYZ / WMS / WFS sources
+    # QGIS speaks natively, even though we don't yet have a
+    # dedicated dispatch branch for each in _make_item.
+    "arcgis_service",
+    "arcgis-service",
+    "wms_service",
+    "wms-service",
+    "wfs_service",
+    "wfs-service",
+    "service",
+})
+
+
+def is_qgis_consumable(item: ItemSummary) -> bool:
+    """True iff the item's type is something QGIS can pull into the
+    canvas as a layer. Used by the Browser tree + search dock to
+    hide portal-only content (forms, dashboards, web apps, themes,
+    etc.) that the plugin has no way to render.
+    """
+    return (item.type or "") in QGIS_CONSUMABLE_TYPES
+
+
 def _infer_caller_id(items: list[ItemSummary]) -> str | None:
     """Most common owner_id among the private items in the result.
 

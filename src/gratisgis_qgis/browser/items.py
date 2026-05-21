@@ -39,7 +39,12 @@ from gratisgis_client.models.item import ItemSummary
 
 from ..log import get_logger
 from ..settings import ConnectionProfile, ConnectionStore
-from .buckets import BucketKind, all_buckets, filter_for_bucket
+from .buckets import (
+    BucketKind,
+    all_buckets,
+    filter_for_bucket,
+    is_qgis_consumable,
+)
 from .fetch import list_items_sync
 from .uris import oapif_uri, vector_tile_uri
 
@@ -229,11 +234,116 @@ class BucketItem(QgsDataCollectionItem):
             return [_MessageItem(self, f"Failed to load: {e}")]
 
         items = list(filter_for_bucket(items, self._kind))
+        # Trim down to types QGIS can actually render. Portal-only
+        # surfaces (forms, dashboards, web apps, themes, templates,
+        # pick lists, boundaries) get hidden here -- they're real
+        # portal items but there's no canvas action for them, so
+        # surfacing them in the Browser tree just adds noise.
+        items = [i for i in items if is_qgis_consumable(i)]
         if not items:
             return [_MessageItem(self, _empty_bucket_label(self._kind))]
 
+        # Group by normalized type so the user sees "Data layers
+        # (12)" / "Tile layers (3)" / "Basemaps (7)" rather than
+        # one 100-row flat list mixing types. Each group expands
+        # to its sorted-by-title members.
+        by_type: dict[str, list[ItemSummary]] = {}
+        for it in items:
+            key = _normalize_type(it.type)
+            by_type.setdefault(key, []).append(it)
+
         children: list[QgsDataItem] = []
-        for it in sorted(items, key=lambda i: i.title.lower()):
+        for type_key in sorted(by_type.keys(), key=_type_sort_key):
+            group_items = sorted(by_type[type_key], key=lambda i: i.title.lower())
+            children.append(
+                _TypeGroupItem(
+                    self,
+                    self._profile,
+                    type_key=type_key,
+                    items=group_items,
+                )
+            )
+        return children
+
+
+def _normalize_type(t: str | None) -> str:
+    """Collapse kebab + snake spellings to a single snake key so
+    grouping doesn't split data-layer and data_layer into two
+    siblings.
+    """
+    return (t or "unknown").replace("-", "_")
+
+
+# Group display labels (plural form for the type-group nodes).
+# Falls back to a title-cased version of the type for any new type
+# the portal grows that we haven't labelled here yet.
+_TYPE_GROUP_LABELS: dict[str, str] = {
+    "data_layer": "Data layers",
+    "derived_layer": "Derived layers",
+    "tile_layer": "Tile layers",
+    "basemap": "Basemaps",
+    "arcgis_service": "ArcGIS services",
+    "wms_service": "WMS services",
+    "wfs_service": "WFS services",
+    "service": "Connected services",
+}
+
+
+# Sort order for type groups: most-used / most-canvas-relevant on
+# top. Anything not in this map sorts after the named entries,
+# alphabetically.
+_TYPE_GROUP_ORDER: dict[str, int] = {
+    "data_layer": 10,
+    "derived_layer": 20,
+    "tile_layer": 30,
+    "basemap": 40,
+    "arcgis_service": 50,
+    "service": 60,
+    "wms_service": 70,
+    "wfs_service": 80,
+}
+
+
+def _type_sort_key(type_key: str) -> tuple[int, str]:
+    """Sort groups by the explicit order first, label alpha second."""
+    return (_TYPE_GROUP_ORDER.get(type_key, 1000), type_key)
+
+
+def _type_group_label(type_key: str, count: int) -> str:
+    """Render the user-facing label like 'Data layers (12)'."""
+    base = _TYPE_GROUP_LABELS.get(type_key, type_key.replace("_", " ").title())
+    return f"{base}  ({count})"
+
+
+class _TypeGroupItem(QgsDataCollectionItem):
+    """A per-type sub-node under a BucketItem. Holds the already-
+    fetched, already-bucket-filtered items so expansion is instant
+    (no re-fetch).
+    """
+
+    def __init__(
+        self,
+        parent: QgsDataItem,
+        profile: ConnectionProfile,
+        *,
+        type_key: str,
+        items: list[ItemSummary],
+    ) -> None:
+        label = _type_group_label(type_key, len(items))
+        super().__init__(
+            parent,
+            label,
+            f"{parent.path()}/{type_key}",
+        )
+        self._profile = profile
+        self._items = items
+        # Fertile so the user can expand; Fast because expansion
+        # is just dispatching the in-memory list (no I/O).
+        self.setCapabilitiesV2(_BROWSER_CAP_FERTILE | _BROWSER_CAP_FAST)
+
+    def createChildren(self) -> list[QgsDataItem]:
+        children: list[QgsDataItem] = []
+        for it in self._items:
             child = _make_item(self, self._profile, it)
             if child is not None:
                 children.append(child)
