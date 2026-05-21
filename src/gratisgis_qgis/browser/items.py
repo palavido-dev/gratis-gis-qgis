@@ -43,6 +43,7 @@ from ..log import get_logger
 from ..settings import ConnectionProfile, ConnectionStore
 from .buckets import BucketKind, all_buckets, filter_for_bucket
 from .fetch import list_items_sync
+from .uris import oapif_uri, vector_tile_uri
 
 _log = get_logger(__name__)
 
@@ -181,11 +182,9 @@ class DataLayerItem(QgsLayerItem):
         profile: ConnectionProfile,
         item: ItemSummary,
     ) -> None:
-        # OAPIF URI shape: `url=<base> typename=<collection>`
-        # Built-in OAPIF provider in QGIS 3.30+ accepts this.
-        base = profile.portal_url.rstrip("/")
-        ogc_root = f"{base}/api/public/ogc"
-        uri = f"url='{ogc_root}' typename='{item.id}'"
+        # OAPIF URI shape lives in browser/uris.py so the same
+        # builder serves the Search dock's add-to-canvas action.
+        uri = oapif_uri(profile.portal_url, item.id)
         super().__init__(
             parent,
             item.title,
@@ -224,15 +223,9 @@ class TileLayerItem(QgsLayerItem):
         profile: ConnectionProfile,
         item: ItemSummary,
     ) -> None:
-        base = profile.portal_url.rstrip("/")
-        tile_url = (
-            f"{base}/api/public/ogc/collections/{item.id}"
-            "/tiles/WebMercatorQuad/{z}/{y}/{x}"
-        )
-        # QGIS XYZ URI shape uses `url=<encoded>` + type=xyz.
-        # Our tiles are MVT; QGIS reads them via the vector-tile
-        # provider when the format is set explicitly.
-        uri = f"type=xyz&url={tile_url}"
+        # Vector-tile URI lives in browser/uris.py; QGIS's
+        # vector-tile provider reads the {z}/{y}/{x} template.
+        uri = vector_tile_uri(profile.portal_url, item.id)
         super().__init__(
             parent,
             item.title,

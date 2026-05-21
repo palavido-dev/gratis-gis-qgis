@@ -18,7 +18,7 @@ import os.path
 from typing import TYPE_CHECKING
 
 from qgis.core import QgsApplication  # type: ignore[import-not-found]
-from qgis.PyQt.QtCore import QObject  # type: ignore[import-not-found]
+from qgis.PyQt.QtCore import QObject, Qt  # type: ignore[import-not-found]
 from qgis.PyQt.QtGui import QIcon  # type: ignore[import-not-found]
 from qgis.PyQt.QtWidgets import QAction  # type: ignore[import-not-found]
 
@@ -27,6 +27,8 @@ from .log import get_logger
 if TYPE_CHECKING:
     from qgis.core import QgsDataItemProvider  # type: ignore[import-not-found]
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
+
+    from .ui.search_dock import GratisGISSearchDock
 
 _log = get_logger(__name__)
 
@@ -46,6 +48,7 @@ class GratisGISPlugin(QObject):
         self._iface = iface
         self._actions: list[QAction] = []
         self._browser_provider: QgsDataItemProvider | None = None
+        self._search_dock: GratisGISSearchDock | None = None
         _log.info("GratisGIS plugin instantiated")
 
     # ----- QGIS hooks -----
@@ -57,6 +60,11 @@ class GratisGISPlugin(QObject):
         manage_action.triggered.connect(self._on_manage_connections)
         self._iface.addPluginToMenu(self.PLUGIN_NAME, manage_action)
         self._actions.append(manage_action)
+
+        search_action = QAction(icon, "Open GratisGIS search...", self._iface.mainWindow())
+        search_action.triggered.connect(self._on_open_search)
+        self._iface.addPluginToMenu(self.PLUGIN_NAME, search_action)
+        self._actions.append(search_action)
 
         # Phase 1: register the Browser-panel data item provider so
         # configured connections show up as a "GratisGIS" subtree
@@ -80,7 +88,11 @@ class GratisGISPlugin(QObject):
         if self._browser_provider is not None:
             QgsApplication.dataItemProviderRegistry().removeProvider(self._browser_provider)
             self._browser_provider = None
-        _log.debug("unload: menu actions + browser provider removed")
+        if self._search_dock is not None:
+            self._iface.removeDockWidget(self._search_dock)
+            self._search_dock.deleteLater()
+            self._search_dock = None
+        _log.debug("unload: menu actions + browser provider + search dock removed")
 
     # ----- Action handlers -----
 
@@ -92,6 +104,21 @@ class GratisGISPlugin(QObject):
 
         dlg = ConnectionManagerDialog(self._iface.mainWindow())
         dlg.exec_()
+        # The connection list may have changed; refresh the
+        # search dock's connection picker so a freshly added
+        # profile shows up without restarting the plugin.
+        if self._search_dock is not None:
+            self._search_dock.refresh_connections()
+
+    def _on_open_search(self) -> None:
+        """Show (and create on first call) the search dock widget."""
+        if self._search_dock is None:
+            from .ui.search_dock import GratisGISSearchDock
+
+            self._search_dock = GratisGISSearchDock(self._iface, self._iface.mainWindow())
+            self._iface.addDockWidget(Qt.RightDockWidgetArea, self._search_dock)
+        self._search_dock.show()
+        self._search_dock.raise_()
 
 
 def _load_icon() -> QIcon:
