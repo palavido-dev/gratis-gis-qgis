@@ -45,7 +45,7 @@ from .buckets import (
     filter_for_bucket,
     is_qgis_consumable,
 )
-from .fetch import list_items_sync
+from .fetch import get_item_sync, list_items_sync
 from .uris import oapif_uri, vector_tile_uri
 
 _log = get_logger(__name__)
@@ -420,6 +420,113 @@ class TileLayerItem(QgsLayerItem):
         return self._item
 
 
+class BasemapItem(QgsLayerItem):
+    """A portal `basemap` item. Drag adds an XYZ raster layer using
+    the tile URL stored on item.data.
+
+    Basemap data envelope shape (from packages/shared-types):
+      { "kind": "tile-url", "tileUrl": "https://.../{z}/{y}/{x}",
+        "attribution": "..." }
+
+    The item-list endpoint returns only ItemSummary (no data), so
+    we fetch the full envelope lazily on construction. With a
+    typical ~10 basemaps per bucket, those fetches happen once on
+    expand and the data is cached for the life of the tree node.
+    """
+
+    def __init__(
+        self,
+        parent: QgsDataItem,
+        profile: ConnectionProfile,
+        item: ItemSummary,
+    ) -> None:
+        full = get_item_sync(profile, item.id) or {}
+        data = full.get("data") if isinstance(full, dict) else None
+        tile_url = ""
+        if isinstance(data, dict):
+            tile_url = str(data.get("tileUrl") or "")
+        uri = f"type=xyz&url={tile_url}" if tile_url else ""
+        super().__init__(
+            parent,
+            item.title,
+            f"gratisgis-basemap:/{profile.name}/{item.id}",
+            uri,
+            QgsLayerItem.Raster,
+            "wms",
+        )
+        self._item = item
+
+    @property
+    def item(self) -> ItemSummary:
+        return self._item
+
+    def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
+        u = QgsMimeDataUtils.Uri()
+        u.layerType = "raster"
+        u.providerKey = "wms"
+        u.name = self._item.title
+        u.uri = self.path()
+        return [u]
+
+
+class ServiceItem(QgsLayerItem):
+    """A portal `service` (Connected Service) item. Today we
+    surface ArcGIS REST MapServer / FeatureServer endpoints; WMS /
+    WFS variants will join when the dispatch grows.
+
+    Service data envelope shape: `{ "url": "https://.../MapServer",
+    "layers": [{ "name": "0", ... }] }`.
+
+    The default add-to-canvas drops the whole MapServer as a group;
+    individual sublayers (data.layers[]) become a context-menu
+    follow-up once we have multi-leaf support in the tree.
+    """
+
+    def __init__(
+        self,
+        parent: QgsDataItem,
+        profile: ConnectionProfile,
+        item: ItemSummary,
+    ) -> None:
+        full = get_item_sync(profile, item.id) or {}
+        data = full.get("data") if isinstance(full, dict) else None
+        url = ""
+        provider = "arcgismapserver"
+        if isinstance(data, dict):
+            url = str(data.get("url") or "")
+            # FeatureServer vs MapServer URL suffix tells us which
+            # QGIS provider to use; MapServer is the default since
+            # most ArcGIS REST services point at one.
+            if "/FeatureServer" in url:
+                provider = "arcgisfeatureserver"
+        uri = f"url='{url}' crs='EPSG:3857'" if url else ""
+        super().__init__(
+            parent,
+            item.title,
+            f"gratisgis-service:/{profile.name}/{item.id}",
+            uri,
+            QgsLayerItem.Raster if provider == "arcgismapserver" else QgsLayerItem.Vector,
+            provider,
+        )
+        self._item = item
+        self._url = url
+        self._provider = provider
+
+    @property
+    def item(self) -> ItemSummary:
+        return self._item
+
+    def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
+        u = QgsMimeDataUtils.Uri()
+        u.layerType = (
+            "raster" if self._provider == "arcgismapserver" else "vector"
+        )
+        u.providerKey = self._provider
+        u.name = self._item.title
+        u.uri = self.path()
+        return [u]
+
+
 class GenericItem(QgsDataItem):
     """Catch-all leaf for item types we don't yet expose as
     QGIS-consumable layers (form, dashboard, web_app, ...). Renders
@@ -496,6 +603,16 @@ def _make_item(
         return DataLayerItem(parent, profile, item)
     if t == "tile_layer":
         return TileLayerItem(parent, profile, item)
+    if t == "basemap":
+        return BasemapItem(parent, profile, item)
+    # Connected services: today every "service" item on prod is an
+    # ArcGIS REST MapServer; the dedicated *_service legacy types
+    # also flow through the same handler since they all carry a
+    # `url` data field. WFS / WMS specialisation can split out once
+    # the dispatch grows; for now ServiceItem auto-detects
+    # MapServer vs FeatureServer via the URL suffix.
+    if t in ("service", "arcgis_service", "wms_service", "wfs_service"):
+        return ServiceItem(parent, profile, item)
     # Generic display for every other type the portal returns. The
     # Browser tree shows them with a default icon; double-click goes
     # to the item-properties dialog instead of an add-to-canvas
