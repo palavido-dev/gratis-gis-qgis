@@ -73,6 +73,13 @@ class GratisGISPlugin(QObject):
         self._iface.addPluginToMenu(self.PLUGIN_NAME, publish_layer_action)
         self._actions.append(publish_layer_action)
 
+        push_edits_action = QAction(
+            icon, "Push edits to GratisGIS...", self._iface.mainWindow()
+        )
+        push_edits_action.triggered.connect(self._on_push_edits)
+        self._iface.addPluginToMenu(self.PLUGIN_NAME, push_edits_action)
+        self._actions.append(push_edits_action)
+
         publish_action = QAction(
             icon, "Publish current project as GratisGIS map...", self._iface.mainWindow()
         )
@@ -150,6 +157,13 @@ class GratisGISPlugin(QObject):
         from .ui.publish_vector_dialog import PublishVectorDialog
 
         dlg = PublishVectorDialog(self._iface, self._iface.mainWindow())
+        dlg.exec_()
+
+    def _on_push_edits(self) -> None:
+        """Open the Push-edits dialog (Phase 4)."""
+        from .ui.push_edits_dialog import PushEditsDialog
+
+        dlg = PushEditsDialog(self._iface, self._iface.mainWindow())
         dlg.exec_()
 
 
