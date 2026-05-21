@@ -1,7 +1,7 @@
 [general]
 name=GratisGIS
 qgisMinimumVersion=3.34
-qgisMaximumVersion=3.99
+qgisMaximumVersion=4.99
 description=Browse, edit, and publish GratisGIS portal content from QGIS.
 about=A native QGIS integration for GratisGIS, the open source self-hosted alternative to ArcGIS Online. Browse portal items from the QGIS Browser panel, search the portal, drag data layers and maps to the canvas, publish vector layers as portal data_layer items, publish PMTiles / GeoTIFF / MBTiles as tile_layer items, push QGIS edits back to portal-backed layers, clone layers for offline use, and publish the current QGIS project as a portal map. Auth is OAuth + PKCE against the portal's Keycloak realm.
 version=0.1.0
