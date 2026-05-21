@@ -1,0 +1,22 @@
+fix(browser): viewport-bounded OAPIF rendering + sublayer expansion for services
+
+Two follow-ups from the v0.1.0 testing pass:
+
+1. The OAPIF source URI now sets ``restrictToRequestBBOX='1'``
+   and ``pageSize='1000'``. Without the bbox flag, QGIS pulled
+   features in collection order with no spatial filter, so a
+   1.4M-row layer (WV Parcels) yielded a 16 MB GeoJSON of
+   arbitrary rows and zoom didn't refetch. With the flag,
+   each render hits the engine's bbox-optimised path (sub-3s
+   for a county-scale viewport) and zoom updates the canvas.
+
+2. Connected services (ArcGIS REST MapServer / FeatureServer)
+   are now collection nodes, not leaves. The portal stores the
+   service ``data`` envelope with a ``layers[]`` list -- each
+   sublayer gets its own draggable leaf pointed at
+   ``<baseUrl>/<layerId>`` so the user can add specific
+   sublayers (counties, hydrography, roads, ...) instead of
+   the whole service. arcgisfeatureserver provider for
+   FeatureServer endpoints, arcgismapserver for MapServer.
+   Services without sublayer metadata fall back to one leaf
+   for the whole endpoint.

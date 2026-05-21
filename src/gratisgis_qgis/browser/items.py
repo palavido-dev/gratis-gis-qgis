@@ -598,17 +598,28 @@ class BasemapItem(QgsLayerItem):
         return [u]
 
 
-class ServiceItem(QgsLayerItem):
-    """A portal `service` (Connected Service) item. Today we
-    surface ArcGIS REST MapServer / FeatureServer endpoints; WMS /
-    WFS variants will join when the dispatch grows.
+class ServiceItem(QgsDataCollectionItem):
+    """A portal ``service`` (Connected Service) item, rendered as a
+    collection that expands into one child per sublayer.
 
-    Service data envelope shape: `{ "url": "https://.../MapServer",
-    "layers": [{ "name": "0", ... }] }`.
+    Connected services wrap an ArcGIS REST MapServer or
+    FeatureServer endpoint. A MapServer commonly hosts 5-50
+    individually addressable sublayers (counties, hydrography,
+    roads, ...) and the user wants to add specific layers rather
+    than drop the whole service onto the canvas as one opaque
+    image.
 
-    The default add-to-canvas drops the whole MapServer as a group;
-    individual sublayers (data.layers[]) become a context-menu
-    follow-up once we have multi-leaf support in the tree.
+    Service ``data`` envelope shape:
+
+        {
+          "url": "https://server/.../MapServer",
+          "layers": [{ "id": "0", "name": "Counties", ... }, ...]
+        }
+
+    Each child here uses arcgisfeatureserver if the service is a
+    FeatureServer (one layer per featureserver layer id) or
+    arcgismapserver pointed at the per-layer URL for a MapServer.
+    Layers with no id fall back to the bare service URL.
     """
 
     def __init__(
@@ -617,32 +628,110 @@ class ServiceItem(QgsLayerItem):
         profile: ConnectionProfile,
         item: ItemSummary,
     ) -> None:
-        full = get_item_sync(profile, item.id) or {}
-        data = full.get("data") if isinstance(full, dict) else None
-        url = ""
-        provider = "arcgismapserver"
-        if isinstance(data, dict):
-            url = str(data.get("url") or "")
-            # FeatureServer vs MapServer URL suffix tells us which
-            # QGIS provider to use; MapServer is the default since
-            # most ArcGIS REST services point at one.
-            if "/FeatureServer" in url:
-                provider = "arcgisfeatureserver"
-        # QGIS's arcgismapserver / arcgisfeatureserver providers use
-        # the same `key=value&key=value` URI shape as the WMS XYZ
-        # path. Quoted-pair shapes (`url='...' crs='...'`) work in
-        # the Add ArcGIS dialog but not in a programmatic URI.
-        uri = f"url={url}&crs=EPSG:3857" if url else ""
         super().__init__(
             parent,
             item.title,
             f"gratisgis-service:/{profile.name}/{item.id}",
+        )
+        self._profile = profile
+        self._item = item
+        self.setCapabilitiesV2(_BROWSER_CAP_FERTILE)
+
+    @property
+    def item(self) -> ItemSummary:
+        return self._item
+
+    def createChildren(self) -> list[QgsDataItem]:
+        full = get_item_sync(self._profile, self._item.id) or {}
+        data = full.get("data") if isinstance(full, dict) else None
+        base_url = ""
+        layers: list[dict[str, object]] = []
+        if isinstance(data, dict):
+            base_url = str(data.get("url") or "")
+            raw_layers = data.get("layers")
+            if isinstance(raw_layers, list):
+                layers = [lyr for lyr in raw_layers if isinstance(lyr, dict)]
+        if not base_url:
+            return [
+                _MessageItem(
+                    self,
+                    "No service URL configured. Open the item in the "
+                    "portal to set the endpoint.",
+                )
+            ]
+        is_feature_server = "/FeatureServer" in base_url
+        if not layers:
+            # No sublayer metadata cached on the item -- fall back
+            # to one leaf for the whole service. This is the safe
+            # behaviour for services we haven't probed yet.
+            return [
+                _ServiceSublayerItem(
+                    self,
+                    self._profile,
+                    self._item,
+                    label=self._item.title,
+                    layer_url=base_url,
+                    is_feature_server=is_feature_server,
+                )
+            ]
+        children: list[QgsDataItem] = []
+        for lyr in layers:
+            layer_id = lyr.get("id")
+            name = str(lyr.get("name") or lyr.get("label") or layer_id or "")
+            if layer_id is None or name == "":
+                continue
+            # ArcGIS REST layer URLs are <baseUrl>/<layerId>, both
+            # for MapServer (raster sublayer) and FeatureServer
+            # (vector sublayer). The provider distinguishes via the
+            # `/FeatureServer` vs `/MapServer` substring in the URL.
+            layer_url = f"{base_url.rstrip('/')}/{layer_id}"
+            children.append(
+                _ServiceSublayerItem(
+                    self,
+                    self._profile,
+                    self._item,
+                    label=name,
+                    layer_url=layer_url,
+                    is_feature_server=is_feature_server,
+                )
+            )
+        if not children:
+            return [_MessageItem(self, "No sublayers found on this service.")]
+        return children
+
+
+class _ServiceSublayerItem(QgsLayerItem):
+    """One ArcGIS REST sublayer leaf under a ServiceItem.
+
+    Each leaf points at ``<baseUrl>/<layerId>`` so dragging it onto
+    the canvas adds just that sublayer, not the whole service.
+    arcgisfeatureserver -> vector, arcgismapserver -> raster.
+    """
+
+    def __init__(
+        self,
+        parent: QgsDataItem,
+        profile: ConnectionProfile,
+        item: ItemSummary,
+        *,
+        label: str,
+        layer_url: str,
+        is_feature_server: bool,
+    ) -> None:
+        provider = "arcgisfeatureserver" if is_feature_server else "arcgismapserver"
+        uri = f"url={layer_url}&crs=EPSG:3857"
+        super().__init__(
+            parent,
+            label,
+            f"gratisgis-service-sublayer:/{profile.name}/{item.id}/{layer_url}",
             uri,
-            QgsLayerItem.Raster if provider == "arcgismapserver" else QgsLayerItem.Vector,
+            QgsLayerItem.Vector if is_feature_server else QgsLayerItem.Raster,
             provider,
         )
+        self._profile = profile
         self._item = item
-        self._url = url
+        self._label = label
+        self._layer_url = layer_url
         self._provider = provider
 
     @property
@@ -652,13 +741,10 @@ class ServiceItem(QgsLayerItem):
     def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
         u = QgsMimeDataUtils.Uri()
         u.layerType = (
-            "raster" if self._provider == "arcgismapserver" else "vector"
+            "vector" if self._provider == "arcgisfeatureserver" else "raster"
         )
         u.providerKey = self._provider
-        u.name = self._item.title
-        # Use self.uri() (the real provider URI), not self.path()
-        # (tree-node id). See BasemapItem.mimeUris for the same
-        # gotcha.
+        u.name = self._label
         u.uri = self.uri()
         return [u]
 

@@ -32,8 +32,28 @@ def oapif_uri(portal_url: str, item_id: str) -> str:
     passes the already-formed collection id (the items endpoint
     returns it directly), so this builder doesn't have to know
     about the multi-layer split.
+
+    ``restrictToRequestBBOX=1`` tells QGIS's OAPIF provider to
+    issue ``bbox=`` requests scoped to the current map viewport
+    every time it renders. Without it, the provider pulls
+    features in collection order with no spatial filter, which
+    on a 1.4M-row layer (WV Parcels) means QGIS fetches a 16 MB
+    GeoJSON of arbitrary features and then ignores the user's
+    pan/zoom. With the flag set, each render hits the engine's
+    bbox-optimised path (sub-3s for a county-scale viewport)
+    and zooming refreshes the canvas correctly.
+
+    ``pageSize=1000`` keeps each request's payload bounded; the
+    provider follows ``next`` links if it needs more within a
+    single viewport. Empirically 1000 is a good balance between
+    request-rate and per-request latency for polygon layers.
     """
-    return f"url='{public_ogc_root(portal_url)}' typename='{item_id}'"
+    return (
+        f"url='{public_ogc_root(portal_url)}' "
+        f"typename='{item_id}' "
+        f"restrictToRequestBBOX='1' "
+        f"pageSize='1000'"
+    )
 
 
 def vector_tile_uri(portal_url: str, item_id: str) -> str:

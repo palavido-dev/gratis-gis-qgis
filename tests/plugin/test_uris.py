@@ -32,10 +32,14 @@ class TestOapifUri:
         # QGIS's OAPIF provider parses `url='...' typename='...'`
         # The single quotes are part of the contract; QGIS uses
         # them to disambiguate spaces in URLs from key boundaries.
+        # restrictToRequestBBOX + pageSize are appended so QGIS
+        # uses viewport-bounded rendering on huge collections;
+        # see uris.oapif_uri docstring.
         uri = oapif_uri("https://portal.example", "abc-123")
-        assert uri == (
-            "url='https://portal.example/api/public/ogc' typename='abc-123'"
-        )
+        assert "url='https://portal.example/api/public/ogc'" in uri
+        assert "typename='abc-123'" in uri
+        assert "restrictToRequestBBOX='1'" in uri
+        assert "pageSize='1000'" in uri
 
     def test_passes_collection_id_through_unchanged(self) -> None:
         # Multi-layer collection ids use the `<itemId>__<layerKey>`
