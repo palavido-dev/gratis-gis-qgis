@@ -27,6 +27,8 @@ happens at the items level on the portal side).
 """
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from qgis.core import (  # type: ignore[import-not-found]
     QgsDataCollectionItem,
     QgsDataItem,
@@ -350,9 +352,32 @@ class _TypeGroupItem(QgsDataCollectionItem):
         return children
 
 
-class DataLayerItem(QgsLayerItem):
-    """A v3 data_layer item. Drag adds an OGC API Features layer
-    pointing at the portal's public collection endpoint.
+class DataLayerItem(QgsDataCollectionItem):
+    """A v3 data_layer item, rendered as a collection node that
+    expands into one child per sublayer.
+
+    Why a collection and not a leaf:
+
+      A v3 ``data_layer`` can carry multiple layers (a polygon
+      layer + a related table sublayer, for example: the WV
+      Parcels item has ``MasterSurfWV_2025`` + ``ParcelSummary``).
+      The portal's OGC controller already publishes one collection
+      per layer with id ``<itemId>__<layerKey>``, plus a bare-UUID
+      alias for the first layer for v1 back-compat. Surfacing the
+      sublayers in the Browser tree means the user sees what's
+      actually there instead of silently getting the first layer
+      whenever they drag the item.
+
+      Single-layer items still render as a collection with one
+      child rather than a special-case leaf: the small extra-click
+      cost is worth the consistent UX. The child label uses the
+      layer's label (or layer id) so single-layer items still read
+      naturally.
+
+    Sublayer discovery is lazy. ``ItemSummary`` (what the items
+    list endpoint returns) doesn't include the ``data`` envelope,
+    so we fetch the full item on first expand. Subsequent
+    expansions reuse QGIS's cached child list.
     """
 
     def __init__(
@@ -361,29 +386,120 @@ class DataLayerItem(QgsLayerItem):
         profile: ConnectionProfile,
         item: ItemSummary,
     ) -> None:
-        # OAPIF URI shape lives in browser/uris.py so the same
-        # builder serves the Search dock's add-to-canvas action.
-        uri = oapif_uri(profile.portal_url, item.id)
         super().__init__(
             parent,
             item.title,
             f"gratisgis-data-layer:/{profile.name}/{item.id}",
-            uri,
-            QgsLayerItem.Vector,
-            "OAPIF",
         )
+        self._profile = profile
         self._item = item
+        self.setCapabilitiesV2(_BROWSER_CAP_FERTILE)
 
     @property
     def item(self) -> ItemSummary:
         return self._item
+
+    def createChildren(self) -> list[QgsDataItem]:
+        full = get_item_sync(self._profile, self._item.id) or {}
+        layers = _extract_v3_layers(full)
+        if not layers:
+            # No layers found in the data envelope. Fall back to
+            # the bare-UUID alias the portal exposes for v1 back-
+            # compat. One leaf, default label is the item title.
+            return [
+                _DataLayerSublayerItem(
+                    self,
+                    self._profile,
+                    self._item,
+                    collection_id=self._item.id,
+                    label=self._item.title,
+                )
+            ]
+        children: list[QgsDataItem] = []
+        for lyr in layers:
+            layer_id = str(lyr.get("id") or "")
+            if not layer_id:
+                continue
+            label = str(lyr.get("label") or layer_id)
+            collection_id = f"{self._item.id}__{layer_id}"
+            children.append(
+                _DataLayerSublayerItem(
+                    self,
+                    self._profile,
+                    self._item,
+                    collection_id=collection_id,
+                    label=label,
+                )
+            )
+        return children
+
+
+def _extract_v3_layers(full_item: dict[str, object]) -> list[dict[str, object]]:
+    """Pull the v3 layers array out of a full item's data envelope.
+
+    Mirrors `pickV3Layers` in
+    `apps/portal-api/src/public/ogc/features.controller.ts`: v3
+    items have ``data.version == 3`` and ``data.layers`` is a list
+    of ``{id, label?}``. Anything else returns empty so the caller
+    falls back to the bare-UUID alias.
+    """
+    data = full_item.get("data") if isinstance(full_item, dict) else None
+    if not isinstance(data, dict):
+        return []
+    if data.get("version") != 3:
+        return []
+    layers = data.get("layers")
+    if not isinstance(layers, list):
+        return []
+    out: list[dict[str, object]] = []
+    for lyr in layers:
+        if isinstance(lyr, dict) and isinstance(lyr.get("id"), str):
+            out.append(lyr)
+    return out
+
+
+class _DataLayerSublayerItem(QgsLayerItem):
+    """One sublayer leaf under a DataLayerItem. Drag adds an OGC
+    API Features layer pointing at the per-layer collection id.
+    """
+
+    def __init__(
+        self,
+        parent: QgsDataItem,
+        profile: ConnectionProfile,
+        item: ItemSummary,
+        *,
+        collection_id: str,
+        label: str,
+    ) -> None:
+        uri = oapif_uri(profile.portal_url, collection_id)
+        super().__init__(
+            parent,
+            label,
+            f"gratisgis-data-layer-sublayer:/{profile.name}/{collection_id}",
+            uri,
+            QgsLayerItem.Vector,
+            "OAPIF",
+        )
+        self._profile = profile
+        self._item = item
+        self._collection_id = collection_id
+        self._label = label
+
+    @property
+    def item(self) -> ItemSummary:
+        return self._item
+
+    @property
+    def collection_id(self) -> str:
+        return self._collection_id
 
     def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
         u = QgsMimeDataUtils.Uri()
         u.layerType = "vector"
         u.providerKey = "OAPIF"
         u.uri = self.uri()
-        u.name = self._item.title
+        u.name = self._label
         u.supportedCrs = ["EPSG:4326"]
         u.supportedFormats = ["application/geo+json"]
         return [u]
@@ -445,7 +561,16 @@ class BasemapItem(QgsLayerItem):
         tile_url = ""
         if isinstance(data, dict):
             tile_url = str(data.get("tileUrl") or "")
-        uri = f"type=xyz&url={tile_url}" if tile_url else ""
+        # QGIS's wms provider in XYZ mode needs the tile URL
+        # URL-encoded inside the data-source URI. Without encoding,
+        # the literal `{z}/{y}/{x}` braces and the `://` confuse the
+        # URI key=value parser and QGIS rejects the source with
+        # "not a valid or recognized data source".
+        uri = (
+            f"type=xyz&url={quote(tile_url, safe='')}&zmin=0&zmax=22"
+            if tile_url
+            else ""
+        )
         super().__init__(
             parent,
             item.title,
@@ -465,7 +590,11 @@ class BasemapItem(QgsLayerItem):
         u.layerType = "raster"
         u.providerKey = "wms"
         u.name = self._item.title
-        u.uri = self.path()
+        # Must be self.uri() (the real XYZ data-source URI passed to
+        # the QgsLayerItem ctor), NOT self.path() (the Browser-tree
+        # node identifier). Sending path() gave the user "gratisgis-
+        # basemap:/... is not a valid or recognized data source".
+        u.uri = self.uri()
         return [u]
 
 
@@ -499,7 +628,11 @@ class ServiceItem(QgsLayerItem):
             # most ArcGIS REST services point at one.
             if "/FeatureServer" in url:
                 provider = "arcgisfeatureserver"
-        uri = f"url='{url}' crs='EPSG:3857'" if url else ""
+        # QGIS's arcgismapserver / arcgisfeatureserver providers use
+        # the same `key=value&key=value` URI shape as the WMS XYZ
+        # path. Quoted-pair shapes (`url='...' crs='...'`) work in
+        # the Add ArcGIS dialog but not in a programmatic URI.
+        uri = f"url={url}&crs=EPSG:3857" if url else ""
         super().__init__(
             parent,
             item.title,
@@ -523,7 +656,10 @@ class ServiceItem(QgsLayerItem):
         )
         u.providerKey = self._provider
         u.name = self._item.title
-        u.uri = self.path()
+        # Use self.uri() (the real provider URI), not self.path()
+        # (tree-node id). See BasemapItem.mimeUris for the same
+        # gotcha.
+        u.uri = self.uri()
         return [u]
 
 
