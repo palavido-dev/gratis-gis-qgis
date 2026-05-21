@@ -294,15 +294,27 @@ def _make_item(
     profile: ConnectionProfile,
     item: ItemSummary,
 ) -> QgsDataItem | None:
-    """Pick the right leaf class for an item's type."""
-    if item.type == "data_layer":
+    """Pick the right leaf class for an item's type.
+
+    Accepts both the kebab-case spellings the portal currently
+    emits (``data-layer``, ``tile-layer``, ``web-app``) and the
+    historical snake_case spellings the older schema used
+    (``data_layer``, ``tile_layer``, ``web_app``). Anything we
+    don't have a dedicated class for renders through the generic
+    leaf so the user can at least see the item exists.
+    """
+    # Normalize hyphens to underscores so a single comparison
+    # handles both shapes.
+    t = (item.type or "").replace("-", "_")
+    if t == "data_layer":
         return DataLayerItem(parent, profile, item)
-    if item.type == "tile_layer":
+    if t == "tile_layer":
         return TileLayerItem(parent, profile, item)
-    if item.type in ("map", "web_app", "dashboard", "form", "report_template"):
-        return GenericItem(parent, profile, item)
-    # Skip non-portal items entirely.
-    return None
+    # Generic display for every other type the portal returns. The
+    # Browser tree shows them with a default icon; double-click goes
+    # to the item-properties dialog instead of an add-to-canvas
+    # action that wouldn't apply.
+    return GenericItem(parent, profile, item)
 
 
 def _tr(text: str) -> str:

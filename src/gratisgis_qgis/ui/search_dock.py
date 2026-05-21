@@ -214,9 +214,12 @@ class GratisGISSearchDock(QDockWidget):
         if profile is None:
             return
 
-        if summary.type == "data_layer":
+        # Accept both kebab and snake spellings the portal has
+        # used over time.
+        normalized_type = (summary.type or "").replace("-", "_")
+        if normalized_type == "data_layer":
             self._add_data_layer(profile.portal_url, summary)
-        elif summary.type == "tile_layer":
+        elif normalized_type == "tile_layer":
             self._add_tile_layer(profile.portal_url, summary)
         else:
             QMessageBox.information(
