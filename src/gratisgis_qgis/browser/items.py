@@ -46,6 +46,31 @@ from .uris import oapif_uri, vector_tile_uri
 _log = get_logger(__name__)
 
 
+# -----------------------------------------------------------
+# QGIS 3 / QGIS 4 compat for Browser-tree enum constants.
+#
+# QGIS 3 exposed Fertile / Fast / NoType / Populated as class-
+# level attributes on QgsDataItem. QGIS 4 moved them to scoped
+# `Qgis.BrowserItemCapability`, `Qgis.BrowserItemType`, and
+# `Qgis.BrowserItemState` enums respectively, with the old
+# QgsDataItem shortcuts removed under strict PyQt6. Resolve
+# each once at import so the per-call sites stay readable.
+# -----------------------------------------------------------
+try:
+    from qgis.core import Qgis  # type: ignore[import-not-found]
+
+    _BROWSER_TYPE_NO_TYPE = Qgis.BrowserItemType.NoType
+    _BROWSER_CAP_FERTILE = Qgis.BrowserItemCapability.Fertile
+    _BROWSER_CAP_FAST = Qgis.BrowserItemCapability.Fast
+    _POPULATED_STATE = Qgis.BrowserItemState.Populated
+except (ImportError, AttributeError):
+    # QGIS 3 fallback: the constants still live on QgsDataItem.
+    _BROWSER_TYPE_NO_TYPE = QgsDataItem.NoType  # type: ignore[attr-defined]
+    _BROWSER_CAP_FERTILE = QgsDataItem.Fertile  # type: ignore[attr-defined]
+    _BROWSER_CAP_FAST = QgsDataItem.Fast  # type: ignore[attr-defined]
+    _POPULATED_STATE = QgsDataItem.Populated  # type: ignore[attr-defined]
+
+
 # Display labels for the bucket discriminators. The bucket enum
 # itself lives in `buckets.py` so the filtering logic can be
 # tested without QGIS in the import path; the user-facing labels
@@ -64,7 +89,7 @@ class RootItem(QgsDataCollectionItem):
     def __init__(self, parent: QgsDataItem | None, store: ConnectionStore) -> None:
         super().__init__(parent, "GratisGIS", "gratisgis:/")
         self._store = store
-        self.setCapabilitiesV2(QgsDataItem.Fertile | QgsDataItem.Fast)
+        self.setCapabilitiesV2(_BROWSER_CAP_FERTILE | _BROWSER_CAP_FAST)
 
     def createChildren(self) -> list[QgsDataItem]:
         children: list[QgsDataItem] = []
@@ -94,7 +119,7 @@ class ConnectionItem(QgsDataCollectionItem):
             f"gratisgis:/{profile.name}",
         )
         self._profile = profile
-        self.setCapabilitiesV2(QgsDataItem.Fertile | QgsDataItem.Fast)
+        self.setCapabilitiesV2(_BROWSER_CAP_FERTILE | _BROWSER_CAP_FAST)
 
     @property
     def profile(self) -> ConnectionProfile:
@@ -139,7 +164,7 @@ class BucketItem(QgsDataCollectionItem):
         )
         self._profile = profile
         self._kind = kind
-        self.setCapabilitiesV2(QgsDataItem.Fertile)
+        self.setCapabilitiesV2(_BROWSER_CAP_FERTILE)
 
     def createChildren(self) -> list[QgsDataItem]:
         # Bucket discriminator -> list-call shape. The portal's
@@ -252,14 +277,19 @@ class GenericItem(QgsDataItem):
         profile: ConnectionProfile,
         item: ItemSummary,
     ) -> None:
+        # QGIS 4 tightened argument typing: the first arg is now
+        # the *type* (BrowserItemType, e.g. NoType / Collection /
+        # Layer), not the capabilities flag set. QGIS 3 accepted
+        # an int there and our old code passed NoCapabilities,
+        # which silently worked but became a TypeError on QGIS 4.
         super().__init__(
-            QgsDataItem.NoCapabilities,
+            _BROWSER_TYPE_NO_TYPE,
             parent,
             f"{item.title}  ({item.type})",
             f"gratisgis-item:/{profile.name}/{item.id}",
         )
         self._item = item
-        self.setState(QgsDataItem.Populated)
+        self.setState(_POPULATED_STATE)
 
 
 class _MessageItem(QgsDataItem):
@@ -268,8 +298,8 @@ class _MessageItem(QgsDataItem):
     """
 
     def __init__(self, parent: QgsDataItem, message: str) -> None:
-        super().__init__(QgsDataItem.NoCapabilities, parent, message, "")
-        self.setState(QgsDataItem.Populated)
+        super().__init__(_BROWSER_TYPE_NO_TYPE, parent, message, "")
+        self.setState(_POPULATED_STATE)
 
 
 # -----------------------------------------------------------

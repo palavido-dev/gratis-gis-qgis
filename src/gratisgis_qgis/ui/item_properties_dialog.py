@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from qgis.PyQt.QtCore import Qt  # type: ignore[import-not-found]
 from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QDialog,
     QFormLayout,
@@ -68,9 +69,12 @@ class ItemPropertiesDialog(QDialog):
         self._updated = QLabel("")
         self._owner = QLabel("")
         self._id_label = QLabel(item_id)
+        # Qt 6 / PyQt6 strict mode removed the unscoped
+        # QLabel.TextSelectableByMouse shortcut; use the canonical
+        # Qt.TextInteractionFlag scoped form (works on Qt 5 too).
         self._id_label.setTextInteractionFlags(
             self._id_label.textInteractionFlags()
-            | self._id_label.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
         self._form.addRow("Description:", self._description)
