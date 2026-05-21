@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Build a QGIS-installable zip of the gratisgis_qgis plugin.
+
+The QGIS Plugin Repository expects a flat zip where the top-level
+directory is the plugin folder and that folder contains
+metadata.txt + __init__.py at the root. Our repo layout is
+``src/gratisgis_qgis/...`` for clean Python packaging, plus the
+``gratisgis_client`` library it depends on. This script:
+
+  1. Stages a fresh build/ directory.
+  2. Copies ``src/gratisgis_qgis`` to ``build/gratisgis_qgis``.
+  3. Vendors the ``gratisgis_client`` library into
+     ``build/gratisgis_qgis/_vendor/gratisgis_client`` so the
+     plugin works on a stock QGIS install with no extra pip steps.
+  4. Patches the plugin's imports of ``gratisgis_client`` to use
+     the vendored path under ``_vendor``.
+  5. Drops test code, ``__pycache__``, and any dev-only artifacts.
+  6. Zips the result as ``dist/gratisgis_qgis-<version>.zip``.
+
+Run from the repo root:
+
+    python scripts/make_zip.py
+
+The resulting zip is what you upload to plugins.qgis.org or
+hand to a user for manual install via Plugins -> Install from ZIP.
+"""
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import sys
+import zipfile
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC = REPO_ROOT / "src"
+BUILD_DIR = REPO_ROOT / "build"
+DIST_DIR = REPO_ROOT / "dist"
+
+# Directory names we never want inside the plugin zip.
+_PRUNE_DIRS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "tests",
+    ".venv",
+}
+
+# File patterns to drop from the staged plugin directory.
+_PRUNE_FILE_SUFFIXES = (".pyc", ".pyo", ".bak", ".swp", ".swo")
+
+
+def main() -> int:
+    # Sanity: the script assumes a particular layout. Spell it out
+    # so a future repo reorg gets a loud failure here, not a
+    # silently-broken zip.
+    if not (SRC / "gratisgis_qgis" / "metadata.txt").is_file():
+        print(
+            "ERROR: expected src/gratisgis_qgis/metadata.txt; run from "
+            "the repo root.",
+            file=sys.stderr,
+        )
+        return 2
+
+    version = _read_plugin_version()
+    print(f"Building gratisgis_qgis plugin v{version}")
+
+    # 1) Fresh build directory.
+    if BUILD_DIR.exists():
+        shutil.rmtree(BUILD_DIR)
+    BUILD_DIR.mkdir(parents=True)
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
+
+    staged_plugin = BUILD_DIR / "gratisgis_qgis"
+    shutil.copytree(SRC / "gratisgis_qgis", staged_plugin)
+
+    # 2) Vendor the client library.
+    vendor_root = staged_plugin / "_vendor"
+    vendor_root.mkdir(exist_ok=True)
+    (vendor_root / "__init__.py").write_text(
+        "# SPDX-License-Identifier: AGPL-3.0-or-later\n"
+        "# Vendored third-party / sibling packages for the plugin.\n"
+        "# Do not import directly; use the plugin's own re-export.\n"
+    )
+    shutil.copytree(
+        SRC / "gratisgis_client",
+        vendor_root / "gratisgis_client",
+    )
+
+    # 3) Rewrite imports inside the plugin so they reach the
+    # vendored library. We rewrite top-level absolute imports of
+    # ``gratisgis_client`` to ``gratisgis_qgis._vendor.gratisgis_client``.
+    # Relative imports (`from .x`) and intra-package imports of
+    # the client itself ("from gratisgis_client.foo") survive
+    # because the rewrite leaves them in place inside the vendored
+    # tree -- everything stays consistent.
+    _rewrite_client_imports(staged_plugin)
+
+    # 4) Prune caches, tests, dev-only files.
+    _prune(staged_plugin)
+    _prune(vendor_root)
+
+    # 5) Zip.
+    zip_path = DIST_DIR / f"gratisgis_qgis-{version}.zip"
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(staged_plugin):
+            for name in files:
+                full = Path(root) / name
+                arcname = full.relative_to(BUILD_DIR)
+                zf.write(full, arcname.as_posix())
+
+    print(f"Built: {zip_path}")
+    print(f"Size:  {zip_path.stat().st_size / 1024:.1f} KB")
+    return 0
+
+
+# -----------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------
+
+
+_VERSION_RE = re.compile(r"^version\s*=\s*([^\s#]+)", re.MULTILINE)
+
+
+def _read_plugin_version() -> str:
+    text = (SRC / "gratisgis_qgis" / "metadata.txt").read_text(encoding="utf-8")
+    match = _VERSION_RE.search(text)
+    if not match:
+        raise RuntimeError("metadata.txt is missing a `version=` line")
+    return match.group(1).strip()
+
+
+# Patterns we rewrite. ``gratisgis_qgis._vendor.gratisgis_client``
+# is the target path the user's QGIS will see.
+_REWRITE_TARGETS = (
+    ("from gratisgis_client", "from gratisgis_qgis._vendor.gratisgis_client"),
+    ("import gratisgis_client", "import gratisgis_qgis._vendor.gratisgis_client as gratisgis_client"),
+)
+
+
+def _rewrite_client_imports(root: Path) -> None:
+    """Patch absolute gratisgis_client imports to the vendored path.
+
+    Only rewrites the plugin's own files; leaves the vendored
+    library alone so its internal cross-imports keep resolving
+    against the same package name.
+    """
+    vendor_marker = root / "_vendor"
+    for path in root.rglob("*.py"):
+        # Skip files inside the vendor tree; their internal imports
+        # of `gratisgis_client.*` resolve to the vendored copy
+        # because Python sees the package by its leaf name in
+        # sys.modules. No rewrite needed.
+        if vendor_marker in path.parents or path == vendor_marker:
+            continue
+        text = path.read_text(encoding="utf-8")
+        original = text
+        for src_str, dst_str in _REWRITE_TARGETS:
+            text = text.replace(src_str, dst_str)
+        if text != original:
+            path.write_text(text, encoding="utf-8")
+
+
+def _prune(root: Path) -> None:
+    """Walk the staged tree and remove caches + dev junk."""
+    # Walk bottom-up so we can rmtree directories without
+    # invalidating the iterator.
+    for current_root, dirs, files in os.walk(root, topdown=False):
+        for d in list(dirs):
+            if d in _PRUNE_DIRS:
+                shutil.rmtree(Path(current_root) / d, ignore_errors=True)
+        for f in files:
+            if f.endswith(_PRUNE_FILE_SUFFIXES):
+                try:
+                    (Path(current_root) / f).unlink()
+                except OSError:
+                    pass
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
