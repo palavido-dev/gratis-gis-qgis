@@ -65,13 +65,20 @@ def vector_tile_uri(portal_url: str, item_id: str) -> str:
     Our public Tiles endpoint serves `{tileMatrix}/{tileRow}/
     {tileCol}` which maps to z/y/x; matching the QGIS template
     placeholders saves a per-fetch rewrite step.
+
+    ``zmin`` / ``zmax`` constrain the zoom range QGIS will fetch.
+    Without them QGIS defaults to 0-14 but its layer-extent
+    calculation can issue probe requests at every zoom on layer
+    add, causing a multi-second stall on huge layers. Bounding
+    the range lets QGIS skip wasteful probes and only fetch
+    tiles within the range our engine actually generates.
     """
     base = public_ogc_root(portal_url)
     template = (
         f"{base}/collections/{item_id}"
         "/tiles/WebMercatorQuad/{z}/{y}/{x}"
     )
-    return f"type=xyz&url={template}"
+    return f"type=xyz&url={template}&zmin=0&zmax=18"
 
 
 # -----------------------------------------------------------

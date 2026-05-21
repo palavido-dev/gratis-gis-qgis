@@ -53,12 +53,16 @@ class TestVectorTileUri:
     def test_emits_xyz_template_with_qgis_placeholders(self) -> None:
         # QGIS's vector-tile provider reads {z}/{y}/{x} from the
         # template. Our portal serves {tileMatrix}/{tileRow}/
-        # {tileCol} which maps to z/y/x in the same order.
+        # {tileCol} which maps to z/y/x in the same order. The
+        # zmin/zmax keys bound the zoom range so QGIS doesn't
+        # probe every level on layer add.
         uri = vector_tile_uri("https://portal.example", "abc-123")
-        assert uri == (
+        assert (
             "type=xyz&url=https://portal.example/api/public/ogc"
             "/collections/abc-123/tiles/WebMercatorQuad/{z}/{y}/{x}"
-        )
+        ) in uri
+        assert "zmin=0" in uri
+        assert "zmax=18" in uri
 
     def test_supports_layered_collection_ids(self) -> None:
         uri = vector_tile_uri("https://portal.example", "abc__roads")
@@ -79,7 +83,6 @@ def test_both_builders_use_the_same_root(portal_url: str) -> None:
     # the OGC root stays one source of truth.
     root = public_ogc_root(portal_url)
     assert oapif_uri(portal_url, "abc").startswith(f"url='{root}' ")
-    assert vector_tile_uri(portal_url, "abc").endswith(
-        "/tiles/WebMercatorQuad/{z}/{y}/{x}"
-    )
-    assert root in vector_tile_uri(portal_url, "abc")
+    vt = vector_tile_uri(portal_url, "abc")
+    assert "/tiles/WebMercatorQuad/{z}/{y}/{x}" in vt
+    assert root in vt

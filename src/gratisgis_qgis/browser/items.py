@@ -719,10 +719,18 @@ class ServiceItem(QgsDataCollectionItem):
             ]
         children: list[QgsDataItem] = []
         for lyr in layers:
-            layer_id = lyr.get("id")
-            name = str(lyr.get("name") or lyr.get("label") or layer_id or "")
-            if layer_id is None or name == "":
+            # The portal's connected-service data envelope mirrors
+            # the ArcGIS REST shape: each layer carries `name`
+            # (the layer's id used in REST URLs -- a string number
+            # like "0", "1") and `title` (display name). There is
+            # no separate `id` field on layers in this envelope, so
+            # use `name` as the URL segment and `title` for the
+            # tree label, falling back to `name` if no title.
+            layer_id_raw = lyr.get("name")
+            if layer_id_raw is None or layer_id_raw == "":
                 continue
+            layer_id = str(layer_id_raw)
+            label = str(lyr.get("title") or lyr.get("label") or layer_id)
             # ArcGIS REST layer URLs are <baseUrl>/<layerId>, both
             # for MapServer (raster sublayer) and FeatureServer
             # (vector sublayer). The provider distinguishes via the
@@ -733,7 +741,7 @@ class ServiceItem(QgsDataCollectionItem):
                     self,
                     self._profile,
                     self._item,
-                    label=name,
+                    label=label,
                     layer_url=layer_url,
                     is_feature_server=is_feature_server,
                 )
