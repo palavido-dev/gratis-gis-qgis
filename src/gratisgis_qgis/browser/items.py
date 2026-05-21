@@ -770,7 +770,15 @@ class _ServiceSublayerItem(QgsLayerItem):
         is_feature_server: bool,
     ) -> None:
         provider = "arcgisfeatureserver" if is_feature_server else "arcgismapserver"
-        uri = f"url={layer_url}&crs=EPSG:3857"
+        # arcgismapserver / arcgisfeatureserver providers want the
+        # OAPIF-style ``key='value' key='value'`` shape, not the
+        # XYZ ``key=value&key=value`` shape. Without the single
+        # quotes QGIS pastes the value of the next key onto the
+        # URL ("url=https://.../MapServer/0&crs=EPSG:3857" comes
+        # back from the server as Invalid URL 400). The quotes
+        # are how QGIS knows where one value ends and the next
+        # key begins, matching the OAPIF builder in uris.py.
+        uri = f"url='{layer_url}' crs='EPSG:3857'"
         super().__init__(
             parent,
             label,
