@@ -41,7 +41,7 @@ from gratisgis_client import (
     PortalDiscoveryError,
     discover,
 )
-from gratisgis_client.models.portal_info import PortalInfo
+from gratisgis_client.discovery import DiscoveryResult
 
 from ..auth_bridge import make_token_storage
 from ..log import get_logger
@@ -245,11 +245,13 @@ def _normalize_portal_url(raw: str) -> str | None:
 
 def _discover_or_warn(
     parent: QWidget, portal_url: str, verify_tls: bool
-) -> PortalInfo | None:
+) -> DiscoveryResult | None:
     """Run discovery, surface the user-visible error on failure.
 
-    Returns the parsed ``PortalInfo`` on success, ``None`` after the
-    warning has already been shown.
+    Returns the full DiscoveryResult (info + canonical post-redirect
+    URL) on success, ``None`` after the warning has already been
+    shown. Callers save ``result.portal_url`` so subsequent calls
+    skip the redirect.
     """
     try:
         return asyncio.run(discover(portal_url, verify_tls=verify_tls))
@@ -304,16 +306,20 @@ def _refresh_discovery_and_sign_in(
     QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
     try:
         had_prior_auth = bool(profile.authcfg_id)
-        info = _discover_or_warn(parent, profile.portal_url, profile.verify_tls)
-        if info is None:
+        result = _discover_or_warn(parent, profile.portal_url, profile.verify_tls)
+        if result is None:
             return False
+        # Adopt the canonical post-redirect URL on every re-sign-in
+        # so a profile that was originally saved against the www
+        # alias quietly upgrades to the canonical host.
+        canonical_url = result.portal_url
         authcfg_id = profile.authcfg_id or ConnectionStore.new_authcfg_id()
         refreshed = ConnectionProfile(
             name=profile.name,
-            portal_url=profile.portal_url,
+            portal_url=canonical_url,
             verify_tls=profile.verify_tls,
             authcfg_id=authcfg_id,
-        ).with_discovery(info, now=time.time())
+        ).with_discovery(result.info, now=time.time())
         store.save(refreshed)
         if _run_sign_in(parent, refreshed):
             return True
@@ -398,14 +404,18 @@ class _PortalEditDialog(QDialog):
 
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            info = _discover_or_warn(self, url, verify_tls)
-            if info is None:
+            result = _discover_or_warn(self, url, verify_tls)
+            if result is None:
                 return
+            info = result.info
+            # Use the canonical post-redirect URL so subsequent API
+            # calls don't pay a 301 round-trip per request.
+            canonical_url = result.portal_url
             if self._initial is None:
-                name = self._store.unique_name(info.name or urlparse(url).netloc)
+                name = self._store.unique_name(info.name or urlparse(canonical_url).netloc)
                 profile = ConnectionProfile(
                     name=name,
-                    portal_url=url,
+                    portal_url=canonical_url,
                     verify_tls=verify_tls,
                     authcfg_id=ConnectionStore.new_authcfg_id(),
                 ).with_discovery(info, now=time.time())
@@ -431,7 +441,7 @@ class _PortalEditDialog(QDialog):
             else:
                 refreshed = ConnectionProfile(
                     name=self._initial.name,
-                    portal_url=url,
+                    portal_url=canonical_url,
                     verify_tls=verify_tls,
                     authcfg_id=self._initial.authcfg_id,
                 ).with_discovery(info, now=time.time())

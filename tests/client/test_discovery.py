@@ -31,11 +31,14 @@ async def test_discover_parses_valid_response(httpx_mock: HTTPXMock) -> None:
         url="http://localhost:3000/api/portal-info",
         json=_GOOD_RESPONSE,
     )
-    info = await discover("http://localhost:3000")
-    assert info.name == "GratisGIS Demo"
-    assert info.api.base_url == "http://localhost:3000/api"
-    assert info.auth.type == "oidc"
-    assert info.auth.issuer == "http://localhost:8080/realms/gratis-gis"
+    result = await discover("http://localhost:3000")
+    assert result.info.name == "GratisGIS Demo"
+    assert result.info.api.base_url == "http://localhost:3000/api"
+    assert result.info.auth.type == "oidc"
+    assert result.info.auth.issuer == "http://localhost:8080/realms/gratis-gis"
+    # Canonical URL falls back to the user-supplied base when the
+    # mock response doesn't carry a final URL with the suffix.
+    assert result.portal_url == "http://localhost:3000"
 
 
 @pytest.mark.asyncio
@@ -46,8 +49,8 @@ async def test_discover_strips_trailing_slash(httpx_mock: HTTPXMock) -> None:
     )
     # User typed the URL with a trailing slash; we should still hit
     # the right endpoint (no double-slash, no missed match).
-    info = await discover("http://localhost:3000/")
-    assert info.name == "GratisGIS Demo"
+    result = await discover("http://localhost:3000/")
+    assert result.info.name == "GratisGIS Demo"
 
 
 @pytest.mark.asyncio

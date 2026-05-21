@@ -18,11 +18,28 @@ so the full client lifecycle does not apply.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import httpx
 
 from gratisgis_client.config import PortalConfig
 from gratisgis_client.errors import PortalError
 from gratisgis_client.models.portal_info import PortalInfo
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    """What ``discover()`` returns: the parsed PortalInfo plus the
+    canonical portal base URL that the discovery probe actually
+    reached (after any redirects).
+
+    The caller should save ``portal_url`` (not the user-typed input)
+    so subsequent API calls hit the canonical host directly and
+    don't pay an extra redirect round-trip per request.
+    """
+
+    info: PortalInfo
+    portal_url: str
 
 
 class PortalDiscoveryError(PortalError):
@@ -44,7 +61,7 @@ async def discover(
     verify_tls: bool = True,
     timeout: float = 10.0,
     user_agent: str = "gratisgis-client/0.0.1.dev0",
-) -> PortalInfo:
+) -> DiscoveryResult:
     """Fetch the discovery doc from ``{portal_url}/api/portal-info``.
 
     Returns a parsed ``PortalInfo``. Raises ``PortalDiscoveryError``
@@ -58,7 +75,16 @@ async def discover(
     url = f"{base}/api/portal-info"
     headers = {"User-Agent": user_agent, "Accept": "application/json"}
     try:
-        async with httpx.AsyncClient(verify=verify_tls, timeout=timeout) as client:
+        # follow_redirects=True covers two common-deployment realities:
+        #   - www / no-www canonicalization redirects (a user typing
+        #     "https://www.example.org" when the portal lives at
+        #     "https://example.org") returns a 301 we must follow.
+        #   - http -> https upgrades behind a reverse proxy.
+        # Neither indicates a non-portal service; following the
+        # redirect lets the real probe land on the actual host.
+        async with httpx.AsyncClient(
+            verify=verify_tls, timeout=timeout, follow_redirects=True
+        ) as client:
             response = await client.get(url, headers=headers)
     except httpx.HTTPError as exc:
         raise PortalDiscoveryError(
@@ -73,7 +99,7 @@ async def discover(
         )
 
     try:
-        return PortalInfo.model_validate(response.json())
+        info = PortalInfo.model_validate(response.json())
     except ValueError as exc:
         # Wraps both JSONDecodeError and pydantic ValidationError;
         # both are subclasses of ValueError and the calling code does
@@ -82,6 +108,18 @@ async def discover(
             f"Portal discovery response at {url} was not a valid PortalInfo: {exc}",
             url=url,
         ) from exc
+
+    # Compute the canonical portal base from the post-redirect URL
+    # so the caller can save the canonical URL on the connection
+    # profile. Falls back to the user-supplied input when the
+    # response URL doesn't end in the expected suffix (e.g. a
+    # mock-server response in a test).
+    final_url = str(response.url)
+    suffix = "/api/portal-info"
+    canonical = (
+        final_url[: -len(suffix)] if final_url.endswith(suffix) else base
+    )
+    return DiscoveryResult(info=info, portal_url=canonical)
 
 
 def portal_config_from_discovery(

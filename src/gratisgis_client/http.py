@@ -57,6 +57,11 @@ class PortalHttp:
                 verify=self._config.verify_tls,
                 headers={"User-Agent": self._config.user_agent},
                 timeout=httpx.Timeout(60.0, connect=10.0),
+                # follow_redirects so a www / no-www or http / https
+                # canonicalization 301 from a reverse proxy doesn't
+                # break every authenticated call. Discovery follows
+                # redirects too (see discovery.py).
+                follow_redirects=True,
             )
         return self._client
 
