@@ -139,3 +139,39 @@ class FeaturesEndpoint:
             "DELETE",
             f"/items/{item_id}/layers/{layer_id}/features/{feature_id}",
         )
+
+    async def download_geojson(
+        self,
+        *,
+        item_id: str,
+        layer_id: str,
+        bbox: tuple[float, float, float, float] | None = None,
+    ) -> dict[str, Any]:
+        """Pull a full GeoJSON FeatureCollection for a layer.
+
+        Phase 7 (offline clone) uses this to grab the layer's
+        features in one shot, then writes them locally to a
+        GeoPackage. The portal endpoint streams the whole feature
+        set (no pagination), so callers should be ready for a
+        multi-MB response on county-scale layers.
+
+        ``bbox`` is the standard min-lng, min-lat, max-lng, max-lat
+        tuple in CRS84; the portal clips the feature set on the
+        server before returning. Omit for the full layer.
+        """
+        params: dict[str, Any] = {}
+        if bbox is not None:
+            params["bbox"] = ",".join(str(x) for x in bbox)
+        body = await self._http.request_json(
+            "GET",
+            f"/items/{item_id}/layers/{layer_id}/geojson",
+            params=params or None,
+        )
+        if not isinstance(body, dict):
+            # The portal always returns a FeatureCollection on
+            # success; a non-dict body means an upstream proxy
+            # injected something we can't use. Return an empty
+            # collection so the dialog renders "0 features" rather
+            # than crashing on .get().
+            return {"type": "FeatureCollection", "features": []}
+        return body

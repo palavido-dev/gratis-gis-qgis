@@ -87,6 +87,13 @@ class GratisGISPlugin(QObject):
         self._iface.addPluginToMenu(self.PLUGIN_NAME, publish_raster_action)
         self._actions.append(publish_raster_action)
 
+        clone_action = QAction(
+            icon, "Clone layer for offline use...", self._iface.mainWindow()
+        )
+        clone_action.triggered.connect(self._on_clone_offline)
+        self._iface.addPluginToMenu(self.PLUGIN_NAME, clone_action)
+        self._actions.append(clone_action)
+
         publish_action = QAction(
             icon, "Publish current project as GratisGIS map...", self._iface.mainWindow()
         )
@@ -178,6 +185,13 @@ class GratisGISPlugin(QObject):
         from .ui.publish_raster_dialog import PublishRasterDialog
 
         dlg = PublishRasterDialog(self._iface, self._iface.mainWindow())
+        dlg.exec_()
+
+    def _on_clone_offline(self) -> None:
+        """Open the Clone-to-GeoPackage dialog (Phase 7)."""
+        from .ui.clone_dialog import CloneToGeoPackageDialog
+
+        dlg = CloneToGeoPackageDialog(self._iface, self._iface.mainWindow())
         dlg.exec_()
 
 
