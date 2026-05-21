@@ -3,8 +3,9 @@
 
   - project_to_map.py: translate the current QGIS project state
     into a portal `map` item composition (Phase 6).
-  - vector.py: orchestrate a one-layer vector publish (Phase 3,
-    landing next).
+  - vector.py: pure-Python pieces of the one-layer vector publish
+    (Phase 3): QGIS-to-v3 type mapping, layer-id sanitization,
+    probe -> envelope translation, pre-flight validation.
 
 Each phase lands its UI in `ui/` and its pure-Python translation
 helpers here so the shape-mapping rules can be unit-tested without

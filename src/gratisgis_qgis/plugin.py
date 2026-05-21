@@ -66,6 +66,13 @@ class GratisGISPlugin(QObject):
         self._iface.addPluginToMenu(self.PLUGIN_NAME, search_action)
         self._actions.append(search_action)
 
+        publish_layer_action = QAction(
+            icon, "Publish vector layer to GratisGIS...", self._iface.mainWindow()
+        )
+        publish_layer_action.triggered.connect(self._on_publish_vector)
+        self._iface.addPluginToMenu(self.PLUGIN_NAME, publish_layer_action)
+        self._actions.append(publish_layer_action)
+
         publish_action = QAction(
             icon, "Publish current project as GratisGIS map...", self._iface.mainWindow()
         )
@@ -136,6 +143,13 @@ class GratisGISPlugin(QObject):
         from .ui.publish_project_dialog import PublishProjectDialog
 
         dlg = PublishProjectDialog(self._iface, self._iface.mainWindow())
+        dlg.exec_()
+
+    def _on_publish_vector(self) -> None:
+        """Open the Publish-vector-layer dialog (Phase 3)."""
+        from .ui.publish_vector_dialog import PublishVectorDialog
+
+        dlg = PublishVectorDialog(self._iface, self._iface.mainWindow())
         dlg.exec_()
 
 

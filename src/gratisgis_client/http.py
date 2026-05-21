@@ -94,6 +94,71 @@ class PortalHttp:
             stream=False,
         )
 
+    async def request_multipart(
+        self,
+        method: str,
+        path: str,
+        *,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+        expect_status: int | None = None,
+    ) -> Any:
+        """POST a multipart/form-data payload (file upload).
+
+        ``files`` maps field-name -> (filename, bytes, content_type).
+        Used by the ingest endpoint, which buffers the whole file into
+        memory before sending; that's fine for the county-scale data
+        the portal targets (under 1 GB) and keeps the call signature
+        simple.
+
+        Uses a longer default timeout than ``request_json`` because
+        a 500 MB GeoPackage upload over a slow link routinely exceeds
+        the 60 s default. Callers can override ``timeout`` if they
+        already know their file size and link speed.
+        """
+        client = await self._ensure_client()
+        access = await self._auth.access_token()
+        request_headers: dict[str, str] = {"Accept": "application/json"}
+        if headers:
+            request_headers.update(headers)
+        request_headers["Authorization"] = f"Bearer {access}"
+        # httpx infers content-type from the files= kwarg; passing it
+        # in headers would override that and break the boundary.
+
+        # 10 minutes covers a half-GB upload on a 1 MB/s link with
+        # margin. Real wall-clock would be much less on normal links;
+        # this is a safety net, not a target.
+        effective_timeout = timeout if timeout is not None else 600.0
+
+        response = await client.request(
+            method,
+            path,
+            params=params,
+            files=files,
+            data=data,
+            headers=request_headers,
+            timeout=httpx.Timeout(effective_timeout, connect=10.0),
+        )
+        if response.status_code == 401:
+            access = await self._auth.force_refresh()
+            request_headers["Authorization"] = f"Bearer {access}"
+            response = await client.request(
+                method,
+                path,
+                params=params,
+                files=files,
+                data=data,
+                headers=request_headers,
+                timeout=httpx.Timeout(effective_timeout, connect=10.0),
+            )
+
+        return self._handle_response(
+            response, method=method, path=path, expect_status=expect_status
+        )
+
     async def _request(
         self,
         method: str,

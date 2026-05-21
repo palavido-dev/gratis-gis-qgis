@@ -27,6 +27,8 @@ from types import TracebackType
 from gratisgis_client.auth.manager import AuthManager
 from gratisgis_client.auth.storage import TokenStorage
 from gratisgis_client.config import PortalConfig
+from gratisgis_client.endpoints.import_jobs import ImportJobsEndpoint
+from gratisgis_client.endpoints.ingest import IngestEndpoint
 from gratisgis_client.endpoints.items import ItemsEndpoint
 from gratisgis_client.http import PortalHttp
 
@@ -55,6 +57,8 @@ class GratisGISClient:
         self.auth = AuthManager(config, storage=token_storage)
         self._http = PortalHttp(config, self.auth)
         self.items = ItemsEndpoint(self._http)
+        self.ingest = IngestEndpoint(self._http)
+        self.import_jobs = ImportJobsEndpoint(self._http)
 
     @property
     def config(self) -> PortalConfig:
