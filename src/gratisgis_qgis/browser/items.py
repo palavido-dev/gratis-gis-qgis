@@ -27,8 +27,6 @@ happens at the items level on the portal side).
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from qgis.core import (  # type: ignore[import-not-found]
     QgsDataCollectionItem,
     QgsDataItem,

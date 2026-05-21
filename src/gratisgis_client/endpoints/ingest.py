@@ -132,4 +132,8 @@ class IngestEndpoint:
             "/ingest/probe",
             files={"file": (name, blob, content_type)},
         )
-        return body
+        if isinstance(body, dict):
+            return body
+        # Pathological non-dict response from a proxy; return an
+        # empty probe shape so callers don't crash on .get().
+        return {"layers": []}

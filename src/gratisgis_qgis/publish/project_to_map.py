@@ -85,7 +85,7 @@ class MapTranslation:
     data: dict[str, Any]
     """The `data` envelope for POST /api/items."""
 
-    skipped: list["SkippedLayer"] = field(default_factory=list)
+    skipped: list[SkippedLayer] = field(default_factory=list)
     """Layers the translator couldn't map to a portal item id.
     The dialog should list these to the user; publishing
     proceeds without them.

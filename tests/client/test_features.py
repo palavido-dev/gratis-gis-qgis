@@ -15,7 +15,6 @@ from gratisgis_client.config import PortalConfig
 from gratisgis_client.endpoints.features import FeatureIn, FeaturesEndpoint
 from gratisgis_client.http import PortalHttp
 
-
 PORTAL_URL = "https://portal.example"
 
 
@@ -69,7 +68,9 @@ class TestAppend:
             ],
         )
         assert result.inserted == 2
-        sent = json.loads(httpx_mock.get_request().content)
+        request = httpx_mock.get_request()
+        assert request is not None
+        sent = json.loads(request.content)
         assert sent == {
             "features": [
                 {
@@ -99,9 +100,11 @@ class TestAppend:
         await endpoint.append(
             item_id="i",
             layer_id="l",
-            features=[FeatureIn(global_id="abc", properties={"k": 1})],
+            features=[FeatureIn.model_validate({"globalId": "abc", "properties": {"k": 1}})],
         )
-        sent = json.loads(httpx_mock.get_request().content)
+        request = httpx_mock.get_request()
+        assert request is not None
+        sent = json.loads(request.content)
         assert sent["features"][0]["globalId"] == "abc"
 
     @pytest.mark.asyncio
@@ -122,7 +125,9 @@ class TestAppend:
             layer_id="l",
             features=[FeatureIn(properties={"k": 1})],
         )
-        sent = json.loads(httpx_mock.get_request().content)
+        request = httpx_mock.get_request()
+        assert request is not None
+        sent = json.loads(request.content)
         assert "geometry" not in sent["features"][0]
 
 
@@ -144,7 +149,9 @@ class TestUpdate:
             properties={"k": "v"},
         )
         assert result.id == "f"
-        sent = json.loads(httpx_mock.get_request().content)
+        request = httpx_mock.get_request()
+        assert request is not None
+        sent = json.loads(request.content)
         # The portal treats absent keys as 'no change'; omitting
         # geometry here means "don't touch geometry".
         assert sent == {"properties": {"k": "v"}}
@@ -166,7 +173,9 @@ class TestUpdate:
             geometry={"type": "Point", "coordinates": [1, 2]},
             properties={"k": "v"},
         )
-        sent = json.loads(httpx_mock.get_request().content)
+        request = httpx_mock.get_request()
+        assert request is not None
+        sent = json.loads(request.content)
         assert sent == {
             "geometry": {"type": "Point", "coordinates": [1, 2]},
             "properties": {"k": "v"},
@@ -184,5 +193,7 @@ class TestDelete:
             status_code=204,
         )
         endpoint = FeaturesEndpoint(http)
-        result = await endpoint.delete(item_id="i", layer_id="l", feature_id="f")
-        assert result is None
+        # delete() returns None on 204; just making the call without
+        # raising is the assertion. mypy rejects assigning a None-
+        # returning call result, so don't.
+        await endpoint.delete(item_id="i", layer_id="l", feature_id="f")

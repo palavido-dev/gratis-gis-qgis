@@ -9,7 +9,6 @@ from gratisgis_client.config import PortalConfig
 from gratisgis_client.endpoints.features import FeaturesEndpoint
 from gratisgis_client.http import PortalHttp
 
-
 PORTAL_URL = "https://portal.example"
 
 

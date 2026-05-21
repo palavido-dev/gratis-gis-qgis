@@ -12,7 +12,6 @@ from gratisgis_client.endpoints.storage import StorageEndpoint
 from gratisgis_client.endpoints.tile_layer import TileLayerEndpoint
 from gratisgis_client.http import PortalHttp
 
-
 PORTAL_URL = "https://portal.example"
 
 
@@ -86,7 +85,9 @@ class TestPresignUpload:
         await endpoint.presign_upload(
             kind="item-file", content_type="application/pdf"
         )
-        sent = json.loads(httpx_mock.get_request().content)
+        request = httpx_mock.get_request()
+        assert request is not None
+        sent = json.loads(request.content)
         assert sent == {"kind": "item-file", "contentType": "application/pdf"}
 
 
@@ -153,7 +154,9 @@ class TestTileLayerFinalize:
             file_name="parcels.pmtiles",
             size_bytes=1024,
         )
-        sent = json.loads(httpx_mock.get_request().content)
+        request = httpx_mock.get_request()
+        assert request is not None
+        sent = json.loads(request.content)
         assert sent == {
             "storageKey": "item-tile-layer/abc",
             "storageUrl": "https://portal.example/api/storage/private/item-tile-layer/abc",

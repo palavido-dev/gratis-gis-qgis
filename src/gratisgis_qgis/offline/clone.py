@@ -26,7 +26,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-
 # Match the portal's internal feature-id columns we strip out before
 # writing to GeoPackage. These are useful for the push-edits flow
 # (we honor them as the portal_id) but they round-trip into a local

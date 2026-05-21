@@ -319,6 +319,8 @@ def _write_geojson_to_geopackage(
     helper independent of the QgsVectorFileWriter version
     (writeAsVectorFormatV3 vs the legacy API).
     """
+    import contextlib
+
     from qgis.core import QgsCoordinateTransformContext, QgsVectorFileWriter
 
     # Tempfile to hand to OGR.
@@ -352,7 +354,5 @@ def _write_geojson_to_geopackage(
         if err != QgsVectorFileWriter.NoError:
             raise RuntimeError(f"GeoPackage write failed: {msg or err}")
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_geojson)
-        except OSError:
-            pass

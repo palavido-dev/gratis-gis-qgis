@@ -25,8 +25,9 @@ so this file stays free of QGIS imports.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 # Portal-side v3 vocab. Mirrored here as string-literal types so we
 # can fail loudly if the portal's vocab grows new values we haven't
@@ -404,7 +405,7 @@ def validate_layer(summary: LayerSummary) -> list[ValidationIssue]:
     for name in summary.field_names:
         key = name.lower()
         seen.setdefault(key, []).append(name)
-    for key, names in seen.items():
+    for _key, names in seen.items():
         if len(names) > 1:
             issues.append(
                 ValidationIssue(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from gratisgis_qgis.publish.raster import (
-    RasterClassification,
     RasterValidationIssue,
     file_flavor,
     validate_raster_upload,

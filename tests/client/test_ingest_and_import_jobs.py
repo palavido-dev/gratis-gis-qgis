@@ -7,17 +7,15 @@ field rename can't silently break the plugin's publish flow.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from gratisgis_client.auth.manager import AuthManager
 from gratisgis_client.config import PortalConfig
 from gratisgis_client.endpoints.import_jobs import ImportJobsEndpoint
 from gratisgis_client.endpoints.ingest import IngestEndpoint
 from gratisgis_client.http import PortalHttp
-
 
 PORTAL_URL = "https://portal.example"
 
@@ -62,7 +60,7 @@ def http(config: PortalConfig) -> PortalHttp:
 class TestIngestStage:
     @pytest.mark.asyncio
     async def test_stage_parses_portal_envelope(
-        self, http: PortalHttp, httpx_mock: HTTPXMock, tmp_path
+        self, http: PortalHttp, httpx_mock: HTTPXMock, tmp_path: Path
     ) -> None:
         # Pinning the response shape against what the portal's
         # IngestController.stage actually returns. Adding a field
@@ -104,7 +102,7 @@ class TestIngestStage:
 
     @pytest.mark.asyncio
     async def test_stage_uses_file_basename_when_name_omitted(
-        self, http: PortalHttp, httpx_mock: HTTPXMock, tmp_path
+        self, http: PortalHttp, httpx_mock: HTTPXMock, tmp_path: Path
     ) -> None:
         # The portal's `originalName` should reflect the picked file
         # (so the wizard can show "parcels.gpkg" rather than the
@@ -128,7 +126,7 @@ class TestIngestStage:
 
     @pytest.mark.asyncio
     async def test_stage_ignores_unknown_top_level_fields(
-        self, http: PortalHttp, httpx_mock: HTTPXMock, tmp_path
+        self, http: PortalHttp, httpx_mock: HTTPXMock, tmp_path: Path
     ) -> None:
         # Forward-compat: a portal that adds a `quotaRemaining` key
         # later should not break already-deployed plugins.
@@ -223,7 +221,9 @@ class TestImportJobsEnqueue:
             staging_id="s",
             source_layer_name="src",
         )
-        body = json.loads(httpx_mock.get_request().content)
+        request = httpx_mock.get_request()
+        assert request is not None
+        body = json.loads(request.content)
         assert body["mode"] == "replace"
 
 

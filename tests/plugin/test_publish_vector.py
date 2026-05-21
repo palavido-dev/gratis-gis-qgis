@@ -8,6 +8,8 @@ and are exercised by manual smoke against a running QGIS.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from gratisgis_qgis.publish.vector import (
@@ -159,7 +161,7 @@ class TestLayerFromProbe:
         assert layer.geometry_type == "line"
 
     def test_probe_with_null_geometry_is_table_layer(self) -> None:
-        probe = {"name": "Lookup", "geometryType": None, "fields": []}
+        probe: dict[str, Any] = {"name": "Lookup", "geometryType": None, "fields": []}
         layer = layer_from_probe(probe_layer=probe)
         assert layer.geometry_type is None
 
@@ -221,7 +223,7 @@ class TestDataLayerEnvelope:
             V3Layer(id="c", title="C", geometry_type="polygon"),
         ]
         env = build_data_layer_envelope(layers=layers)
-        assert [l["id"] for l in env["layers"]] == ["a", "b", "c"]
+        assert [lyr["id"] for lyr in env["layers"]] == ["a", "b", "c"]
 
     def test_field_dict_includes_label_default(self) -> None:
         # The portal uses field.label as the display name; we default
@@ -254,8 +256,8 @@ class TestDataLayerEnvelope:
         assert "searchable" not in env["layers"][0]["fields"][1]
 
 
-def _summary(**overrides) -> LayerSummary:
-    defaults = dict(
+def _summary(**overrides: Any) -> LayerSummary:
+    defaults: dict[str, Any] = dict(
         name="Parcels",
         feature_count=100,
         geometry_type="Polygon",

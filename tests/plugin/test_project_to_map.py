@@ -7,6 +7,8 @@ exercise it without a QGIS runtime in the import path.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from gratisgis_qgis.browser.uris import oapif_uri, vector_tile_uri
@@ -19,7 +21,6 @@ from gratisgis_qgis.publish.project_to_map import (
     translate,
 )
 
-
 PORTAL = "https://portal.example"
 
 
@@ -31,7 +32,7 @@ def _snapshot(*layers: CanvasLayer, title: str = "Test map") -> ProjectSnapshot:
     )
 
 
-def _oapif_layer(item_id: str, name: str = "Parcels", **kw) -> CanvasLayer:
+def _oapif_layer(item_id: str, name: str = "Parcels", **kw: Any) -> CanvasLayer:
     return CanvasLayer(
         name=name,
         source_uri=oapif_uri(PORTAL, item_id),
@@ -41,7 +42,7 @@ def _oapif_layer(item_id: str, name: str = "Parcels", **kw) -> CanvasLayer:
     )
 
 
-def _tile_layer(item_id: str, name: str = "Parcels MVT", **kw) -> CanvasLayer:
+def _tile_layer(item_id: str, name: str = "Parcels MVT", **kw: Any) -> CanvasLayer:
     return CanvasLayer(
         name=name,
         source_uri=vector_tile_uri(PORTAL, item_id),

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-import time
 from typing import TYPE_CHECKING
 
 from qgis.core import (  # type: ignore[import-not-found]
@@ -51,7 +50,6 @@ from ..browser.fetch import _connected_client, _run
 from ..log import get_logger
 from ..publish.vector import (
     LayerSummary,
-    ValidationIssue,
     build_data_layer_envelope,
     layer_from_probe,
     validate_layer,
@@ -505,10 +503,10 @@ def _export_to_geopackage(layer: QgsVectorLayer) -> str:
 
 
 def _safe_unlink(path: str) -> None:
-    try:
+    import contextlib
+
+    with contextlib.suppress(OSError):
         os.unlink(path)
-    except OSError:
-        pass
 
 
 # -----------------------------------------------------------

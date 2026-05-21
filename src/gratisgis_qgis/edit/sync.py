@@ -22,8 +22,9 @@ API operations. Keeps the planning rules testable without QGIS.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 # Match the portal's feature-CRUD surface. Each SyncOp turns into
 # exactly one HTTP call so retry semantics stay tractable.
@@ -91,7 +92,7 @@ class SyncPlan:
     and limits the failure surface: a partial run leaves the
     portal in a consistent state."""
 
-    skipped: list["SkippedEdit"] = field(default_factory=list)
+    skipped: list[SkippedEdit] = field(default_factory=list)
     """Edits the planner refused (e.g. update on a feature with
     no portal_id, indicating it was created locally but never
     pushed). The dialog surfaces these so the user can fix the

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -175,7 +176,7 @@ class TestPortalIdNormalization:
 
 
 class TestValidateCloneTarget:
-    def test_existing_writable_directory_passes(self, tmp_path) -> None:
+    def test_existing_writable_directory_passes(self, tmp_path: Path) -> None:
         target = CloneTarget(directory=str(tmp_path), file_name="x")
         issues = validate_clone_target(target)
         # tmp_path is writable; no errors. No warnings either because
@@ -192,7 +193,7 @@ class TestValidateCloneTarget:
         issues = validate_clone_target(target)
         assert any(i.is_error and i.code == "no-directory" for i in issues)
 
-    def test_existing_file_warns_about_overwrite(self, tmp_path) -> None:
+    def test_existing_file_warns_about_overwrite(self, tmp_path: Path) -> None:
         # Pre-create the target file; the dialog can decide whether
         # to ask for confirmation based on this warning.
         (tmp_path / "x.gpkg").write_text("")

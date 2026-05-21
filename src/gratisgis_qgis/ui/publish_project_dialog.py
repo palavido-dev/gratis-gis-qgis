@@ -13,7 +13,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject  # type: ignore[import-not-found]
+from qgis.core import (  # type: ignore[import-not-found]
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
+    QgsProject,
+)
 from qgis.PyQt.QtCore import Qt  # type: ignore[import-not-found]
 from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QComboBox,
@@ -32,7 +36,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 
 from gratisgis_client.models.item import ItemSummary
 
-from ..browser.fetch import _connected_client, _run  # noqa: F401 -- internal bridge
+from ..browser.fetch import _connected_client, _run
 from ..log import get_logger
 from ..publish.project_to_map import (
     CanvasLayer,
@@ -241,10 +245,7 @@ def _build_snapshot(iface: QgisInterface, title: str) -> ProjectSnapshot:
     scale = canvas.scale()
     import math
 
-    if scale > 0:
-        zoom = math.log2(559082264.0287178 / scale)
-    else:
-        zoom = 0.0
+    zoom = math.log2(559082264.0287178 / scale) if scale > 0 else 0.0
 
     return ProjectSnapshot(
         title=title,

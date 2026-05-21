@@ -14,6 +14,8 @@ treatment of impossible operations (update without portal_id, etc.).
 """
 from __future__ import annotations
 
+from typing import Any
+
 from gratisgis_qgis.edit.sync import (
     EditedFeature,
     SkippedEdit,
@@ -29,8 +31,8 @@ def _make(
     *,
     qgis_fid: int | None = 1,
     portal_id: str | None = None,
-    geometry: dict | None = None,
-    properties: dict | None = None,
+    geometry: dict[str, Any] | None = None,
+    properties: dict[str, Any] | None = None,
 ) -> EditedFeature:
     return EditedFeature(
         kind=kind,  # type: ignore[arg-type]
