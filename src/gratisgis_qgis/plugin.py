@@ -151,7 +151,7 @@ class GratisGISPlugin(QObject):
             from .ui.search_dock import GratisGISSearchDock
 
             self._search_dock = GratisGISSearchDock(self._iface, self._iface.mainWindow())
-            self._iface.addDockWidget(Qt.RightDockWidgetArea, self._search_dock)
+            self._iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._search_dock)
         self._search_dock.show()
         self._search_dock.raise_()
 

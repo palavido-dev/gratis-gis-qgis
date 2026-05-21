@@ -103,7 +103,7 @@ class GratisGISSearchDock(QDockWidget):
         # ----- Results list -----
         self._results = QListWidget()
         self._results.itemDoubleClicked.connect(self._on_double_click)
-        self._results.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._results.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._results.customContextMenuRequested.connect(
             self._on_results_context_menu
         )
@@ -190,7 +190,7 @@ class GratisGISSearchDock(QDockWidget):
 
         for it in sorted(items, key=lambda i: i.title.lower()):
             row = QListWidgetItem(_format_result_row(it))
-            row.setData(Qt.UserRole, it.model_dump(mode="json", by_alias=True))
+            row.setData(Qt.ItemDataRole.UserRole, it.model_dump(mode="json", by_alias=True))
             row.setToolTip(_format_tooltip(it))
             self._results.addItem(row)
         self._status.setText(f"{len(items)} result(s).")
@@ -200,7 +200,7 @@ class GratisGISSearchDock(QDockWidget):
         OAPIF provider. Only supported for data_layer + tile_layer
         leaves today; other types pop a "no runtime here" message.
         """
-        payload = item.data(Qt.UserRole)
+        payload = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(payload, dict):
             return
         try:
@@ -234,7 +234,7 @@ class GratisGISSearchDock(QDockWidget):
         item = self._results.currentItem()
         if item is None:
             return
-        payload = item.data(Qt.UserRole)
+        payload = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(payload, dict):
             return
         profile_name = self._selected_profile_name()

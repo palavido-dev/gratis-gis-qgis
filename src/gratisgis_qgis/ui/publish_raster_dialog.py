@@ -98,8 +98,8 @@ class PublishRasterDialog(QDialog):
         self._progress_bar = QProgressBar()
         self._progress_bar.setVisible(False)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Publish")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Publish")
         buttons.accepted.connect(self._on_publish)
         buttons.rejected.connect(self.reject)
         self._buttons = buttons
@@ -154,13 +154,13 @@ class PublishRasterDialog(QDialog):
         )
         if not issues:
             row = QListWidgetItem("All checks passed.")
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._issues_list.addItem(row)
             return
         for issue in issues:
             marker = "[ERROR]" if issue.is_error else "[warn]"
             row = QListWidgetItem(f"{marker} {issue.message}")
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._issues_list.addItem(row)
 
     def _on_publish(self) -> None:
@@ -198,7 +198,7 @@ class PublishRasterDialog(QDialog):
         access = self._access_combo.currentData() or "private"
         classification = file_flavor(self._file_path)
 
-        self._buttons.button(QDialogButtonBox.Ok).setEnabled(False)
+        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)  # indeterminate
         self._progress_label.setText("Creating tile_layer item...")
@@ -213,7 +213,7 @@ class PublishRasterDialog(QDialog):
         except Exception as e:
             _log.exception("tile_layer item create failed")
             QMessageBox.critical(self, "Publish failed", str(e))
-            self._buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
 
@@ -231,7 +231,7 @@ class PublishRasterDialog(QDialog):
                     "Not enough portal space",
                     space.reason or "Portal reports insufficient disk.",
                 )
-                self._buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+                self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
                 self._progress_bar.setVisible(False)
                 return
         except Exception:
@@ -246,7 +246,7 @@ class PublishRasterDialog(QDialog):
         except Exception as e:
             _log.exception("presign failed")
             QMessageBox.critical(self, "Publish failed", str(e))
-            self._buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
         if size > presigned.max_bytes:
@@ -256,7 +256,7 @@ class PublishRasterDialog(QDialog):
                 f"File is {size / 1024 / 1024:.1f} MB; portal allows "
                 f"{presigned.max_bytes / 1024 / 1024 / 1024:.1f} GB per file.",
             )
-            self._buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
 
@@ -270,7 +270,7 @@ class PublishRasterDialog(QDialog):
         except Exception as e:
             _log.exception("PUT failed")
             QMessageBox.critical(self, "Upload failed", str(e))
-            self._buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
 
@@ -290,7 +290,7 @@ class PublishRasterDialog(QDialog):
         except Exception as e:
             _log.exception("finalize failed")
             QMessageBox.critical(self, "Finalize failed", str(e))
-            self._buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
 

@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING
 
 from qgis.core import (  # type: ignore[import-not-found]
     QgsCoordinateReferenceSystem,
-    QgsMapLayer,
     QgsProject,
     QgsVectorLayer,
 )
@@ -104,8 +103,8 @@ class CloneToGeoPackageDialog(QDialog):
         self._progress_bar = QProgressBar()
         self._progress_bar.setVisible(False)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Clone")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Clone")
         buttons.accepted.connect(self._on_clone)
         buttons.rejected.connect(self.reject)
         self._buttons = buttons
@@ -123,11 +122,13 @@ class CloneToGeoPackageDialog(QDialog):
         self._on_layer_changed()
 
     def _populate_layer_combo(self) -> None:
+        # isinstance covers both QGIS 3 and QGIS 4; the
+        # QgsMapLayer.VectorLayer integer constant was retired in
+        # QGIS 4 in favor of Qgis.LayerType.Vector.
         project = QgsProject.instance()
         for layer_id, layer in project.mapLayers().items():
-            if layer.type() != QgsMapLayer.VectorLayer:
+            if not isinstance(layer, QgsVectorLayer):
                 continue
-            assert isinstance(layer, QgsVectorLayer)
             if parse_oapif_uri(layer.source()) is None:
                 continue
             self._layer_combo.addItem(layer.name(), userData=layer_id)
@@ -180,13 +181,13 @@ class CloneToGeoPackageDialog(QDialog):
         issues = validate_clone_target(target)
         if not issues:
             row = QListWidgetItem("All checks passed.")
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._issues_list.addItem(row)
             return
         for issue in issues:
             marker = "[ERROR]" if issue.is_error else "[warn]"
             row = QListWidgetItem(f"{marker} {issue.message}")
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._issues_list.addItem(row)
 
     def _selected_layer(self) -> QgsVectorLayer | None:
@@ -244,10 +245,10 @@ class CloneToGeoPackageDialog(QDialog):
                 "Overwrite?",
                 f"{overwrite_warns[0].message}\n\nProceed?",
             )
-            if ok != QMessageBox.Yes:
+            if ok != QMessageBox.StandardButton.Yes:
                 return
 
-        self._buttons.button(QDialogButtonBox.Ok).setEnabled(False)
+        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
         self._progress_label.setText("Downloading features from portal...")
@@ -257,7 +258,7 @@ class CloneToGeoPackageDialog(QDialog):
         except Exception as e:
             _log.exception("download failed")
             QMessageBox.critical(self, "Download failed", str(e))
-            self._buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
 
@@ -270,7 +271,7 @@ class CloneToGeoPackageDialog(QDialog):
         except Exception as e:
             _log.exception("geopackage write failed")
             QMessageBox.critical(self, "Write failed", str(e))
-            self._buttons.button(QDialogButtonBox.Ok).setEnabled(True)
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
 

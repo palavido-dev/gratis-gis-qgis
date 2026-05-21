@@ -86,9 +86,9 @@ class PublishProjectDialog(QDialog):
 
         # ----- Buttons -----
         buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.Ok).setText("Publish")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Publish")
         buttons.accepted.connect(self._on_publish)
         buttons.rejected.connect(self.reject)
         self._buttons = buttons
@@ -130,13 +130,13 @@ class PublishProjectDialog(QDialog):
             row = QListWidgetItem(
                 f"{lyr['title']}  ->  source: {lyr['source']['kind']} ({lyr['source'].get('itemId', '?')})"
             )
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._included_list.addItem(row)
 
         self._skipped_list.clear()
         for s in result.skipped:
             row = QListWidgetItem(f"{s.name}  [{s.provider}]  -  {s.reason}")
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._skipped_list.addItem(row)
 
         kept = len(result.data.get("layers", []))

@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING
 from qgis.core import (  # type: ignore[import-not-found]
     QgsFeature,
     QgsJsonExporter,
-    QgsMapLayer,
     QgsProject,
     QgsVectorLayer,
 )
@@ -97,8 +96,8 @@ class PushEditsDialog(QDialog):
         self._ops_list = QListWidget()
         self._skipped_list = QListWidget()
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Push")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Push")
         buttons.accepted.connect(self._on_push)
         buttons.rejected.connect(self.reject)
         self._buttons = buttons
@@ -121,11 +120,13 @@ class PushEditsDialog(QDialog):
         # Only show vector layers whose source URI we recognize as a
         # portal endpoint. Pushing edits to an unrelated layer is
         # meaningless and would confuse the user.
+        # isinstance covers both QGIS 3 (where layer.type() returns
+        # QgsMapLayer.VectorLayer as int) and QGIS 4 (where it
+        # returns Qgis.LayerType.Vector).
         project = QgsProject.instance()
         for layer_id, layer in project.mapLayers().items():
-            if layer.type() != QgsMapLayer.VectorLayer:
+            if not isinstance(layer, QgsVectorLayer):
                 continue
-            assert isinstance(layer, QgsVectorLayer)
             parsed = parse_oapif_uri(layer.source())
             if parsed is None:
                 continue
@@ -181,11 +182,11 @@ class PushEditsDialog(QDialog):
         for op in plan.ops:
             label = self._render_op(op)
             row = QListWidgetItem(label)
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._ops_list.addItem(row)
         for s in plan.skipped:
             row = QListWidgetItem(f"qgis-fid {s.qgis_fid}: {s.reason}")
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._skipped_list.addItem(row)
 
     @staticmethod
@@ -240,7 +241,7 @@ class PushEditsDialog(QDialog):
             return
         self._target_profile_name = profile_name
 
-        ok_button = self._buttons.button(QDialogButtonBox.Ok)
+        ok_button = self._buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok_button.setEnabled(False)
 
         failures: list[tuple[SyncOp, str]] = []

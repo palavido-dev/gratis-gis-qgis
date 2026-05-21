@@ -39,7 +39,12 @@ def _default_log_dir() -> Path:
     try:
         from qgis.PyQt.QtCore import QStandardPaths  # type: ignore[import-not-found]
 
-        base = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+        # Use the scoped enum form because PyQt6 (Qt 6 / QGIS 4)
+        # dropped the unscoped class-level shortcuts. The scoped
+        # form ALSO works on PyQt5 (Qt 5 / QGIS 3.34), so one
+        # spelling covers both.
+        app_data = QStandardPaths.StandardLocation.AppDataLocation
+        base = Path(QStandardPaths.writableLocation(app_data))
     except ImportError:
         base = Path.home() / ".gratisgis"
     return base / "gratisgis" / "logs"

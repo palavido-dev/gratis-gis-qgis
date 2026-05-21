@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 from qgis.core import (  # type: ignore[import-not-found]
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransformContext,
-    QgsMapLayer,
     QgsProject,
     QgsVectorFileWriter,
     QgsVectorLayer,
@@ -114,8 +113,8 @@ class PublishVectorDialog(QDialog):
         self._progress_bar.setVisible(False)
 
         # ----- Buttons -----
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Publish")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Publish")
         buttons.accepted.connect(self._on_publish)
         buttons.rejected.connect(self._on_cancel)
         self._buttons = buttons
@@ -146,10 +145,13 @@ class PublishVectorDialog(QDialog):
     def _populate_layer_combo(self) -> None:
         self._layer_combo.clear()
         project = QgsProject.instance()
+        # isinstance check works on both QGIS 3 (where layer.type()
+        # is QgsMapLayer.VectorLayer) and QGIS 4 (where the enum
+        # moved to Qgis.LayerType.Vector). The Python identity check
+        # is portable across both.
         for layer_id, layer in project.mapLayers().items():
-            if layer.type() != QgsMapLayer.VectorLayer:
+            if not isinstance(layer, QgsVectorLayer):
                 continue
-            assert isinstance(layer, QgsVectorLayer)
             self._layer_combo.addItem(layer.name(), userData=layer_id)
         if self._layer_combo.count() == 0:
             self._layer_combo.addItem("(no vector layers in project)", None)
@@ -187,13 +189,13 @@ class PublishVectorDialog(QDialog):
         issues = validate_layer(summary)
         if not issues:
             row = QListWidgetItem("All checks passed.")
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._issues_list.addItem(row)
             return
         for issue in issues:
             marker = "[ERROR]" if issue.is_error else "[warn]"
             row = QListWidgetItem(f"{marker} {issue.message}")
-            row.setFlags(row.flags() & ~Qt.ItemIsSelectable)
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._issues_list.addItem(row)
 
     def _selected_layer(self) -> QgsVectorLayer | None:
@@ -446,7 +448,7 @@ class PublishVectorDialog(QDialog):
         self.reject()
 
     def _set_busy(self, busy: bool) -> None:
-        self._buttons.button(QDialogButtonBox.Ok).setEnabled(not busy)
+        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not busy)
         self._layer_combo.setEnabled(not busy)
         self._connection_combo.setEnabled(not busy)
         self._title_input.setEnabled(not busy)

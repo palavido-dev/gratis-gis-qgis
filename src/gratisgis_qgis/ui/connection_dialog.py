@@ -166,10 +166,10 @@ class ConnectionManagerDialog(QDialog):
             self,
             "Delete connection?",
             f"Delete connection {existing.display_label!r}? Stored tokens will be cleared.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        if button != QMessageBox.Yes:
+        if button != QMessageBox.StandardButton.Yes:
             return
         if existing.authcfg_id:
             try:
@@ -376,7 +376,7 @@ class _PortalEditDialog(QDialog):
         form.addRow("", self._verify)
         outer.addLayout(form)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         save_label = "Save & Sign in" if self._initial is None else "Save"
         self._btn_save = QPushButton(save_label)
         self._btn_save.setDefault(True)
