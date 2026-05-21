@@ -49,26 +49,72 @@ _log = get_logger(__name__)
 # -----------------------------------------------------------
 # QGIS 3 / QGIS 4 compat for Browser-tree enum constants.
 #
-# QGIS 3 exposed Fertile / Fast / NoType / Populated as class-
-# level attributes on QgsDataItem. QGIS 4 moved them to scoped
-# `Qgis.BrowserItemCapability`, `Qgis.BrowserItemType`, and
-# `Qgis.BrowserItemState` enums respectively, with the old
-# QgsDataItem shortcuts removed under strict PyQt6. Resolve
-# each once at import so the per-call sites stay readable.
+# QGIS 3 exposed Fertile / Fast / Populated as class-level
+# attributes on QgsDataItem. QGIS 4 moved them under scoped
+# Qgis.BrowserItemCapability / Qgis.BrowserItemType /
+# Qgis.BrowserItemState enums and dropped the QgsDataItem
+# shortcuts under strict PyQt6.
+#
+# The BrowserItemType enum membership also changed: QGIS 4 has
+# Collection / Directory / Layer / Error / Favorites / Project /
+# Custom / Fields / Field (no NoType). For our leaf-item types
+# (GenericItem, _MessageItem) Custom is the right fit -- we're
+# not a Layer (not draggable to canvas) but we are a tree node.
+#
+# Each lookup goes through a small helper that tries the scoped
+# Qgis path first, then the old QgsDataItem attr, then a list of
+# fallback names. Per-call sites stay readable; future QGIS
+# revisions that shuffle enum members again get a clear
+# AttributeError pointing at the resolver, not random call sites.
 # -----------------------------------------------------------
+
+
+def _resolve_enum(*candidates: tuple[object, str]) -> object:
+    """Try each (holder, attribute_name) pair until one resolves.
+
+    Raises AttributeError listing every attempted path if none
+    match, so a future Qt / QGIS shuffle gives a clean error
+    pointing at the resolver instead of a per-call-site mystery.
+    """
+    tried: list[str] = []
+    for holder, attr in candidates:
+        if holder is None:
+            continue
+        tried.append(f"{getattr(holder, '__name__', holder)}.{attr}")
+        if hasattr(holder, attr):
+            return getattr(holder, attr)
+    raise AttributeError(
+        f"None of these resolve to a usable enum value: {', '.join(tried)}"
+    )
+
+
 try:
     from qgis.core import Qgis  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover -- tests don't hit Qgis directly
+    Qgis = None  # type: ignore[assignment]
 
-    _BROWSER_TYPE_NO_TYPE = Qgis.BrowserItemType.NoType
-    _BROWSER_CAP_FERTILE = Qgis.BrowserItemCapability.Fertile
-    _BROWSER_CAP_FAST = Qgis.BrowserItemCapability.Fast
-    _POPULATED_STATE = Qgis.BrowserItemState.Populated
-except (ImportError, AttributeError):
-    # QGIS 3 fallback: the constants still live on QgsDataItem.
-    _BROWSER_TYPE_NO_TYPE = QgsDataItem.NoType  # type: ignore[attr-defined]
-    _BROWSER_CAP_FERTILE = QgsDataItem.Fertile  # type: ignore[attr-defined]
-    _BROWSER_CAP_FAST = QgsDataItem.Fast  # type: ignore[attr-defined]
-    _POPULATED_STATE = QgsDataItem.Populated  # type: ignore[attr-defined]
+# Use Custom as our leaf-item BrowserItemType: it's the
+# documented "non-Directory, non-Layer, plugin-defined node"
+# value, present on both QGIS 3 (via QgsDataItem.Custom) and
+# QGIS 4 (via Qgis.BrowserItemType.Custom).
+_BROWSER_TYPE_NO_TYPE = _resolve_enum(
+    (getattr(Qgis, "BrowserItemType", None) if Qgis else None, "Custom"),
+    (getattr(QgsDataItem, "Type", None), "Custom"),
+    (QgsDataItem, "Custom"),
+    (QgsDataItem, "NoType"),
+)
+_BROWSER_CAP_FERTILE = _resolve_enum(
+    (getattr(Qgis, "BrowserItemCapability", None) if Qgis else None, "Fertile"),
+    (QgsDataItem, "Fertile"),
+)
+_BROWSER_CAP_FAST = _resolve_enum(
+    (getattr(Qgis, "BrowserItemCapability", None) if Qgis else None, "Fast"),
+    (QgsDataItem, "Fast"),
+)
+_POPULATED_STATE = _resolve_enum(
+    (getattr(Qgis, "BrowserItemState", None) if Qgis else None, "Populated"),
+    (QgsDataItem, "Populated"),
+)
 
 
 # Display labels for the bucket discriminators. The bucket enum
