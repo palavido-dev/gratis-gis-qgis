@@ -66,6 +66,13 @@ class GratisGISPlugin(QObject):
         self._iface.addPluginToMenu(self.PLUGIN_NAME, search_action)
         self._actions.append(search_action)
 
+        publish_action = QAction(
+            icon, "Publish current project as GratisGIS map...", self._iface.mainWindow()
+        )
+        publish_action.triggered.connect(self._on_publish_project)
+        self._iface.addPluginToMenu(self.PLUGIN_NAME, publish_action)
+        self._actions.append(publish_action)
+
         # Phase 1: register the Browser-panel data item provider so
         # configured connections show up as a "GratisGIS" subtree
         # alongside built-in providers (XYZ Tiles, WMS/WMTS, etc.).
@@ -119,6 +126,17 @@ class GratisGISPlugin(QObject):
             self._iface.addDockWidget(Qt.RightDockWidgetArea, self._search_dock)
         self._search_dock.show()
         self._search_dock.raise_()
+
+    def _on_publish_project(self) -> None:
+        """Open the Publish-project-as-map dialog (Phase 6)."""
+        # Lazy import keeps the publish module out of the plugin-
+        # load critical path; if QGIS or Qt versions diverge from
+        # what the dialog expects we want the user to see the error
+        # when they click Publish, not when they enable the plugin.
+        from .ui.publish_project_dialog import PublishProjectDialog
+
+        dlg = PublishProjectDialog(self._iface, self._iface.mainWindow())
+        dlg.exec_()
 
 
 def _load_icon() -> QIcon:

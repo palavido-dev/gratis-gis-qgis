@@ -52,3 +52,78 @@ def vector_tile_uri(portal_url: str, item_id: str) -> str:
         "/tiles/WebMercatorQuad/{z}/{y}/{x}"
     )
     return f"type=xyz&url={template}"
+
+
+# -----------------------------------------------------------
+# Reverse parsers (Phase 6 + later)
+# -----------------------------------------------------------
+
+
+def parse_oapif_uri(uri: str) -> tuple[str, str] | None:
+    """Recover (portal_url, item_id) from an OAPIF source URI.
+
+    Recognises the shape `oapif_uri()` emits. Returns None when
+    the URI doesn't carry both `url=` and `typename=` keys, or
+    when the URL doesn't end in `/api/public/ogc`. The Phase 6
+    publish-project flow walks QGIS layers and uses this to
+    figure out which canvas layers map to existing portal items.
+    """
+    if "url=" not in uri or "typename=" not in uri:
+        return None
+    url = _parse_quoted_kv(uri, "url")
+    typename = _parse_quoted_kv(uri, "typename")
+    if not url or not typename:
+        return None
+    suffix = "/api/public/ogc"
+    if not url.endswith(suffix):
+        return None
+    return url[: -len(suffix)], typename
+
+
+def parse_vector_tile_uri(uri: str) -> tuple[str, str] | None:
+    """Recover (portal_url, item_id) from a vector-tile XYZ URI.
+
+    Inverse of `vector_tile_uri()`. Returns None when the URI
+    shape doesn't match.
+    """
+    if not uri.startswith("type=xyz&url="):
+        return None
+    template = uri[len("type=xyz&url=") :]
+    marker = "/api/public/ogc/collections/"
+    idx = template.find(marker)
+    if idx < 0:
+        return None
+    portal_url = template[:idx]
+    rest = template[idx + len(marker) :]
+    # rest now looks like "<itemId>/tiles/WebMercatorQuad/{z}/{y}/{x}"
+    end = rest.find("/")
+    if end < 0:
+        return None
+    item_id = rest[:end]
+    if not item_id:
+        return None
+    return portal_url, item_id
+
+
+def _parse_quoted_kv(uri: str, key: str) -> str | None:
+    """Pull `key='value'` out of an OAPIF-style URI string.
+
+    Tolerant of either single or double quotes around the value
+    (QGIS emits single quotes by convention but some downstream
+    code rewraps with doubles). Returns the unquoted value or
+    None when the key isn't present in the expected shape.
+    """
+    needle = f"{key}="
+    idx = uri.find(needle)
+    if idx < 0:
+        return None
+    rest = uri[idx + len(needle) :]
+    if not rest:
+        return None
+    quote = rest[0]
+    if quote not in ("'", '"'):
+        return None
+    end = rest.find(quote, 1)
+    if end < 0:
+        return None
+    return rest[1:end]
