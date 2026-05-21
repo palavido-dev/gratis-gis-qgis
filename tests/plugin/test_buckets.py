@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Tests for the Browser bucket filter (`browser.buckets`)."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from gratisgis_client.models.item import ItemSummary
+from gratisgis_qgis.browser.buckets import BucketKind, filter_for_bucket
+
+
+def _item(
+    *,
+    id: str,
+    title: str,
+    access: str,
+    owner: str,
+    type: str = "data_layer",
+) -> ItemSummary:
+    """Compact factory; defaults to a data_layer item with deterministic
+    timestamps so test output stays diffable.
+    """
+    return ItemSummary(
+        id=id,
+        type=type,  # type: ignore[arg-type]
+        title=title,
+        access=access,  # type: ignore[arg-type]
+        ownerId=owner,
+        orgId="org-1",
+        createdAt=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updatedAt=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+
+# A realistic mixed result: caller "matt" owns one private + one
+# public, an org-shared item came from someone else, and a
+# leftover public item is owned by yet another user.
+@pytest.fixture()
+def mixed_roster() -> list[ItemSummary]:
+    return [
+        _item(id="1", title="my-priv",   access="private", owner="matt"),
+        _item(id="2", title="my-pub",    access="public",  owner="matt"),
+        _item(id="3", title="org-other", access="org",     owner="alice"),
+        _item(id="4", title="org-mine",  access="org",     owner="matt"),
+        _item(id="5", title="pub-bob",   access="public",  owner="bob"),
+    ]
+
+
+def test_public_bucket_returns_only_public_items(mixed_roster: list[ItemSummary]) -> None:
+    out = filter_for_bucket(mixed_roster, BucketKind.PUBLIC)
+    assert {i.title for i in out} == {"my-pub", "pub-bob"}
+
+
+def test_org_bucket_returns_org_plus_public(mixed_roster: list[ItemSummary]) -> None:
+    out = filter_for_bucket(mixed_roster, BucketKind.ORG)
+    assert {i.title for i in out} == {"my-pub", "org-other", "org-mine", "pub-bob"}
+
+
+def test_mine_bucket_returns_caller_owned_items(mixed_roster: list[ItemSummary]) -> None:
+    out = filter_for_bucket(mixed_roster, BucketKind.MINE)
+    # Inferred caller-id is the most common owner_id among private
+    # items -> "matt" -> all matt-owned items, regardless of scope.
+    assert {i.title for i in out} == {"my-priv", "my-pub", "org-mine"}
+
+
+def test_shared_bucket_returns_org_items_not_owned_by_caller(
+    mixed_roster: list[ItemSummary],
+) -> None:
+    out = filter_for_bucket(mixed_roster, BucketKind.SHARED)
+    assert {i.title for i in out} == {"org-other"}
+
+
+def test_mine_returns_empty_when_no_private_items_to_infer_from() -> None:
+    # Without any access=private rows the caller-id inference
+    # bails out rather than misattributing the roster -- a result
+    # of nothing-but-public items can't tell us who's signed in,
+    # and labeling random items as "mine" would be worse than
+    # showing an empty bucket.
+    items = [
+        _item(id="1", title="p1", access="public", owner="alice"),
+        _item(id="2", title="p2", access="public", owner="bob"),
+    ]
+    assert filter_for_bucket(items, BucketKind.MINE) == []
+
+
+def test_shared_returns_empty_when_no_private_items_to_infer_from() -> None:
+    items = [
+        _item(id="1", title="p1", access="public", owner="alice"),
+        _item(id="2", title="o1", access="org",    owner="bob"),
+    ]
+    assert filter_for_bucket(items, BucketKind.SHARED) == []
+
+
+def test_unknown_bucket_returns_empty(mixed_roster: list[ItemSummary]) -> None:
+    assert filter_for_bucket(mixed_roster, "garbage") == []
+
+
+def test_empty_roster_returns_empty_for_every_bucket() -> None:
+    for kind in (BucketKind.MINE, BucketKind.SHARED, BucketKind.ORG, BucketKind.PUBLIC):
+        assert filter_for_bucket([], kind) == []
