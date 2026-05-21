@@ -16,6 +16,8 @@ from gratisgis_qgis.publish.project_to_map import (
     CanvasLayer,
     CanvasViewport,
     MapTranslation,
+    PortalIndex,
+    PortalServiceRef,
     ProjectSnapshot,
     SkippedLayer,
     translate,
@@ -89,13 +91,15 @@ class TestRecognizedLayers:
         result = translate(snap)
         assert result.data["layers"][0]["id"] == "qgis-My Parcels"
 
-    def test_layered_collection_id_passes_through(self) -> None:
+    def test_layered_collection_id_splits_to_itemid_layerkey(self) -> None:
         # Multi-layer items use the `<itemId>__<layerKey>` collection
-        # id form per docs/ogc-api-strategy.md. The translator just
-        # echoes whatever id was encoded in the URI.
+        # id form per docs/ogc-api-strategy.md. The portal
+        # MapLayerSource for `data-layer` takes itemId + optional
+        # layerKey as separate fields, so the translator splits.
         snap = _snapshot(_oapif_layer("abc__roads", "Roads"))
-        result = translate(snap)
-        assert result.data["layers"][0]["source"]["itemId"] == "abc__roads"
+        source = translate(snap).data["layers"][0]["source"]
+        assert source["itemId"] == "abc"
+        assert source["layerKey"] == "roads"
 
     def test_visibility_and_opacity_propagate(self) -> None:
         snap = _snapshot(
@@ -309,3 +313,138 @@ class TestProviderCaseInsensitivity:
             )
         )
         assert len(translate(snap).data["layers"]) == 1
+
+    def test_xyzvectortiles_provider_is_treated_like_vectortile(self) -> None:
+        # QGIS 4 reports the provider as `xyzvectortiles` (the
+        # XYZ-template variant of the vector-tile provider), which
+        # is what our plugin emits via vector_tile_uri. Both
+        # provider names need to round-trip to a data-layer source.
+        snap = _snapshot(
+            CanvasLayer(
+                name="Parcels MVT",
+                source_uri=vector_tile_uri(PORTAL, "abc__roads"),
+                provider="xyzvectortiles",
+                visible=True,
+            )
+        )
+        source = translate(snap).data["layers"][0]["source"]
+        assert source["kind"] == "data-layer"
+        assert source["itemId"] == "abc"
+        assert source["layerKey"] == "roads"
+
+
+class TestPortalSourcedExternalLayers:
+    """Recognition of layers whose source URL points at an
+    external service but whose origin is a portal item (basemap,
+    connected service). The publish dialog hands ``translate`` a
+    PortalIndex that lets the translator backref.
+    """
+
+    def test_arcgismapserver_with_portal_service_backref(self) -> None:
+        # ArcGIS REST MapServer layer added via the portal's
+        # connected-service item: the URI is the EXTERNAL upstream
+        # URL, but the portal item id is recoverable through the
+        # services_by_url lookup.
+        service_root = "https://services.example/arcgis/rest/services/X/MapServer"
+        snap = _snapshot(
+            CanvasLayer(
+                name="Counties",
+                source_uri=f"url='{service_root}' crs='EPSG:3857' layers='show:0'",
+                provider="arcgismapserver",
+                visible=True,
+            )
+        )
+        index = PortalIndex(
+            services_by_url={
+                service_root: PortalServiceRef(
+                    item_id="svc-uuid", service_type="MapServer"
+                )
+            }
+        )
+        source = translate(snap, portal_index=index).data["layers"][0]["source"]
+        assert source["kind"] == "arcgis-rest"
+        assert source["url"] == service_root
+        assert source["layerId"] == 0
+        assert source["serviceType"] == "MapServer"
+        assert source["sourceItemId"] == "svc-uuid"
+
+    def test_arcgisfeatureserver_with_portal_service_backref(self) -> None:
+        service_root = "https://services.example/arcgis/rest/services/Y/FeatureServer"
+        snap = _snapshot(
+            CanvasLayer(
+                name="Roads",
+                source_uri=f"url='{service_root}/3' crs='EPSG:3857'",
+                provider="arcgisfeatureserver",
+                visible=True,
+            )
+        )
+        index = PortalIndex(
+            services_by_url={
+                service_root: PortalServiceRef(
+                    item_id="fs-uuid", service_type="FeatureServer"
+                )
+            }
+        )
+        source = translate(snap, portal_index=index).data["layers"][0]["source"]
+        assert source["kind"] == "arcgis-rest"
+        assert source["url"] == service_root
+        assert source["layerId"] == 3
+        assert source["serviceType"] == "FeatureServer"
+        assert source["sourceItemId"] == "fs-uuid"
+
+    def test_arcgis_without_portal_match_still_resolves_url_only(self) -> None:
+        # When the index has no match (user pasted a raw URL or
+        # signed into the wrong portal), we still emit the
+        # arcgis-rest source -- just without the sourceItemId
+        # back-ref. The user can re-publish later once the service
+        # is added to the portal.
+        snap = _snapshot(
+            CanvasLayer(
+                name="External",
+                source_uri="url='https://other.example/MapServer' crs='EPSG:3857' layers='show:0'",
+                provider="arcgismapserver",
+                visible=True,
+            )
+        )
+        source = translate(snap).data["layers"][0]["source"]
+        assert source["kind"] == "arcgis-rest"
+        assert "sourceItemId" not in source
+
+    def test_wms_basemap_with_portal_match_sets_mapdata_basemap(self) -> None:
+        # Portal basemaps don't go in MapData.layers; they set the
+        # top-level MapData.basemap field. A WMS XYZ layer whose
+        # tileUrl matches a portal basemap should pull out of the
+        # layers list and become the basemap.
+        tile_url = "https://basemaps.example/{z}/{x}/{y}.png"
+        snap = _snapshot(
+            _oapif_layer("data", "Parcels"),  # one real layer
+            CanvasLayer(
+                name="Light Basemap",
+                source_uri=(
+                    f"type=xyz&url={tile_url.replace('/', '%2F').replace(':', '%3A').replace('{', '%7B').replace('}', '%7D')}"
+                    "&zmin=0&zmax=22"
+                ),
+                provider="wms",
+                visible=True,
+            ),
+        )
+        index = PortalIndex(basemaps_by_tile_url={tile_url: "bm-uuid"})
+        result = translate(snap, portal_index=index)
+        assert result.data["basemap"] == "bm-uuid"
+        # The basemap doesn't appear in layers -- only the parcels do.
+        assert len(result.data["layers"]) == 1
+        assert result.data["layers"][0]["title"] == "Parcels"
+
+    def test_wms_xyz_without_portal_match_is_skipped(self) -> None:
+        snap = _snapshot(
+            CanvasLayer(
+                name="Foreign Basemap",
+                source_uri="type=xyz&url=https%3A%2F%2Felsewhere%2F%7Bz%7D%2F%7Bx%7D%2F%7By%7D.png",
+                provider="wms",
+                visible=True,
+            )
+        )
+        result = translate(snap)
+        assert result.data["basemap"] == ""
+        assert result.data["layers"] == []
+        assert len(result.skipped) == 1

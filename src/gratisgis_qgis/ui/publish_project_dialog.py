@@ -42,10 +42,12 @@ from ..publish.project_to_map import (
     CanvasLayer,
     CanvasViewport,
     MapTranslation,
+    PortalIndex,
+    PortalServiceRef,
     ProjectSnapshot,
     translate,
 )
-from ..settings import ConnectionStore
+from ..settings import ConnectionProfile, ConnectionStore
 
 if TYPE_CHECKING:
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
@@ -109,6 +111,27 @@ class PublishProjectDialog(QDialog):
 
     # ----- Internals -----
 
+    def _build_portal_index(self) -> PortalIndex:
+        """Pre-fetch the currently-selected portal's basemap + service
+        items and build URL lookups so ``translate`` can backref
+        external-service layers (ArcGIS REST, XYZ basemaps) to the
+        portal items they came from. Empty index when no
+        connection is signed in or the fetch errors -- the
+        translator falls back to skipping those layers without
+        crashing.
+        """
+        profile_name = self._connection_combo.currentData()
+        if not profile_name:
+            return PortalIndex()
+        profile = self._store.get(profile_name)
+        if profile is None or not profile.is_discovered:
+            return PortalIndex()
+        try:
+            return _fetch_portal_index(profile)
+        except Exception:  # pragma: no cover -- best-effort
+            _log.exception("portal index fetch failed; publish without backrefs")
+            return PortalIndex()
+
     def _populate_connection_combo(self) -> None:
         names = self._store.list_names()
         for name in names:
@@ -122,7 +145,8 @@ class PublishProjectDialog(QDialog):
 
     def _snapshot_and_render(self) -> None:
         snapshot = _build_snapshot(self._iface, title=self._title_input.text())
-        result = translate(snapshot)
+        index = self._build_portal_index()
+        result = translate(snapshot, portal_index=index)
         self._translation = result
 
         self._included_list.clear()
@@ -203,6 +227,69 @@ class PublishProjectDialog(QDialog):
 # Helpers that touch QGIS state (kept out of project_to_map.py
 # so the translation logic stays testable in isolation).
 # -----------------------------------------------------------
+
+
+def _fetch_portal_index(profile: ConnectionProfile) -> PortalIndex:
+    """Pull the portal's basemap + connected-service items and
+    index them by their upstream URLs.
+
+    Basemap items expose ``data.tileUrl`` -- the literal XYZ
+    template the plugin's BasemapItem encodes into the WMS XYZ
+    layer URI when the user drags a basemap onto the canvas.
+    Service items expose ``data.url`` -- the MapServer or
+    FeatureServer root.
+
+    Both lookups are then used by ``translate`` to backref a
+    QGIS layer (whose source URL points at the EXTERNAL service)
+    to the portal item the layer originally came from.
+    """
+    from ..browser.fetch import _connected_client
+
+    async def _do() -> tuple[
+        dict[str, str], dict[str, PortalServiceRef]
+    ]:
+        basemaps: dict[str, str] = {}
+        services: dict[str, PortalServiceRef] = {}
+        async with _connected_client(profile) as client:
+            # Pull all items in scope -- typical org has <500
+            # connected items so a single page is fine.
+            items = await client.items.list(limit=1000)
+            for it in items.items:
+                # ItemSummary doesn't carry `data`, so fetch full
+                # only for the types we actually index. Skipping
+                # data_layer / file / map etc. keeps this cheap.
+                normalized = (it.type or "").replace("-", "_")
+                if normalized not in (
+                    "basemap",
+                    "service",
+                    "arcgis_service",
+                ):
+                    continue
+                full = await client.items.get(it.id)
+                data = full.data if hasattr(full, "data") else None
+                if not isinstance(data, dict):
+                    continue
+                if normalized == "basemap":
+                    tile_url = data.get("tileUrl")
+                    if isinstance(tile_url, str) and tile_url:
+                        basemaps[tile_url] = it.id
+                else:
+                    url = data.get("url")
+                    if not isinstance(url, str) or not url:
+                        continue
+                    root = url.rstrip("/")
+                    if "/FeatureServer" in root:
+                        services[root] = PortalServiceRef(
+                            item_id=it.id, service_type="FeatureServer"
+                        )
+                    elif "/MapServer" in root:
+                        services[root] = PortalServiceRef(
+                            item_id=it.id, service_type="MapServer"
+                        )
+        return basemaps, services
+
+    basemaps, services = _run(_do())
+    return PortalIndex(basemaps_by_tile_url=basemaps, services_by_url=services)
 
 
 def _build_snapshot(iface: QgisInterface, title: str) -> ProjectSnapshot:
