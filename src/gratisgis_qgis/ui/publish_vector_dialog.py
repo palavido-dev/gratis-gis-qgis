@@ -69,12 +69,19 @@ _POLL_INTERVAL_MS = 1000
 class PublishVectorDialog(QDialog):
     """Modal dialog driving the vector-publish flow."""
 
-    def __init__(self, iface: QgisInterface, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        iface: QgisInterface,
+        parent: QWidget | None = None,
+        *,
+        preselect_layer_id: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Publish vector layer to GratisGIS")
         self.setMinimumWidth(560)
         self._iface = iface
         self._store = ConnectionStore()
+        self._preselect_layer_id = preselect_layer_id
         self._poll_timer: QTimer | None = None
         self._current_job: ImportJob | None = None
         self._current_item_id: str | None = None
@@ -149,13 +156,21 @@ class PublishVectorDialog(QDialog):
         # is QgsMapLayer.VectorLayer) and QGIS 4 (where the enum
         # moved to Qgis.LayerType.Vector). The Python identity check
         # is portable across both.
+        preselect_idx = -1
         for layer_id, layer in project.mapLayers().items():
             if not isinstance(layer, QgsVectorLayer):
                 continue
             self._layer_combo.addItem(layer.name(), userData=layer_id)
+            if (
+                self._preselect_layer_id is not None
+                and layer_id == self._preselect_layer_id
+            ):
+                preselect_idx = self._layer_combo.count() - 1
         if self._layer_combo.count() == 0:
             self._layer_combo.addItem("(no vector layers in project)", None)
             self._layer_combo.setEnabled(False)
+        elif preselect_idx >= 0:
+            self._layer_combo.setCurrentIndex(preselect_idx)
 
     def _populate_connection_combo(self) -> None:
         for name in self._store.list_names():

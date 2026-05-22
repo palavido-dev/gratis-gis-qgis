@@ -61,6 +61,12 @@ class CanvasLayer:
     opacity: float = 1.0
     """0..1 layer opacity. Layer-tree opacity, not feature-level."""
 
+    qgis_layer_id: str | None = None
+    """QGIS's internal layer id, threaded through so a "publish
+    as data layer" action on a skipped row can re-look up the
+    layer object in the project. Optional because tests don't
+    need it."""
+
 
 @dataclass(frozen=True)
 class CanvasViewport:
@@ -103,9 +109,44 @@ class MapTranslation:
 
 @dataclass(frozen=True)
 class SkippedLayer:
+    """A canvas layer that couldn't be translated to a portal
+    MapLayerSource. Carries enough hints for the publish dialog
+    to offer the right "Add to portal..." action per layer kind.
+
+    Exactly one of these "fix" hints will be set (or none, for
+    truly unsupported layers):
+
+      - ``service_url`` (+ service_type, service_layer_id) for an
+        ArcGIS REST layer the portal doesn't yet have a service
+        item for. The action creates a connected-service item.
+
+      - ``basemap_tile_url`` for a WMS XYZ raster basemap not yet
+        in the portal. The action creates a basemap item.
+
+      - ``is_local_vector=True`` for a QGIS vector layer backed by
+        a local file or in-memory dataset. The action invokes the
+        Phase 3 publish-vector-layer dialog which handles upload,
+        schema inference, and async import.
+
+    Layers with no actionable hint just render in the skipped
+    list with their reason text.
+    """
+
     name: str
     provider: str
     reason: str
+
+    service_url: str | None = None
+    service_type: Literal["MapServer", "FeatureServer"] | None = None
+    service_layer_id: int | None = None
+
+    basemap_tile_url: str | None = None
+
+    is_local_vector: bool = False
+    local_layer_id: str | None = None
+    """QGIS layer id of the local-file source, so the dialog can
+    look the layer up in the project and pre-select it in the
+    vector-publish dialog."""
 
 
 @dataclass(frozen=True)
@@ -168,13 +209,7 @@ def translate(
     for lyr in snapshot.layers:
         resolved = _resolve_layer(lyr, index)
         if resolved is None:
-            skipped.append(
-                SkippedLayer(
-                    name=lyr.name,
-                    provider=lyr.provider,
-                    reason=_skip_reason(lyr),
-                )
-            )
+            skipped.append(_build_skipped(lyr))
             continue
         if isinstance(resolved, _ResolvedBasemap):
             # Only one basemap can render on a portal map -- the
@@ -396,6 +431,75 @@ def _resolve_wms_basemap(layer: CanvasLayer, index: PortalIndex) -> _Resolved | 
     if item_id is None:
         return None
     return _ResolvedBasemap(item_id=item_id)
+
+
+def _build_skipped(layer: CanvasLayer) -> SkippedLayer:
+    """Compose a SkippedLayer with action hints inferred from the
+    QGIS layer's provider + URI. The dialog uses these hints to
+    decide which "Add to portal..." button to render per row.
+    """
+    provider = layer.provider.lower()
+    reason = _skip_reason(layer)
+
+    # ArcGIS REST without a portal-match (we know it's a
+    # connectable URL because _resolve_layer would have produced
+    # a working source if the parser succeeded -- so when we land
+    # here for an arcgis provider, we have a parseable URL but no
+    # PortalIndex match. Re-parse to surface the hint.)
+    if provider in ("arcgismapserver", "arcgisfeatureserver"):
+        kv = _parse_quoted_kv_uri(layer.source_uri)
+        url = kv.get("url", "").rstrip("/")
+        if url:
+            if provider == "arcgisfeatureserver":
+                m = re.search(r"/(\d+)$", url)
+                if m is not None:
+                    return SkippedLayer(
+                        name=layer.name,
+                        provider=layer.provider,
+                        reason=reason,
+                        service_url=url[: m.start()],
+                        service_type="FeatureServer",
+                        service_layer_id=int(m.group(1)),
+                    )
+            else:
+                layers_kv = kv.get("layers", "")
+                m = re.match(r"^show:(\d+)$", layers_kv)
+                if m is not None:
+                    return SkippedLayer(
+                        name=layer.name,
+                        provider=layer.provider,
+                        reason=reason,
+                        service_url=url,
+                        service_type="MapServer",
+                        service_layer_id=int(m.group(1)),
+                    )
+
+    # WMS XYZ basemap without a portal match.
+    if provider == "wms" and "type=xyz" in layer.source_uri:
+        m = re.search(r"url=([^&]+)", layer.source_uri)
+        if m is not None:
+            return SkippedLayer(
+                name=layer.name,
+                provider=layer.provider,
+                reason=reason,
+                basemap_tile_url=unquote(m.group(1)),
+            )
+
+    # Local file / in-memory vector layer.
+    if provider in ("ogr", "memory", "delimitedtext", "gpx", "spatialite"):
+        return SkippedLayer(
+            name=layer.name,
+            provider=layer.provider,
+            reason=reason,
+            is_local_vector=True,
+            local_layer_id=layer.qgis_layer_id,
+        )
+
+    return SkippedLayer(
+        name=layer.name,
+        provider=layer.provider,
+        reason=reason,
+    )
 
 
 def _skip_reason(layer: CanvasLayer) -> str:
