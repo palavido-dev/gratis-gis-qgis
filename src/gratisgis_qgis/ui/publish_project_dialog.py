@@ -96,11 +96,19 @@ class PublishProjectDialog(QDialog):
         self._buttons = buttons
 
         # ----- Compose layout -----
+        # Wording note: only the map item itself is new on the
+        # portal; each layer below is already a portal item that
+        # the new map will reference. "Layers included in the
+        # map" / "Layers not on the portal (won't be in the map)"
+        # keeps that distinction explicit so users don't expect
+        # the publish to upload anything but the map.
         layout = QVBoxLayout()
         layout.addLayout(form)
-        layout.addWidget(QLabel("Layers that will be published:"))
+        layout.addWidget(QLabel("Layers included in the map:"))
         layout.addWidget(self._included_list, 2)
-        layout.addWidget(QLabel("Skipped (not on the portal yet):"))
+        layout.addWidget(
+            QLabel("Layers not on the portal (won't be in the map):")
+        )
         layout.addWidget(self._skipped_list, 1)
         layout.addWidget(self._summary_label)
         layout.addWidget(buttons)
@@ -150,9 +158,20 @@ class PublishProjectDialog(QDialog):
         self._translation = result
 
         self._included_list.clear()
+        # A matched basemap doesn't appear in the layers list (it
+        # sets MapData.basemap instead), so surface it explicitly
+        # at the top of the included list -- otherwise the user
+        # sees their basemap in the QGIS canvas, sees an "OK"
+        # publish, but can't find it in the dialog summary.
+        if result.data.get("basemap"):
+            row = QListWidgetItem(
+                f"Basemap  ->  basemap item ({result.data['basemap']})"
+            )
+            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self._included_list.addItem(row)
         for lyr in result.data.get("layers", []):
             row = QListWidgetItem(
-                f"{lyr['title']}  ->  source: {lyr['source']['kind']} ({lyr['source'].get('itemId', '?')})"
+                f"{lyr['title']}  ->  {_format_source(lyr['source'])}"
             )
             row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._included_list.addItem(row)
@@ -165,15 +184,19 @@ class PublishProjectDialog(QDialog):
 
         kept = len(result.data.get("layers", []))
         skip = len(result.skipped)
+        basemap_note = ""
+        if result.data.get("basemap"):
+            basemap_note = " (plus 1 basemap)"
         self._summary_label.setText(
-            f"{kept} layer(s) will publish; {skip} skipped. Viewport "
-            f"center: "
+            f"{kept} layer(s){basemap_note} will be referenced from the new "
+            f"map; {skip} skipped. Viewport center: "
             f"{snapshot.viewport.center_lng:.4f}, {snapshot.viewport.center_lat:.4f} "
             f"@ zoom {snapshot.viewport.zoom:.1f}."
         )
         # Publish stays enabled even when 0 layers map -- an empty
-        # map is a legitimate starting point. The skipped warning
-        # already tells the user what's missing.
+        # map is a legitimate starting point. The skipped list
+        # already tells the user which canvas layers won't carry
+        # over.
 
     def _on_publish(self) -> None:
         profile_name = self._connection_combo.currentData()
@@ -227,6 +250,32 @@ class PublishProjectDialog(QDialog):
 # Helpers that touch QGIS state (kept out of project_to_map.py
 # so the translation logic stays testable in isolation).
 # -----------------------------------------------------------
+
+
+def _format_source(source: dict[str, object]) -> str:
+    """One-line summary of a MapLayerSource for the included
+    list. Each branch labels the portal-item id the new map will
+    reference so the user can sanity-check the mapping.
+    """
+    kind = str(source.get("kind", "?"))
+    if kind == "data-layer":
+        item_id = str(source.get("itemId", "?"))
+        layer_key = source.get("layerKey")
+        if isinstance(layer_key, str) and layer_key:
+            return f"data layer ({item_id} / {layer_key})"
+        return f"data layer ({item_id})"
+    if kind == "arcgis-rest":
+        url = str(source.get("url", "?"))
+        layer_id = source.get("layerId", "?")
+        item_id = source.get("sourceItemId")
+        service_type = str(source.get("serviceType", "ArcGIS"))
+        if isinstance(item_id, str) and item_id:
+            return f"{service_type} layer {layer_id} (portal item {item_id})"
+        # No portal-item backref -- show the URL so the user
+        # can spot off-portal references that will work but
+        # aren't tracked through portal admin.
+        return f"{service_type} layer {layer_id} ({url}) - not a portal item"
+    return kind
 
 
 def _fetch_portal_index(profile: ConnectionProfile) -> PortalIndex:
