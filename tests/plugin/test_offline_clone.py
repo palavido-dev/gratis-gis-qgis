@@ -12,8 +12,52 @@ from gratisgis_qgis.offline.clone import (
     CloneValidationIssue,
     make_target,
     normalize_feature_collection,
+    safe_write_path,
     validate_clone_target,
 )
+
+
+class TestSafeWritePath:
+    def test_success_promotes_temp_into_place(self, tmp_path: Path) -> None:
+        final = tmp_path / "clone.gpkg"
+        with safe_write_path(str(final)) as tmp:
+            Path(tmp).write_bytes(b"new bytes")
+        assert final.read_bytes() == b"new bytes"
+        # No .part leftovers once promoted.
+        assert list(tmp_path.glob("*.part")) == []
+
+    def test_temp_lives_beside_the_target(self, tmp_path: Path) -> None:
+        # Same directory is what makes the final os.replace an atomic
+        # same-filesystem rename instead of a copy window.
+        final = tmp_path / "clone.gpkg"
+        with safe_write_path(str(final)) as tmp:
+            assert Path(tmp).parent == tmp_path
+            Path(tmp).write_bytes(b"x")
+
+    def test_failure_preserves_existing_target(self, tmp_path: Path) -> None:
+        # The defect this exists for: the old flow unlinked the
+        # user's previous clone BEFORE writing, so a failed write
+        # destroyed it. Now the target must survive untouched.
+        final = tmp_path / "clone.gpkg"
+        final.write_bytes(b"previous clone, possibly edited")
+        with (
+            pytest.raises(RuntimeError, match="writer exploded"),
+            safe_write_path(str(final)) as tmp,
+        ):
+            Path(tmp).write_bytes(b"partial garbage")
+            raise RuntimeError("writer exploded")
+        assert final.read_bytes() == b"previous clone, possibly edited"
+        # And the partial temp file is cleaned up.
+        assert list(tmp_path.glob("*.part")) == []
+
+    def test_failure_with_no_existing_target_leaves_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        final = tmp_path / "clone.gpkg"
+        with pytest.raises(RuntimeError), safe_write_path(str(final)):
+            raise RuntimeError("boom")
+        assert not final.exists()
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestMakeTarget:

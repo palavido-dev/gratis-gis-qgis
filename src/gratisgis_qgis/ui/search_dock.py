@@ -40,10 +40,11 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 from gratisgis_client.models.item import ItemSummary, ItemType
 
 from ..browser.buckets import is_qgis_consumable
-from ..browser.fetch import list_items_sync
 from ..browser.uris import oapif_uri, vector_tile_uri
 from ..log import get_logger
+from ..portal import list_items
 from ..settings import ConnectionStore
+from ..tasks import format_error, run_in_task
 
 if TYPE_CHECKING:
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
@@ -79,6 +80,10 @@ class GratisGISSearchDock(QDockWidget):
         self.setObjectName(self.OBJECT_NAME)
         self._iface = iface
         self._store = ConnectionStore()
+        # Monotonic search id; results for anything but the newest
+        # search are dropped so a slow earlier query cannot overwrite
+        # a faster later one.
+        self._search_seq = 0
 
         # ----- Toolbar row -----
         self._connection_combo = QComboBox()
@@ -180,19 +185,35 @@ class GratisGISSearchDock(QDockWidget):
         query = self._query_input.text().strip() or None
         type_filter = self._selected_type()
 
+        self._search_seq += 1
+        seq = self._search_seq
+        self._search_btn.setEnabled(False)
         self._status.setText("Searching...")
         self._results.clear()
-        try:
-            items = list_items_sync(
+
+        def fetch(_handle) -> list[ItemSummary]:
+            return list_items(
                 profile,
                 types=[type_filter] if type_filter else None,
                 query=query,
             )
-        except Exception as e:  # pragma: no cover -- defensive
-            _log.exception("Search failed")
-            self._status.setText(f"Search failed: {e}")
-            return
 
+        def done(items: list[ItemSummary]) -> None:
+            if seq != self._search_seq:
+                return
+            self._search_btn.setEnabled(True)
+            self._render_results(items)
+
+        def failed(exc: BaseException) -> None:
+            if seq != self._search_seq:
+                return
+            _log.error("Search failed", exc_info=exc)
+            self._search_btn.setEnabled(True)
+            self._status.setText(f"Search failed: {format_error(exc)}")
+
+        run_in_task("GratisGIS search", fetch, done, failed, cancelable=False)
+
+    def _render_results(self, items: list[ItemSummary]) -> None:
         # Trim to types QGIS can actually consume so the result
         # list doesn't show items (forms, dashboards, web apps,
         # themes, templates, pick lists, boundaries) the user has
@@ -201,7 +222,7 @@ class GratisGISSearchDock(QDockWidget):
         items = [it for it in items if is_qgis_consumable(it)]
         for it in sorted(items, key=lambda i: i.title.lower()):
             row = QListWidgetItem(_format_result_row(it))
-            row.setData(Qt.ItemDataRole.UserRole, it.model_dump(mode="json", by_alias=True))
+            row.setData(Qt.ItemDataRole.UserRole, it.to_api_dict())
             row.setToolTip(_format_tooltip(it))
             self._results.addItem(row)
         self._status.setText(f"{len(items)} result(s).")
@@ -215,7 +236,7 @@ class GratisGISSearchDock(QDockWidget):
         if not isinstance(payload, dict):
             return
         try:
-            summary = ItemSummary.model_validate(payload)
+            summary = ItemSummary.from_api(payload)
         except Exception:  # pragma: no cover
             return
         profile_name = self._selected_profile_name()

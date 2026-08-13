@@ -22,7 +22,7 @@ from qgis.PyQt.QtCore import QObject, Qt  # type: ignore[import-not-found]
 from qgis.PyQt.QtGui import QIcon  # type: ignore[import-not-found]
 from qgis.PyQt.QtWidgets import QAction  # type: ignore[import-not-found]
 
-from .log import get_logger
+from .log import get_logger, teardown_logging
 
 if TYPE_CHECKING:
     from qgis.core import QgsDataItemProvider  # type: ignore[import-not-found]
@@ -128,6 +128,10 @@ class GratisGISPlugin(QObject):
             self._search_dock.deleteLater()
             self._search_dock = None
         _log.debug("unload: menu actions + browser provider + search dock removed")
+        # Last: release the log handlers so a reload does not stack
+        # duplicates onto the persistent stdlib logger (and so the
+        # log file is unlocked for in-place upgrades on Windows).
+        teardown_logging()
 
     # ----- Action handlers -----
 

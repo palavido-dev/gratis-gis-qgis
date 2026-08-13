@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from gratisgis_qgis.browser.uris import (
+    authed_vector_tile_uri,
     oapif_uri,
+    parse_vector_tile_uri,
     public_ogc_root,
     vector_tile_uri,
 )
@@ -67,6 +69,74 @@ class TestVectorTileUri:
     def test_supports_layered_collection_ids(self) -> None:
         uri = vector_tile_uri("https://portal.example", "abc__roads")
         assert "collections/abc__roads/" in uri
+
+
+class TestAuthedVectorTileUri:
+    def test_emits_item_layer_route_with_authcfg(self) -> None:
+        uri = authed_vector_tile_uri(
+            "https://portal.example", "item-1", "roads", authcfg_id="abc1234"
+        )
+        assert uri.startswith(
+            "type=xyz&url=https://portal.example"
+            "/api/items/item-1/layers/roads/tile/"
+        )
+        assert "&authcfg=abc1234" in uri
+        assert "zmin=0" in uri
+        assert "zmax=18" in uri
+
+    def test_strips_trailing_slash_from_portal_url(self) -> None:
+        uri = authed_vector_tile_uri(
+            "https://portal.example/", "i", "l", authcfg_id="a"
+        )
+        assert "example//" not in uri
+
+    def test_tile_coordinate_orders_are_pinned_and_differ(self) -> None:
+        # The two tile endpoints disagree on coordinate order: the
+        # authed per-layer MVT route is z/x/y (the tile-server
+        # convention the portal's map page uses) while the public
+        # OGC Tiles surface is z/y/x (tileMatrix/tileRow/tileCol).
+        # Swapping them renders scrambled tiles rather than an
+        # obvious error, so BOTH orders are pinned explicitly.
+        authed = authed_vector_tile_uri(
+            "https://portal.example", "item-1", "roads", authcfg_id="a"
+        )
+        public = vector_tile_uri("https://portal.example", "item-1__roads")
+        assert "/tile/{z}/{x}/{y}.mvt" in authed
+        assert "/tiles/WebMercatorQuad/{z}/{y}/{x}" in public
+        # Belt and braces: neither order appears in the other URI.
+        assert "{z}/{y}/{x}" not in authed
+        assert "{z}/{x}/{y}" not in public
+
+
+class TestParseVectorTileUri:
+    def test_round_trips_public_shape(self) -> None:
+        uri = vector_tile_uri("https://portal.example", "abc__roads")
+        assert parse_vector_tile_uri(uri) == ("https://portal.example", "abc__roads")
+
+    def test_round_trips_authed_shape_as_joined_collection_id(self) -> None:
+        # Publish-project's recognizer feeds the parsed collection id
+        # through the same `<itemId>__<layerKey>` split as the public
+        # shape, so a private layer added via the authed route still
+        # maps back to its portal item.
+        uri = authed_vector_tile_uri(
+            "https://portal.example", "item-1", "roads", authcfg_id="abc1234"
+        )
+        assert parse_vector_tile_uri(uri) == ("https://portal.example", "item-1__roads")
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "",
+            "not-a-uri",
+            "type=xyz&url=https://elsewhere.example/tiles/{z}/{x}/{y}.png",
+            # Authed-ish shape with the wrong path segments.
+            "type=xyz&url=https://portal.example/api/items/i/sublayers/l/tile/{z}/{x}/{y}.mvt",
+            # Missing ids.
+            "type=xyz&url=https://portal.example/api/items//layers//tile/{z}/{x}/{y}.mvt",
+        ],
+    )
+    def test_rejects_non_portal_shapes(self, uri: str) -> None:
+        assert parse_vector_tile_uri(uri) is None
 
 
 @pytest.mark.parametrize(

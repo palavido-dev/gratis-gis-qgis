@@ -6,9 +6,10 @@ Browser tree's context menu and the Search dock's right-click
 menu. Title / description / tags / sharing / created+updated
 timestamps; expandable to edit-mode in a follow-up.
 
-Fetches the item synchronously on open (small payload, fast
-response) so the dialog doesn't ship a spinner+threading dance
-for one HTTP call.
+The fetch runs in a background task: the constructor shows the
+"Loading..." scaffold immediately and the values fill in when the
+task lands, so opening properties on a slow or dead portal never
+freezes the QGIS main window.
 """
 from __future__ import annotations
 
@@ -26,9 +27,10 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QWidget,
 )
 
-from ..browser.fetch import get_item_sync
 from ..log import get_logger
+from ..portal import get_item
 from ..settings import ConnectionProfile
+from ..tasks import run_in_task
 
 _log = get_logger(__name__)
 
@@ -98,20 +100,38 @@ class ItemPropertiesDialog(QDialog):
         layout.addLayout(btn_row)
         self.setLayout(layout)
 
-        # Kick off the fetch after the dialog is constructed so
-        # Qt has a chance to lay out before we block on HTTP.
+        # Fetch off the GUI thread; the constructor must return with
+        # the scaffold visible instead of blocking the main window on
+        # one HTTP call.
         self._populate()
 
     def _populate(self) -> None:
-        payload = get_item_sync(self._profile, self._item_id)
-        if payload is None:
-            self._title.setText("Item not found")
-            self._type_row.setText(
-                "The item may be private, deleted, or your session may have "
-                "expired. Try refreshing the connection."
-            )
-            return
-        _render_item(payload, self)
+        profile = self._profile
+        item_id = self._item_id
+
+        def fetch(_handle) -> dict[str, Any] | None:
+            # get_item already swallows fetch errors to None with a
+            # log entry; both outcomes render the same fallback text.
+            return get_item(profile, item_id)
+
+        def done(payload: dict[str, Any] | None) -> None:
+            if payload is None:
+                self._show_not_found()
+                return
+            _render_item(payload, self)
+
+        def failed(exc: BaseException) -> None:  # pragma: no cover - defensive
+            _log.error("Item properties fetch failed", exc_info=exc)
+            self._show_not_found()
+
+        run_in_task("GratisGIS item properties", fetch, done, failed, cancelable=False)
+
+    def _show_not_found(self) -> None:
+        self._title.setText("Item not found")
+        self._type_row.setText(
+            "The item may be private, deleted, or your session may have "
+            "expired. Try refreshing the connection."
+        )
 
 
 def _render_item(payload: dict[str, Any], dlg: ItemPropertiesDialog) -> None:
@@ -121,20 +141,16 @@ def _render_item(payload: dict[str, Any], dlg: ItemPropertiesDialog) -> None:
     sections (e.g. data_layer schema preview) without growing the
     class itself.
     """
+    # The payload is Item.to_api_dict() (portal.get_item), which
+    # emits camelCase keys exclusively; no snake_case fallbacks.
     title = payload.get("title") or "(untitled)"
     type_ = payload.get("type") or "(unknown)"
     access = payload.get("access") or "(unknown)"
     description = payload.get("description") or ""
     tags = payload.get("tags") or []
-    created = payload.get("createdAt") or payload.get("created_at") or ""
-    updated = payload.get("updatedAt") or payload.get("updated_at") or ""
-    owner = (
-        payload.get("ownerUsername")
-        or payload.get("owner_username")
-        or payload.get("ownerId")
-        or payload.get("owner_id")
-        or ""
-    )
+    created = payload.get("createdAt") or ""
+    updated = payload.get("updatedAt") or ""
+    owner = payload.get("ownerUsername") or payload.get("ownerId") or ""
 
     dlg._title.setText(title)
     dlg._type_row.setText(f"Type: {type_}")

@@ -38,8 +38,8 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 
 from gratisgis_client.models.item import ItemSummary
 
-from ..browser.fetch import _connected_client, _run
 from ..log import get_logger
+from ..portal import get_client
 from ..publish.project_to_map import (
     CanvasLayer,
     CanvasViewport,
@@ -51,6 +51,7 @@ from ..publish.project_to_map import (
     translate,
 )
 from ..settings import ConnectionProfile, ConnectionStore
+from ..tasks import format_error, run_in_task
 
 if TYPE_CHECKING:
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
@@ -68,6 +69,15 @@ class PublishProjectDialog(QDialog):
         self._iface = iface
         self._store = ConnectionStore()
         self._translation: MapTranslation | None = None
+        # Portal item index for backref matching. Starts empty so the
+        # dialog can render the layer audit instantly; the real index
+        # loads in a background task and re-renders when it lands.
+        self._index = PortalIndex()
+        self._busy = False
+        # Set on reject: task completions landing after the user
+        # dismissed the dialog must not pop message boxes or keep
+        # refreshing a dead widget tree.
+        self._closed = False
 
         # ----- Connection picker + map metadata -----
         self._connection_combo = QComboBox()
@@ -124,31 +134,70 @@ class PublishProjectDialog(QDialog):
         layout.addWidget(buttons)
         self.setLayout(layout)
 
-        # Populate the lists with the current project state.
+        # Populate the lists with the current project state, then
+        # load the portal index in the background. Publishing stays
+        # locked until the index resolves so a fast Publish click
+        # cannot race the backref matching and ship a map that skips
+        # layers the index would have matched.
         self._snapshot_and_render()
+        self._connection_combo.currentIndexChanged.connect(self._refresh_index)
+        self._refresh_index()
 
     # ----- Internals -----
 
-    def _build_portal_index(self) -> PortalIndex:
-        """Pre-fetch the currently-selected portal's basemap + service
-        items and build URL lookups so ``translate`` can backref
-        external-service layers (ArcGIS REST, XYZ basemaps) to the
-        portal items they came from. Empty index when no
-        connection is signed in or the fetch errors -- the
-        translator falls back to skipping those layers without
-        crashing.
+    def _refresh_index(self) -> None:
+        """Load the selected portal's basemap + service index in a
+        task so ``translate`` can backref external-service layers
+        (ArcGIS REST, XYZ basemaps) to the portal items they came
+        from. Empty index when no connection is signed in or the
+        fetch errors; the translator then skips those layers
+        without crashing, same as before the index existed.
         """
         profile_name = self._connection_combo.currentData()
-        if not profile_name:
-            return PortalIndex()
-        profile = self._store.get(profile_name)
+        profile = self._store.get(profile_name) if profile_name else None
         if profile is None or not profile.is_discovered:
-            return PortalIndex()
-        try:
+            self._index = PortalIndex()
+            self._snapshot_and_render()
+            return
+
+        self._set_busy(True)
+        self._summary_label.setText("Checking which layers are on the portal...")
+
+        def fetch(_handle) -> PortalIndex:
             return _fetch_portal_index(profile)
-        except Exception:  # pragma: no cover -- best-effort
-            _log.exception("portal index fetch failed; publish without backrefs")
-            return PortalIndex()
+
+        def done(index: PortalIndex) -> None:
+            if self._closed:
+                return
+            self._index = index
+            self._set_busy(False)
+            self._snapshot_and_render()
+
+        def failed(exc: BaseException) -> None:
+            # Best-effort: publish still works, just without portal
+            # backrefs for external services and basemaps.
+            _log.error("portal index fetch failed; publish without backrefs", exc_info=exc)
+            if self._closed:
+                return
+            self._index = PortalIndex()
+            self._set_busy(False)
+            self._snapshot_and_render()
+
+        run_in_task("GratisGIS portal index", fetch, done, failed, cancelable=False)
+
+    def reject(self) -> None:  # Qt override
+        self._closed = True
+        super().reject()
+
+    def _set_busy(self, busy: bool) -> None:
+        """One switch for every surface that must not re-enter while
+        a task (index load, item create, map publish) is running."""
+        self._busy = busy
+        self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not busy)
+        self._bulk_add_button.setEnabled(
+            not busy and self._bulk_add_button.isVisible()
+        )
+        self._connection_combo.setEnabled(not busy)
 
     def _populate_connection_combo(self) -> None:
         names = self._store.list_names()
@@ -163,8 +212,7 @@ class PublishProjectDialog(QDialog):
 
     def _snapshot_and_render(self) -> None:
         snapshot = _build_snapshot(self._iface, title=self._title_input.text())
-        index = self._build_portal_index()
-        result = translate(snapshot, portal_index=index)
+        result = translate(snapshot, portal_index=self._index)
         self._translation = result
 
         self._included_list.clear()
@@ -205,7 +253,7 @@ class PublishProjectDialog(QDialog):
         bulk_ready = any(
             s.service_url or s.basemap_tile_url for s in result.skipped
         )
-        self._bulk_add_button.setEnabled(bulk_ready)
+        self._bulk_add_button.setEnabled(bulk_ready and not self._busy)
         self._bulk_add_button.setVisible(skipped_with_actions > 0)
 
         kept = len(result.data.get("layers", []))
@@ -228,9 +276,11 @@ class PublishProjectDialog(QDialog):
 
     def _on_skipped_action(self, skipped: SkippedLayer) -> None:
         """Dispatch to the right "add to portal" flow per layer
-        kind. Refresh the dialog snapshot after a successful add
-        so the row moves up to the included list.
+        kind. Each flow refreshes the dialog when its add lands so
+        the row moves up to the included list.
         """
+        if self._busy:
+            return
         profile = self._current_profile()
         if profile is None:
             QMessageBox.warning(
@@ -239,15 +289,12 @@ class PublishProjectDialog(QDialog):
                 "Pick a signed-in connection to publish to.",
             )
             return
-        ok = False
         if skipped.service_url is not None and skipped.service_type is not None:
-            ok = self._run_create_service(profile, skipped)
+            self._run_create_service(profile, skipped)
         elif skipped.basemap_tile_url is not None:
-            ok = self._run_create_basemap(profile, skipped)
-        elif skipped.is_local_vector:
-            ok = self._run_publish_vector(skipped)
-        if ok:
-            self._snapshot_and_render()
+            self._run_create_basemap(profile, skipped)
+        elif skipped.is_local_vector and self._run_publish_vector(skipped):
+            self._refresh_index()
 
     def _on_bulk_add_missing(self) -> None:
         """Quick-add every metadata-only skipped layer (services +
@@ -272,45 +319,64 @@ class PublishProjectDialog(QDialog):
         if not candidates:
             return
 
-        created = 0
-        failed: list[tuple[str, str]] = []
-        for s in candidates:
-            try:
-                if s.service_url and s.service_type:
-                    _create_service_item(
-                        profile,
-                        title=s.name,
-                        url=s.service_url,
-                        service_type=s.service_type,
-                        layer_id=s.service_layer_id,
-                    )
-                elif s.basemap_tile_url:
-                    _create_basemap_item(
-                        profile, title=s.name, tile_url=s.basemap_tile_url
-                    )
-                created += 1
-            except Exception as e:  # pragma: no cover -- defensive
-                _log.exception("bulk add-missing failed for %s", s.name)
-                failed.append((s.name, str(e)))
+        self._set_busy(True)
+        self._summary_label.setText(f"Creating {len(candidates)} portal item(s)...")
 
-        if failed:
-            QMessageBox.warning(
-                self,
-                "Some items failed",
-                f"Created {created}, failed {len(failed)}.\n\n"
-                + "\n".join(f"- {n}: {err}" for n, err in failed),
-            )
-        else:
-            QMessageBox.information(
-                self,
-                "Items created",
-                f"{created} item(s) created on the portal.",
-            )
-        self._snapshot_and_render()
+        def create_all(_handle) -> tuple[int, list[tuple[str, str]]]:
+            created = 0
+            failures: list[tuple[str, str]] = []
+            for s in candidates:
+                try:
+                    if s.service_url and s.service_type:
+                        _create_service_item(
+                            profile,
+                            title=s.name,
+                            url=s.service_url,
+                            service_type=s.service_type,
+                            layer_id=s.service_layer_id,
+                        )
+                    elif s.basemap_tile_url:
+                        _create_basemap_item(
+                            profile, title=s.name, tile_url=s.basemap_tile_url
+                        )
+                    created += 1
+                except Exception as e:  # pragma: no cover - defensive
+                    _log.exception("bulk add-missing failed for %s", s.name)
+                    failures.append((s.name, str(e)))
+            return created, failures
+
+        def done(result: tuple[int, list[tuple[str, str]]]) -> None:
+            created, failures = result
+            if self._closed:
+                return
+            self._set_busy(False)
+            if failures:
+                QMessageBox.warning(
+                    self,
+                    "Some items failed",
+                    f"Created {created}, failed {len(failures)}.\n\n"
+                    + "\n".join(f"- {n}: {err}" for n, err in failures),
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Items created",
+                    f"{created} item(s) created on the portal.",
+                )
+            self._refresh_index()
+
+        def failed(exc: BaseException) -> None:  # pragma: no cover - defensive
+            _log.error("bulk add-missing failed", exc_info=exc)
+            if self._closed:
+                return
+            self._set_busy(False)
+            QMessageBox.critical(self, "Create failed", format_error(exc))
+
+        run_in_task("GratisGIS: add portal items", create_all, done, failed, cancelable=False)
 
     def _run_create_service(
         self, profile: ConnectionProfile, skipped: SkippedLayer
-    ) -> bool:
+    ) -> None:
         assert skipped.service_url is not None
         assert skipped.service_type is not None
         dlg = _QuickItemDialog(
@@ -323,26 +389,30 @@ class PublishProjectDialog(QDialog):
             default_title=skipped.name,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
-            return False
-        try:
-            _create_service_item(
+            return
+        service_url = skipped.service_url
+        service_type = skipped.service_type
+        layer_id = skipped.service_layer_id
+        title = dlg.title()
+        description = dlg.description()
+        access = dlg.access()
+
+        def create(_handle) -> ItemSummary:
+            return _create_service_item(
                 profile,
-                title=dlg.title(),
-                url=skipped.service_url,
-                service_type=skipped.service_type,
-                layer_id=skipped.service_layer_id,
-                description=dlg.description(),
-                access=dlg.access(),
+                title=title,
+                url=service_url,
+                service_type=service_type,
+                layer_id=layer_id,
+                description=description,
+                access=access,
             )
-        except Exception as e:  # pragma: no cover -- defensive
-            _log.exception("create service failed")
-            QMessageBox.critical(self, "Create failed", str(e))
-            return False
-        return True
+
+        self._run_create_task("GratisGIS: add connected service", create)
 
     def _run_create_basemap(
         self, profile: ConnectionProfile, skipped: SkippedLayer
-    ) -> bool:
+    ) -> None:
         assert skipped.basemap_tile_url is not None
         dlg = _QuickItemDialog(
             self,
@@ -354,20 +424,43 @@ class PublishProjectDialog(QDialog):
             default_title=skipped.name,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
-            return False
-        try:
-            _create_basemap_item(
+            return
+        tile_url = skipped.basemap_tile_url
+        title = dlg.title()
+        description = dlg.description()
+        access = dlg.access()
+
+        def create(_handle) -> ItemSummary:
+            return _create_basemap_item(
                 profile,
-                title=dlg.title(),
-                tile_url=skipped.basemap_tile_url,
-                description=dlg.description(),
-                access=dlg.access(),
+                title=title,
+                tile_url=tile_url,
+                description=description,
+                access=access,
             )
-        except Exception as e:  # pragma: no cover -- defensive
-            _log.exception("create basemap failed")
-            QMessageBox.critical(self, "Create failed", str(e))
-            return False
-        return True
+
+        self._run_create_task("GratisGIS: add basemap", create)
+
+    def _run_create_task(self, description: str, create) -> None:
+        """Shared scheduling for the one-item create actions."""
+        self._set_busy(True)
+
+        def done(_item: ItemSummary) -> None:
+            if self._closed:
+                return
+            self._set_busy(False)
+            # Re-index so the fresh item backrefs and the row moves
+            # up into the included list.
+            self._refresh_index()
+
+        def failed(exc: BaseException) -> None:
+            _log.error("create item failed", exc_info=exc)
+            if self._closed:
+                return
+            self._set_busy(False)
+            QMessageBox.critical(self, "Create failed", format_error(exc))
+
+        run_in_task(description, create, done, failed, cancelable=False)
 
     def _run_publish_vector(self, skipped: SkippedLayer) -> bool:
         """Launch the existing Phase 3 publish-vector-layer dialog
@@ -419,30 +512,39 @@ class PublishProjectDialog(QDialog):
         description = self._description_input.toPlainText().strip() or None
         data = dict(self._translation.data)
 
-        async def _create() -> ItemSummary:
-            async with _connected_client(profile) as client:
-                item = await client.items.create(
-                    type="map",
-                    title=title,
-                    description=description,
-                    data=data,
-                )
-                return item
+        self._set_busy(True)
+        self._summary_label.setText("Creating map item on the portal...")
 
-        try:
-            item = _run(_create())
-        except Exception as e:  # pragma: no cover -- defensive
-            _log.exception("publish-project failed")
-            QMessageBox.critical(self, "Publish failed", str(e))
-            return
+        def create(_handle) -> ItemSummary:
+            return get_client(profile).items.create(
+                type="map",
+                title=title,
+                description=description,
+                data=data,
+            )
 
-        QMessageBox.information(
-            self,
-            "Published",
-            f"Map '{item.title}' created on the portal.\n\n"
-            f"Item id: {item.id}",
-        )
-        self.accept()
+        def done(item: ItemSummary) -> None:
+            if self._closed:
+                _log.info("map %s created after the dialog closed", item.id)
+                return
+            self._set_busy(False)
+            QMessageBox.information(
+                self,
+                "Published",
+                f"Map '{item.title}' created on the portal.\n\n"
+                f"Item id: {item.id}",
+            )
+            self.accept()
+
+        def failed(exc: BaseException) -> None:
+            _log.error("publish-project failed", exc_info=exc)
+            if self._closed:
+                return
+            self._set_busy(False)
+            self._snapshot_and_render()
+            QMessageBox.critical(self, "Publish failed", format_error(exc))
+
+        run_in_task("GratisGIS: publish map", create, done, failed, cancelable=False)
 
 
 # -----------------------------------------------------------
@@ -479,64 +581,56 @@ def _format_source(source: dict[str, object]) -> str:
 
 def _fetch_portal_index(profile: ConnectionProfile) -> PortalIndex:
     """Pull the portal's basemap + connected-service items and
-    index them by their upstream URLs.
+    index them by their upstream URLs. Blocking; run it in a task.
 
-    Basemap items expose ``data.tileUrl`` -- the literal XYZ
+    Basemap items expose ``data.tileUrl``, the literal XYZ
     template the plugin's BasemapItem encodes into the WMS XYZ
     layer URI when the user drags a basemap onto the canvas.
-    Service items expose ``data.url`` -- the MapServer or
+    Service items expose ``data.url``, the MapServer or
     FeatureServer root.
 
     Both lookups are then used by ``translate`` to backref a
     QGIS layer (whose source URL points at the EXTERNAL service)
     to the portal item the layer originally came from.
     """
-    from ..browser.fetch import _connected_client
-
-    async def _do() -> tuple[
-        dict[str, str], dict[str, PortalServiceRef]
-    ]:
-        basemaps: dict[str, str] = {}
-        services: dict[str, PortalServiceRef] = {}
-        async with _connected_client(profile) as client:
-            # Pull all items in scope -- typical org has <500
-            # connected items so a single page is fine.
-            items = await client.items.list(limit=1000)
-            for it in items.items:
-                # ItemSummary doesn't carry `data`, so fetch full
-                # only for the types we actually index. Skipping
-                # data_layer / file / map etc. keeps this cheap.
-                normalized = (it.type or "").replace("-", "_")
-                if normalized not in (
-                    "basemap",
-                    "service",
-                    "arcgis_service",
-                ):
-                    continue
-                full = await client.items.get(it.id)
-                data = full.data if hasattr(full, "data") else None
-                if not isinstance(data, dict):
-                    continue
-                if normalized == "basemap":
-                    tile_url = data.get("tileUrl")
-                    if isinstance(tile_url, str) and tile_url:
-                        basemaps[tile_url] = it.id
-                else:
-                    url = data.get("url")
-                    if not isinstance(url, str) or not url:
-                        continue
-                    root = url.rstrip("/")
-                    if "/FeatureServer" in root:
-                        services[root] = PortalServiceRef(
-                            item_id=it.id, service_type="FeatureServer"
-                        )
-                    elif "/MapServer" in root:
-                        services[root] = PortalServiceRef(
-                            item_id=it.id, service_type="MapServer"
-                        )
-        return basemaps, services
-
-    basemaps, services = _run(_do())
+    basemaps: dict[str, str] = {}
+    services: dict[str, PortalServiceRef] = {}
+    client = get_client(profile)
+    # Pull all items in scope: typical org has <500 connected
+    # items so a single page is fine.
+    items = client.items.list(limit=1000)
+    for it in items.items:
+        # ItemSummary doesn't carry `data`, so fetch full only for
+        # the types we actually index. Skipping data_layer / file /
+        # map etc. keeps this cheap.
+        normalized = (it.type or "").replace("-", "_")
+        if normalized not in (
+            "basemap",
+            "service",
+            "arcgis_service",
+        ):
+            continue
+        full = client.items.get(it.id)
+        data = full.data if hasattr(full, "data") else None
+        if not isinstance(data, dict):
+            continue
+        if normalized == "basemap":
+            tile_url = data.get("tileUrl")
+            if isinstance(tile_url, str) and tile_url:
+                basemaps[tile_url] = it.id
+        else:
+            url = data.get("url")
+            if not isinstance(url, str) or not url:
+                continue
+            root = url.rstrip("/")
+            if "/FeatureServer" in root:
+                services[root] = PortalServiceRef(
+                    item_id=it.id, service_type="FeatureServer"
+                )
+            elif "/MapServer" in root:
+                services[root] = PortalServiceRef(
+                    item_id=it.id, service_type="MapServer"
+                )
     return PortalIndex(basemaps_by_tile_url=basemaps, services_by_url=services)
 
 
@@ -743,6 +837,8 @@ def _create_service_item(
 ) -> ItemSummary:
     """Create a portal ``service`` item from an ArcGIS REST URL.
 
+    Blocking; run it in a task.
+
     Mirrors the data envelope the portal seeds for connected
     services: ``url`` is the service root, ``layers`` carries at
     least the selected layer index so the auto-create item is
@@ -767,18 +863,13 @@ def _create_service_item(
         "serviceTitle": title,
         "selectedLayerIds": [layer_id] if layer_id is not None else [],
     }
-
-    async def _do() -> ItemSummary:
-        async with _connected_client(profile) as client:
-            return await client.items.create(
-                type="service",
-                title=title,
-                data=data,
-                description=description,
-                access=access,  # type: ignore[arg-type]
-            )
-
-    return _run(_do())
+    return get_client(profile).items.create(
+        type="service",
+        title=title,
+        data=data,
+        description=description,
+        access=access,  # type: ignore[arg-type]
+    )
 
 
 def _create_basemap_item(
@@ -789,21 +880,19 @@ def _create_basemap_item(
     description: str | None = None,
     access: str = "private",
 ) -> ItemSummary:
-    """Create a portal ``basemap`` item from a tile URL template."""
+    """Create a portal ``basemap`` item from a tile URL template.
+
+    Blocking; run it in a task.
+    """
     data: dict[str, object] = {
         "kind": "tile-url",
         "tileUrl": tile_url,
         "version": 1,
     }
-
-    async def _do() -> ItemSummary:
-        async with _connected_client(profile) as client:
-            return await client.items.create(
-                type="basemap",
-                title=title,
-                data=data,
-                description=description,
-                access=access,  # type: ignore[arg-type]
-            )
-
-    return _run(_do())
+    return get_client(profile).items.create(
+        type="basemap",
+        title=title,
+        data=data,
+        description=description,
+        access=access,  # type: ignore[arg-type]
+    )

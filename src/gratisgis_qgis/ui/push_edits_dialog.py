@@ -21,11 +21,11 @@ sync flow in Phase 7 reuses).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from qgis.core import (  # type: ignore[import-not-found]
     QgsFeature,
-    QgsJsonExporter,
     QgsProject,
     QgsVectorLayer,
 )
@@ -43,9 +43,9 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QWidget,
 )
 
+from gratisgis_client.client import GratisGISClient
 from gratisgis_client.endpoints.features import FeatureIn
 
-from ..browser.fetch import _connected_client, _run
 from ..browser.uris import parse_oapif_uri
 from ..edit.sync import (
     EditedFeature,
@@ -55,17 +55,21 @@ from ..edit.sync import (
     summarize_plan,
 )
 from ..log import get_logger
+from ..offline.clone import PORTAL_ID_PROPERTY
+from ..portal import get_client
 from ..settings import ConnectionStore
+from ..tasks import TaskHandle, format_error, run_in_task
 
 if TYPE_CHECKING:
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
 
 _log = get_logger(__name__)
 
-# QGIS feature-id property the OAPIF provider stamps on each row;
-# it carries the portal feature uuid. We pull it as the portal_id
-# for update/delete ops.
-_PORTAL_ID_FIELDS = ("featureId", "feature_id", "id", "fid_portal")
+# Property names that may carry the portal feature uuid on a row.
+# The clone flow's canonical column comes first (it is also the one
+# the post-push write-back fills for created features); the rest are
+# the id spellings the OAPIF provider / GeoJSON responses have used.
+_PORTAL_ID_FIELDS = (PORTAL_ID_PROPERTY, "featureId", "feature_id", "id", "fid_portal")
 
 
 class PushEditsDialog(QDialog):
@@ -81,6 +85,7 @@ class PushEditsDialog(QDialog):
         self._target_item_id: str | None = None
         self._target_layer_id: str | None = None
         self._target_profile_name: str | None = None
+        self._push_task = None
 
         self._layer_combo = QComboBox()
         self._populate_layer_combo()
@@ -243,44 +248,106 @@ class PushEditsDialog(QDialog):
 
         ok_button = self._buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok_button.setEnabled(False)
+        self._layer_combo.setEnabled(False)
+        self._connection_combo.setEnabled(False)
 
-        failures: list[tuple[SyncOp, str]] = []
-        try:
-            for i, op in enumerate(self._plan.ops, start=1):
-                self._summary_label.setText(
-                    f"Pushing op {i} of {len(self._plan.ops)} ({op.kind})..."
-                )
+        # Snapshot everything the worker needs; the ops are pure data
+        # so the whole loop runs in ONE task with per-op progress and
+        # a working cancel. One call still equals one op server-side.
+        # The layer reference is captured on the GUI thread for the
+        # post-push id write-back, which also runs on the GUI thread.
+        ops = list(self._plan.ops)
+        item_id = self._target_item_id
+        layer_id = self._target_layer_id
+        layer = self._selected_layer()
+
+        def push_all(handle: TaskHandle) -> _PushOutcome:
+            client = get_client(profile)
+            failures: list[tuple[SyncOp, str]] = []
+            created_ids: list[tuple[int, str]] = []
+            attempted = 0
+            for i, op in enumerate(ops, start=1):
+                if handle.is_canceled():
+                    # Return normally so the summary can report how
+                    # far the push got; ops already sent stay sent.
+                    return _PushOutcome(failures, attempted, cancelled=True, created_ids=created_ids)
                 try:
-                    _run(_apply_op(
-                        profile=profile,
-                        item_id=self._target_item_id,
-                        layer_id=self._target_layer_id,
-                        op=op,
-                    ))
-                except Exception as e:  # pragma: no cover -- defensive
+                    new_id = _apply_op(client, item_id=item_id, layer_id=layer_id, op=op)
+                except Exception as e:  # pragma: no cover - defensive
                     _log.exception("op failed: %s", op)
-                    failures.append((op, str(e)))
-        finally:
-            ok_button.setEnabled(True)
+                    failures.append((op, format_error(e)))
+                else:
+                    if op.kind == "create" and new_id is not None and op.qgis_fid is not None:
+                        created_ids.append((op.qgis_fid, new_id))
+                attempted = i
+                handle.set_progress(i * 100.0 / len(ops))
+            return _PushOutcome(failures, attempted, cancelled=False, created_ids=created_ids)
 
-        if failures:
-            details = "\n".join(
-                f"- {f[0].kind} {f[0].portal_id or '(new)'}: {f[1]}"
-                for f in failures
-            )
-            QMessageBox.warning(
+        def done(outcome: _PushOutcome) -> None:
+            self._push_task = None
+            ok_button.setEnabled(True)
+            self._layer_combo.setEnabled(True)
+            self._connection_combo.setEnabled(True)
+            # Before anything else: stamp the portal-assigned ids on
+            # the pushed creates so a re-push updates instead of
+            # duplicating. Best-effort; layers without the column
+            # just log.
+            _write_back_created_ids(layer, outcome.created_ids)
+            self._summary_label.setText(summarize_plan(self._plan) if self._plan else "")
+            if outcome.cancelled:
+                QMessageBox.warning(
+                    self,
+                    "Push cancelled",
+                    f"Stopped after {outcome.attempted} of {len(ops)} operations. "
+                    f"Operations already sent are on the portal; "
+                    f"{len(outcome.failures)} of them failed.",
+                )
+                return
+            if outcome.failures:
+                details = "\n".join(
+                    f"- {f[0].kind} {f[0].portal_id or '(new)'}: {f[1]}"
+                    for f in outcome.failures
+                )
+                QMessageBox.warning(
+                    self,
+                    "Some operations failed",
+                    f"{len(outcome.failures)} of {len(ops)} operations failed.\n\n"
+                    f"Details:\n{details}",
+                )
+                return
+            QMessageBox.information(
                 self,
-                "Some operations failed",
-                f"{len(failures)} of {len(self._plan.ops)} operations failed.\n\n"
-                f"Details:\n{details}",
+                "Pushed",
+                f"{len(ops)} operations pushed successfully.",
             )
-            return
-        QMessageBox.information(
-            self,
-            "Pushed",
-            f"{len(self._plan.ops)} operations pushed successfully.",
+            self.accept()
+
+        def failed(exc: BaseException) -> None:  # pragma: no cover - defensive
+            self._push_task = None
+            _log.error("push failed", exc_info=exc)
+            ok_button.setEnabled(True)
+            self._layer_combo.setEnabled(True)
+            self._connection_combo.setEnabled(True)
+            QMessageBox.critical(self, "Push failed", format_error(exc))
+
+        def progress(pct: float) -> None:
+            done_ops = round(pct * len(ops) / 100.0)
+            self._summary_label.setText(
+                f"Pushing operation {min(done_ops + 1, len(ops))} of {len(ops)}..."
+            )
+
+        self._summary_label.setText(f"Pushing operation 1 of {len(ops)}...")
+        self._push_task = run_in_task(
+            "GratisGIS: push edits", push_all, done, failed, on_progress=progress
         )
-        self.accept()
+
+    def reject(self) -> None:  # Qt override
+        # Cancel button / Esc / window close during a push: stop the
+        # op loop at the next boundary rather than letting it finish
+        # headless behind a closed dialog.
+        if self._push_task is not None:
+            self._push_task.cancel()
+        super().reject()
 
 
 # -----------------------------------------------------------
@@ -299,17 +366,21 @@ def _collect_edits(layer: QgsVectorLayer) -> list[EditedFeature]:
     if buf is None:
         return []
 
-    exporter = QgsJsonExporter(layer)
     out: list[EditedFeature] = []
 
-    # 1) Added features. fid is negative for unsaved adds.
+    # 1) Added features. fid is negative for unsaved adds. A feature
+    # that was added locally AND already pushed once carries the
+    # portal id the last push wrote back into its portal-id column;
+    # send those as updates so pushing twice before a commit cannot
+    # duplicate them server-side.
     for fid, feat in buf.addedFeatures().items():
+        existing_id = _portal_id_from_feature(feat)
         out.append(
             EditedFeature(
-                kind="create",
-                portal_id=None,
+                kind="create" if existing_id is None else "update",
+                portal_id=existing_id,
                 qgis_fid=int(fid),
-                geometry=_geom_to_geojson(exporter, feat),
+                geometry=_geom_to_geojson(feat),
                 properties=_props_to_dict(feat),
             )
         )
@@ -322,7 +393,7 @@ def _collect_edits(layer: QgsVectorLayer) -> list[EditedFeature]:
                 kind="update",
                 portal_id=_portal_id_from_feature(feat),
                 qgis_fid=int(fid),
-                geometry=_geom_to_geojson_from_geom(exporter, geom),
+                geometry=_geom_to_geojson_from_geom(geom),
                 properties=None,
             )
         )
@@ -384,18 +455,18 @@ def _portal_id_from_feature(feat: QgsFeature | None) -> str | None:
     return None
 
 
-def _geom_to_geojson(exporter: QgsJsonExporter, feat: QgsFeature) -> dict | None:
+def _geom_to_geojson(feat: QgsFeature) -> dict | None:
     if feat is None or not feat.hasGeometry():
         return None
     geom = feat.geometry()
     if geom.isEmpty():
         return None
-    return _geom_to_geojson_from_geom(exporter, geom)
+    return _geom_to_geojson_from_geom(geom)
 
 
-def _geom_to_geojson_from_geom(exporter: QgsJsonExporter, geom) -> dict | None:
-    # QgsJsonExporter.exportFeature would also include properties; we
-    # just want the geometry, so call exportGeometry directly.
+def _geom_to_geojson_from_geom(geom) -> dict | None:
+    # QgsGeometry.asJson() serializes just the geometry, which is
+    # exactly the GeoJSON fragment the portal's feature CRUD takes.
     import json
 
     raw = geom.asJson()
@@ -413,7 +484,13 @@ def _props_to_dict(feat: QgsFeature) -> dict:
         return out
     fields = feat.fields()
     for i in range(fields.count()):
-        out[fields[i].name()] = _coerce_attr_value(feat.attribute(i))
+        name = fields[i].name()
+        if name == PORTAL_ID_PROPERTY:
+            # Local bookkeeping column (which feature this row IS on
+            # the portal), not layer data; pushing it would smuggle a
+            # plugin-internal property into the portal's row.
+            continue
+        out[name] = _coerce_attr_value(feat.attribute(i))
     return out
 
 
@@ -431,37 +508,103 @@ def _coerce_attr_value(value):
 
 
 # -----------------------------------------------------------
-# Async bridges (one HTTP call per op; sequenced by the caller).
+# Worker-side op execution (one HTTP call per op; the task loop
+# above sequences them).
 # -----------------------------------------------------------
 
 
-async def _apply_op(*, profile, item_id: str, layer_id: str, op: SyncOp) -> None:
-    async with _connected_client(profile) as client:
-        if op.kind == "create":
-            await client.features.append(
-                item_id=item_id,
-                layer_id=layer_id,
-                features=[
-                    FeatureIn(geometry=op.geometry, properties=op.properties)
-                ],
-            )
-            return
-        if op.kind == "update":
-            assert op.portal_id is not None
-            await client.features.update(
-                item_id=item_id,
-                layer_id=layer_id,
-                feature_id=op.portal_id,
-                geometry=op.geometry,
-                properties=op.properties,
-            )
-            return
-        if op.kind == "delete":
-            assert op.portal_id is not None
-            await client.features.delete(
-                item_id=item_id,
-                layer_id=layer_id,
-                feature_id=op.portal_id,
-            )
-            return
-        raise AssertionError(f"unknown op kind: {op.kind!r}")
+@dataclass(frozen=True)
+class _PushOutcome:
+    """What the push task hands back to the GUI callback."""
+
+    failures: list[tuple[SyncOp, str]]
+    attempted: int
+    cancelled: bool
+    created_ids: list[tuple[int, str]] = field(default_factory=list)
+    """(qgis fid, portal feature id) for every successfully pushed
+    create, so the GUI callback can write the ids back into the
+    layer's portal-id column."""
+
+
+def _apply_op(
+    client: GratisGISClient, *, item_id: str, layer_id: str, op: SyncOp
+) -> str | None:
+    """Execute one op against the portal.
+
+    Returns the portal-assigned feature id for creates (the append
+    response's ``globalIds`` is order-aligned with the request, and
+    each create sends exactly one feature), ``None`` for everything
+    else.
+    """
+    if op.kind == "create":
+        result = client.features.append(
+            item_id=item_id,
+            layer_id=layer_id,
+            features=[
+                FeatureIn(geometry=op.geometry, properties=op.properties)
+            ],
+        )
+        return result.global_ids[0] if result.global_ids else None
+    if op.kind == "update":
+        assert op.portal_id is not None
+        client.features.update(
+            item_id=item_id,
+            layer_id=layer_id,
+            feature_id=op.portal_id,
+            geometry=op.geometry,
+            properties=op.properties,
+        )
+        return None
+    if op.kind == "delete":
+        assert op.portal_id is not None
+        client.features.delete(
+            item_id=item_id,
+            layer_id=layer_id,
+            feature_id=op.portal_id,
+        )
+        return None
+    raise AssertionError(f"unknown op kind: {op.kind!r}")
+
+
+def _write_back_created_ids(
+    layer: QgsVectorLayer | None, created: list[tuple[int, str]]
+) -> None:
+    """Stamp portal-assigned ids onto pushed creates, best-effort.
+
+    Without this, the pushed features stay id-less in the local edit
+    buffer and a second Push (or the offline-sync retry path) sends
+    them as fresh creates, duplicating rows server-side. The write
+    targets the clone flow's canonical portal-id column; layers
+    without that column (the common live-OAPIF case, whose schema is
+    the portal layer's own fields) just log, because inventing a
+    column on someone's layer is worse than an informed no-op.
+    Runs on the GUI thread, the only place a live layer may be
+    touched.
+    """
+    if not created:
+        return
+    if layer is None:
+        _log.info("created-id write-back skipped: layer no longer available")
+        return
+    try:
+        idx = layer.fields().indexOf(PORTAL_ID_PROPERTY)
+    except Exception:  # pragma: no cover - defensive
+        _log.exception("created-id write-back: fields() lookup failed")
+        return
+    if idx < 0:
+        _log.info(
+            "Layer has no %r column; %d created feature id(s) were not "
+            "written back (pushing again before committing would "
+            "re-create them)",
+            PORTAL_ID_PROPERTY,
+            len(created),
+        )
+        return
+    for fid, portal_id in created:
+        try:
+            ok = bool(layer.changeAttributeValue(fid, idx, portal_id))
+        except Exception:  # pragma: no cover - defensive
+            _log.exception("created-id write-back failed for qgis fid %s", fid)
+            continue
+        if not ok:
+            _log.warning("created-id write-back rejected for qgis fid %s", fid)

@@ -21,8 +21,11 @@ This module owns the parts of the pipeline that don't touch QGIS:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -31,8 +34,10 @@ from typing import Any, Literal
 # (we honor them as the portal_id) but they round-trip into a local
 # GeoPackage as duplicate id-like columns which confuses QGIS's fid
 # inference. Keep the portal id under a single canonical name so the
-# offline+edit+push round-trip is lossless.
-_PORTAL_ID_PROPERTY = "_portal_id"
+# offline+edit+push round-trip is lossless. Public because the
+# push-edits flow reads AND writes this column (created features get
+# their portal-assigned id written back after a push).
+PORTAL_ID_PROPERTY = "_portal_id"
 
 
 @dataclass(frozen=True)
@@ -128,7 +133,7 @@ def _normalize_feature(raw: Any) -> dict[str, Any] | None:
     portal_id = _extract_portal_id(raw, properties)
     if portal_id is not None:
         properties = dict(properties)
-        properties[_PORTAL_ID_PROPERTY] = portal_id
+        properties[PORTAL_ID_PROPERTY] = portal_id
         # Drop the source aliases so they don't survive as
         # separate columns (would confuse a future re-clone).
         for alias in ("id", "fid", "feature_id", "featureId"):
@@ -161,6 +166,39 @@ def _extract_portal_id(
             continue
         return str(value)
     return None
+
+
+# -----------------------------------------------------------
+# Safe replacement of the clone target.
+# -----------------------------------------------------------
+
+
+@contextlib.contextmanager
+def safe_write_path(final_path: str) -> Iterator[str]:
+    """Yield a temp path beside ``final_path``; promote on success.
+
+    The writer inside the ``with`` block gets a sibling temp path in
+    the same directory, so the final ``os.replace`` is an atomic
+    same-filesystem rename. Only when the block completes without
+    raising does the temp file replace the target; on failure the
+    temp file is removed and the existing target, if any, stays
+    untouched. This is what keeps a failed re-clone from destroying
+    the user's previous (possibly locally edited) offline copy, which
+    the old unlink-the-target-then-write sequence did.
+    """
+    directory = os.path.dirname(final_path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(final_path)}.", suffix=".part", dir=directory
+    )
+    os.close(fd)
+    try:
+        yield tmp_path
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+    else:
+        os.replace(tmp_path, final_path)
 
 
 # -----------------------------------------------------------

@@ -54,12 +54,28 @@ class ConnectionProfile:
 
     ``authcfg_id`` is the QGIS auth manager id; if blank, the
     profile has no signed-in session yet.
+
+    ``user_id`` is the signed-in user's id (the token's ``sub``
+    claim), captured at sign-in. Empty for profiles that have not
+    signed in since the field was introduced; the Browser tree's
+    bucket filter falls back to ownership inference in that case.
+
+    ``api_key_id`` and ``layer_authcfg_id`` power private layer
+    rendering. At sign-in the plugin mints a read-only portal API key
+    and stores it in a second QGIS auth config (core "API Header"
+    method) that layer URIs reference via ``authcfg=``; the key's
+    portal-side id is kept so sign-out and re-sign-in can revoke it.
+    Both empty when the sign-in could not mint or store a key, in
+    which case non-public layers fall back to the public surface.
     """
 
     name: str
     portal_url: str
     verify_tls: bool = True
     authcfg_id: str = ""
+    user_id: str = ""
+    api_key_id: str = ""
+    layer_authcfg_id: str = ""
     # Cached portal-info fields. All empty for a freshly created
     # profile until discovery runs at sign-in time.
     portal_name: str = ""
@@ -116,6 +132,9 @@ class ConnectionProfile:
             portal_url=self.portal_url,
             verify_tls=self.verify_tls,
             authcfg_id=self.authcfg_id,
+            user_id=self.user_id,
+            api_key_id=self.api_key_id,
+            layer_authcfg_id=self.layer_authcfg_id,
             portal_name=info.name,
             portal_version=info.version,
             api_base_url=info.api.base_url,
@@ -166,6 +185,9 @@ class ConnectionStore:
             portal_url=portal_url,
             verify_tls=self._s.value(f"{prefix}/verify_tls", True, type=bool),
             authcfg_id=self._s.value(f"{prefix}/authcfg_id", "", type=str),
+            user_id=self._s.value(f"{prefix}/user_id", "", type=str),
+            api_key_id=self._s.value(f"{prefix}/api_key_id", "", type=str),
+            layer_authcfg_id=self._s.value(f"{prefix}/layer_authcfg_id", "", type=str),
             portal_name=self._s.value(f"{prefix}/portal_name", "", type=str),
             portal_version=self._s.value(f"{prefix}/portal_version", "", type=str),
             api_base_url=self._s.value(f"{prefix}/api_base_url", "", type=str),
@@ -178,6 +200,9 @@ class ConnectionStore:
         self._s.setValue(f"{prefix}/portal_url", profile.portal_url)
         self._s.setValue(f"{prefix}/verify_tls", profile.verify_tls)
         self._s.setValue(f"{prefix}/authcfg_id", profile.authcfg_id)
+        self._s.setValue(f"{prefix}/user_id", profile.user_id)
+        self._s.setValue(f"{prefix}/api_key_id", profile.api_key_id)
+        self._s.setValue(f"{prefix}/layer_authcfg_id", profile.layer_authcfg_id)
         self._s.setValue(f"{prefix}/portal_name", profile.portal_name)
         self._s.setValue(f"{prefix}/portal_version", profile.portal_version)
         self._s.setValue(f"{prefix}/api_base_url", profile.api_base_url)

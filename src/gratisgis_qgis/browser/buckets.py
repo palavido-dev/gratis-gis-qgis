@@ -41,7 +41,7 @@ def all_buckets() -> tuple[str, ...]:
 
 
 def filter_for_bucket(
-    items: Iterable[ItemSummary], kind: str
+    items: Iterable[ItemSummary], kind: str, *, caller_id: str | None = None
 ) -> list[ItemSummary]:
     """Slice the full items list down to one bucket's view.
 
@@ -49,31 +49,37 @@ def filter_for_bucket(
         items: every item the signed-in caller can see, as
             returned by /api/items.
         kind: one of `BucketKind.*`.
+        caller_id: the signed-in user's id (the token's ``sub``
+            claim) when the caller knows it. Authoritative for the
+            mine / shared buckets; pass it whenever available.
 
     Returns:
         Items that belong in that bucket, in input order.
 
     Semantics:
       - **public**: items with access=public.
-      - **mine**: items the caller owns. Inferred via the most
-        common owner_id across the result's private items
+      - **mine**: items the caller owns, matched on ``caller_id``
+        when provided. Without it, ownership is inferred via the
+        most common owner_id across the result's private items
         (the portal-side share filter already removed items the
         caller can't read, so a `private` item in the result is
-        necessarily owned by the caller). Falls back to an
-        empty list when no private items are present so we don't
-        misattribute an org-only roster.
+        necessarily owned by the caller). The inference falls back
+        to an empty list when no private items are present so we
+        don't misattribute an org-only roster, which is exactly why
+        ``caller_id`` matters: a user who owns only org or public
+        items gets an empty My Content under the fallback.
       - **shared**: items with access=org NOT owned by the caller
         (approximation until the /me echo or shares roster is
         exposed on the list payload).
-      - **org**: items with access in {org, public} -- the union
-        of "anyone in my org can read this".
+      - **org**: items with access in {org, public}, the union of
+        "anyone in my org can read this".
     """
     items_list = list(items)
     if kind == BucketKind.PUBLIC:
         return [i for i in items_list if i.access == "public"]
     if kind == BucketKind.ORG:
         return [i for i in items_list if i.access in ("org", "public")]
-    me = _infer_caller_id(items_list)
+    me = caller_id or _infer_caller_id(items_list)
     if me is None:
         return []
     if kind == BucketKind.MINE:
@@ -133,6 +139,10 @@ def is_qgis_consumable(item: ItemSummary) -> bool:
 
 def _infer_caller_id(items: list[ItemSummary]) -> str | None:
     """Most common owner_id among the private items in the result.
+
+    Fallback for profiles that signed in before the token's ``sub``
+    claim was captured on the connection profile; new sign-ins pass
+    an explicit ``caller_id`` instead.
 
     The portal-side share filter already removed items the caller
     can't read, so a `private` item in the result must be owned by

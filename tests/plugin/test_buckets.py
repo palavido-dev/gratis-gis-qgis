@@ -26,10 +26,10 @@ def _item(
         type=type,  # type: ignore[arg-type]
         title=title,
         access=access,  # type: ignore[arg-type]
-        ownerId=owner,
-        orgId="org-1",
-        createdAt=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        updatedAt=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        owner_id=owner,
+        org_id="org-1",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
@@ -99,3 +99,32 @@ def test_unknown_bucket_returns_empty(mixed_roster: list[ItemSummary]) -> None:
 def test_empty_roster_returns_empty_for_every_bucket() -> None:
     for kind in (BucketKind.MINE, BucketKind.SHARED, BucketKind.ORG, BucketKind.PUBLIC):
         assert filter_for_bucket([], kind) == []
+
+
+def test_mine_with_explicit_caller_id_beats_inference(
+    mixed_roster: list[ItemSummary],
+) -> None:
+    out = filter_for_bucket(mixed_roster, BucketKind.MINE, caller_id="alice")
+    assert {i.title for i in out} == {"org-other"}
+
+
+def test_mine_with_caller_id_works_without_private_items() -> None:
+    # The regression the caller_id parameter exists for: a user who
+    # owns only org / public items has nothing for the inference to
+    # latch onto, but the token's sub claim still identifies them.
+    items = [
+        _item(id="1", title="my-org", access="org", owner="matt"),
+        _item(id="2", title="my-pub", access="public", owner="matt"),
+        _item(id="3", title="other", access="org", owner="alice"),
+    ]
+    out = filter_for_bucket(items, BucketKind.MINE, caller_id="matt")
+    assert {i.title for i in out} == {"my-org", "my-pub"}
+
+
+def test_shared_with_caller_id_works_without_private_items() -> None:
+    items = [
+        _item(id="1", title="my-org", access="org", owner="matt"),
+        _item(id="2", title="other", access="org", owner="alice"),
+    ]
+    out = filter_for_bucket(items, BucketKind.SHARED, caller_id="matt")
+    assert {i.title for i in out} == {"other"}

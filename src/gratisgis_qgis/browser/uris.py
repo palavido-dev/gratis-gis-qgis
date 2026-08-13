@@ -81,6 +81,36 @@ def vector_tile_uri(portal_url: str, item_id: str) -> str:
     return f"type=xyz&url={template}&zmin=0&zmax=18"
 
 
+def authed_vector_tile_uri(
+    portal_url: str, item_id: str, layer_id: str, *, authcfg_id: str
+) -> str:
+    """Build the authenticated XYZ vector-tile URI for a non-public
+    data_layer sublayer.
+
+    Points at the portal's per-layer MVT route
+    ``/api/items/:itemId/layers/:layerId/tile/:z/:x/:y.mvt`` with a
+    QGIS authcfg id appended, so every tile request carries the
+    connection's read-only layer key (the core API Header auth
+    method injects ``Authorization: Bearer ggk_...``). This is what
+    makes private and org layers actually draw on the canvas; the
+    public OGC surface would list them but serve empty tiles.
+
+    Tile-coordinate order is NOT the public builder's: this route is
+    ``{z}/{x}/{y}`` (the tile-server convention the portal's own map
+    page uses), while the public OGC Tiles surface is ``{z}/{y}/{x}``
+    (tileMatrix / tileRow / tileCol). Swapping them fetches the wrong
+    tiles everywhere except along the diagonal, which renders as a
+    scrambled layer rather than an obvious error, so both orders are
+    pinned by tests.
+    """
+    base = portal_url.rstrip("/")
+    template = (
+        f"{base}/api/items/{item_id}/layers/{layer_id}/tile"
+        "/{z}/{x}/{y}.mvt"
+    )
+    return f"type=xyz&url={template}&zmin=0&zmax=18&authcfg={authcfg_id}"
+
+
 # -----------------------------------------------------------
 # Reverse parsers (Phase 6 + later)
 # -----------------------------------------------------------
@@ -108,28 +138,56 @@ def parse_oapif_uri(uri: str) -> tuple[str, str] | None:
 
 
 def parse_vector_tile_uri(uri: str) -> tuple[str, str] | None:
-    """Recover (portal_url, item_id) from a vector-tile XYZ URI.
+    """Recover (portal_url, collection_id) from a vector-tile XYZ URI.
 
-    Inverse of `vector_tile_uri()`. Returns None when the URI
-    shape doesn't match.
+    Inverse of both tile builders. Recognises the public OGC Tiles
+    shape (`vector_tile_uri()`) and the authed per-layer MVT shape
+    (`authed_vector_tile_uri()`); for the authed shape the returned
+    collection id is the ``<itemId>__<layerId>`` join, matching the
+    portal's collection-id convention, so downstream consumers
+    (publish-project's layer recognizer) treat both shapes alike.
+    Returns None when the URI shape doesn't match either.
     """
     if not uri.startswith("type=xyz&url="):
         return None
     template = uri[len("type=xyz&url=") :]
     marker = "/api/public/ogc/collections/"
     idx = template.find(marker)
+    if idx >= 0:
+        portal_url = template[:idx]
+        rest = template[idx + len(marker) :]
+        # rest now looks like "<itemId>/tiles/WebMercatorQuad/{z}/{y}/{x}"
+        end = rest.find("/")
+        if end < 0:
+            return None
+        item_id = rest[:end]
+        if not item_id:
+            return None
+        return portal_url, item_id
+    return _parse_authed_tile_template(template)
+
+
+def _parse_authed_tile_template(template: str) -> tuple[str, str] | None:
+    """The authed-MVT half of ``parse_vector_tile_uri``.
+
+    ``template`` is everything after ``type=xyz&url=`` (trailing
+    ``&zmin=...&authcfg=...`` params included; the id segments end at
+    a ``/`` long before those, so they never interfere).
+    """
+    marker = "/api/items/"
+    idx = template.find(marker)
     if idx < 0:
         return None
     portal_url = template[:idx]
     rest = template[idx + len(marker) :]
-    # rest now looks like "<itemId>/tiles/WebMercatorQuad/{z}/{y}/{x}"
-    end = rest.find("/")
-    if end < 0:
+    # rest now looks like "<itemId>/layers/<layerId>/tile/{z}/{x}/{y}.mvt..."
+    parts = rest.split("/")
+    if len(parts) < 4 or parts[1] != "layers" or parts[3] != "tile":
         return None
-    item_id = rest[:end]
-    if not item_id:
+    item_id, layer_id = parts[0], parts[2]
+    if not item_id or not layer_id:
         return None
-    return portal_url, item_id
+    return portal_url, f"{item_id}__{layer_id}"
 
 
 def _parse_quoted_kv(uri: str, key: str) -> str | None:

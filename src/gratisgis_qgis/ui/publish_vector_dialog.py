@@ -4,12 +4,18 @@
 The user picks a QGIS vector layer, the dialog runs pre-flight
 validation, exports the layer to a GeoPackage tempfile, stages
 the upload on the portal, creates a new ``data_layer`` item, and
-enqueues an async import job. While the worker imports, the
-dialog polls the job status and renders progress.
+enqueues an import job. While the worker imports, the dialog polls
+the job status and renders progress.
 
 QGIS interaction lives here so the translation logic in
 ``publish/vector.py`` stays free of QGIS imports and testable
 without QGIS.
+
+Threading: the GeoPackage export stays on the GUI thread because it
+reads the live ``QgsVectorLayer`` (not safe to touch from a worker),
+but every network step (stage upload, item create + job enqueue,
+each status poll, job cancel) runs in a background task so a big
+upload never freezes QGIS.
 """
 from __future__ import annotations
 
@@ -43,17 +49,21 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QWidget,
 )
 
+from gratisgis_client.client import GratisGISClient
 from gratisgis_client.endpoints.import_jobs import ImportJob
+from gratisgis_client.models.item import Item
 
-from ..browser.fetch import _connected_client, _run
 from ..log import get_logger
+from ..portal import get_client
 from ..publish.vector import (
     LayerSummary,
     build_data_layer_envelope,
     layer_from_probe,
     validate_layer,
 )
+from ..qgis_compat import resolve_enum
 from ..settings import ConnectionStore
+from ..tasks import format_error, run_in_task
 
 if TYPE_CHECKING:
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
@@ -83,6 +93,13 @@ class PublishVectorDialog(QDialog):
         self._store = ConnectionStore()
         self._preselect_layer_id = preselect_layer_id
         self._poll_timer: QTimer | None = None
+        # True while a poll task is in flight, so a slow poll makes
+        # the timer skip ticks instead of stacking requests.
+        self._poll_in_flight = False
+        # Set on reject: with a live event loop the user can dismiss
+        # the dialog mid-flow, and completion callbacks landing after
+        # that must stop the pipeline instead of publishing headless.
+        self._closed = False
         self._current_job: ImportJob | None = None
         self._current_item_id: str | None = None
         self._current_layer_id: str | None = None
@@ -123,7 +140,7 @@ class PublishVectorDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Publish")
         buttons.accepted.connect(self._on_publish)
-        buttons.rejected.connect(self._on_cancel)
+        buttons.rejected.connect(self.reject)
         self._buttons = buttons
 
         validate_button = QPushButton("Validate")
@@ -260,13 +277,12 @@ class PublishVectorDialog(QDialog):
             QMessageBox.warning(self, "Connection not ready", "Sign in to the connection first.")
             return
 
-        # Lock the buttons + show "Exporting...". The portal upload
-        # is the longest user-visible phase for big layers, but it
-        # blocks our event loop. The dialog disables interaction so
-        # the user can't fire a second publish during the upload.
         self._set_busy(True)
         self._progress_label.setText("Exporting layer to GeoPackage...")
-        QTimer.singleShot(0, lambda: self._run_publish(
+        # Deferred one tick so the label paints before the export
+        # (which reads the live layer and must stay on this thread)
+        # briefly blocks.
+        QTimer.singleShot(0, lambda: self._start_publish(
             layer=layer,
             profile=profile,
             profile_name=profile_name,
@@ -275,7 +291,7 @@ class PublishVectorDialog(QDialog):
             access=access,
         ))
 
-    def _run_publish(
+    def _start_publish(
         self,
         *,
         layer: QgsVectorLayer,
@@ -287,22 +303,56 @@ class PublishVectorDialog(QDialog):
     ) -> None:
         try:
             gpkg_path = _export_to_geopackage(layer)
-        except Exception as e:  # pragma: no cover -- defensive
+        except Exception as e:  # pragma: no cover - defensive
             _log.exception("export-to-geopackage failed")
             QMessageBox.critical(self, "Export failed", str(e))
             self._set_busy(False)
             return
 
         self._progress_label.setText("Uploading to portal (stage)...")
-        try:
-            staged = _run(_stage_upload(profile=profile, gpkg_path=gpkg_path))
-        except Exception as e:
-            _log.exception("stage-upload failed")
-            QMessageBox.critical(self, "Upload failed", str(e))
-            self._set_busy(False)
-            _safe_unlink(gpkg_path)
-            return
 
+        def stage(_handle):
+            return get_client(profile).ingest.stage(file_path=gpkg_path)
+
+        def staged_done(staged) -> None:
+            # The local tempfile is no longer needed; the portal has
+            # its own copy under /tmp/gg-staging/<id>/.
+            _safe_unlink(gpkg_path)
+            if self._closed:
+                # Dialog dismissed while the upload ran; the staged
+                # copy ages out server-side within the hour.
+                return
+            self._on_staged(
+                staged,
+                profile=profile,
+                profile_name=profile_name,
+                title=title,
+                description=description,
+                access=access,
+            )
+
+        def stage_failed(exc: BaseException) -> None:
+            _log.error("stage-upload failed", exc_info=exc)
+            _safe_unlink(gpkg_path)
+            if self._closed:
+                return
+            QMessageBox.critical(self, "Upload failed", format_error(exc))
+            self._set_busy(False)
+
+        run_in_task(
+            "GratisGIS publish: upload", stage, staged_done, stage_failed, cancelable=False
+        )
+
+    def _on_staged(
+        self,
+        staged,
+        *,
+        profile,
+        profile_name: str,
+        title: str,
+        description: str | None,
+        access: str,
+    ) -> None:
         # The stage response carries one source layer (we exported a
         # single QGIS layer to a single-layer GeoPackage). Translate
         # it to a v3 envelope and create the item.
@@ -314,58 +364,66 @@ class PublishVectorDialog(QDialog):
                 "Check the layer's geometry validity in QGIS and retry.",
             )
             self._set_busy(False)
-            _safe_unlink(gpkg_path)
             return
 
-        v3_layer = layer_from_probe(probe_layer=staged.layers[0].model_dump(by_alias=True))
+        v3_layer = layer_from_probe(probe_layer=staged.layers[0].to_api_dict())
         envelope = build_data_layer_envelope(layers=[v3_layer])
+        source_layer_name = staged.layers[0].name
+        staging_id = staged.staging_id
 
         self._progress_label.setText("Creating portal item...")
-        try:
-            item = _run(_create_item(
-                profile=profile,
+
+        # Filled by the worker when a post-create failure triggered
+        # orphan cleanup; read by the error callback so the user
+        # hears what happened to the half-created item either way.
+        cleanup_notes: list[str] = []
+
+        def create_and_enqueue(_handle):
+            return _create_item_and_enqueue(
+                get_client(profile),
                 title=title,
                 description=description,
-                envelope=envelope,
                 access=access,
-            ))
-        except Exception as e:
-            _log.exception("item-create failed")
-            QMessageBox.critical(self, "Publish failed", str(e))
-            self._set_busy(False)
-            _safe_unlink(gpkg_path)
-            return
-
-        self._current_item_id = item.id
-        self._current_layer_id = v3_layer.id
-        self._current_profile_name = profile_name
-
-        # Enqueue the import job and start polling.
-        self._progress_label.setText("Enqueuing import job...")
-        try:
-            job = _run(_enqueue_job(
-                profile=profile,
-                item_id=item.id,
+                envelope=envelope,
                 layer_id=v3_layer.id,
-                staging_id=staged.staging_id,
-                source_layer_name=staged.layers[0].name,
-            ))
-        except Exception as e:
-            _log.exception("enqueue-job failed")
-            QMessageBox.critical(self, "Publish failed", str(e))
+                staging_id=staging_id,
+                source_layer_name=source_layer_name,
+                cleanup_notes=cleanup_notes,
+            )
+
+        def done(result) -> None:
+            item, job = result
+            self._current_item_id = item.id
+            self._current_layer_id = v3_layer.id
+            self._current_profile_name = profile_name
+            self._current_job = job
+            if self._closed:
+                # The job was already enqueued when the user bailed;
+                # ask the worker to stop rather than importing into
+                # an item nobody is watching.
+                self._request_job_cancel()
+                return
+            self._progress_bar.setVisible(True)
+            self._render_job_progress(job)
+            self._start_polling()
+
+        def failed(exc: BaseException) -> None:
+            _log.error("item-create / enqueue failed", exc_info=exc)
+            if self._closed:
+                return
+            message = format_error(exc)
+            if cleanup_notes:
+                message = message + "\n\n" + " ".join(cleanup_notes)
+            QMessageBox.critical(self, "Publish failed", message)
             self._set_busy(False)
-            _safe_unlink(gpkg_path)
-            return
 
-        self._current_job = job
-        # The local tempfile is no longer needed; the portal has its
-        # own copy under /tmp/gg-staging/<id>/ until the job finishes.
-        _safe_unlink(gpkg_path)
-
-        # Kick off the poll loop.
-        self._progress_bar.setVisible(True)
-        self._render_job_progress(job)
-        self._start_polling()
+        run_in_task(
+            "GratisGIS publish: create item",
+            create_and_enqueue,
+            done,
+            failed,
+            cancelable=False,
+        )
 
     def _start_polling(self) -> None:
         if self._poll_timer is not None:
@@ -382,6 +440,10 @@ class PublishVectorDialog(QDialog):
             self._poll_timer = None
 
     def _poll_once(self) -> None:
+        if self._poll_in_flight:
+            # Previous poll still on the wire; skip this tick rather
+            # than queueing a growing backlog against a slow portal.
+            return
         if self._current_job is None or self._current_profile_name is None:
             self._stop_polling()
             return
@@ -389,20 +451,51 @@ class PublishVectorDialog(QDialog):
         if profile is None or not profile.is_discovered:
             self._stop_polling()
             return
-        try:
-            fresh = _run(_get_job(profile, self._current_job.id))
-        except Exception as e:  # pragma: no cover -- defensive
-            _log.exception("poll job failed")
-            self._stop_polling()
-            self._progress_label.setText(f"Polling error: {e}")
-            self._set_busy(False)
-            return
+        job_id = self._current_job.id
+        self._poll_in_flight = True
 
-        self._current_job = fresh
-        self._render_job_progress(fresh)
-        if fresh.is_terminal:
+        def poll(_handle):
+            return get_client(profile).import_jobs.get(job_id)
+
+        def done(fresh) -> None:
+            self._poll_in_flight = False
+            if self._poll_timer is None:
+                # Dialog was cancelled while this poll was in flight.
+                return
+            self._current_job = fresh
+            self._render_job_progress(fresh)
+            if fresh.is_terminal:
+                self._stop_polling()
+                self._on_job_finished(fresh)
+
+        def failed(exc: BaseException) -> None:
+            self._poll_in_flight = False
+            _log.error("poll job failed", exc_info=exc)
             self._stop_polling()
-            self._on_job_finished(fresh)
+            self._reset_after_poll_error(format_error(exc))
+
+        run_in_task("GratisGIS publish: poll status", poll, done, failed, cancelable=False)
+
+    def _reset_after_poll_error(self, error_text: str) -> None:
+        """Return the dialog to a publishable state after a poll
+        failure.
+
+        The job may or may not still be running server-side, but the
+        dialog can no longer observe it. Keeping the half-run state
+        around meant the next Publish click created a SECOND item on
+        top of the invisible first one, so everything job-related
+        resets here (including the progress bar's possible
+        indeterminate range) and only the error text stays visible.
+        """
+        self._current_job = None
+        self._current_item_id = None
+        self._current_layer_id = None
+        self._current_profile_name = None
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_label.setText(f"Polling error: {error_text}")
+        self._set_busy(False)
 
     def _render_job_progress(self, job: ImportJob) -> None:
         pct = job.percent_complete
@@ -445,22 +538,37 @@ class PublishVectorDialog(QDialog):
             )
         self._set_busy(False)
 
-    def _on_cancel(self) -> None:
-        # If a job is running, ask the portal to cancel it before we
-        # close the dialog so the worker doesn't keep churning.
-        if (
-            self._current_job is not None
-            and not self._current_job.is_terminal
-            and self._current_profile_name is not None
-        ):
-            profile = self._store.get(self._current_profile_name)
-            if profile is not None and profile.is_discovered:
-                try:
-                    _run(_cancel_job(profile, self._current_job.id))
-                except Exception:
-                    _log.exception("cancel job failed")
+    def reject(self) -> None:  # Qt override
+        # Covers the Cancel button, Esc, and the window close button
+        # alike: if a job is running, ask the portal to cancel it (in
+        # a task; the worker should not keep churning) before closing.
+        self._closed = True
+        self._request_job_cancel()
         self._stop_polling()
-        self.reject()
+        super().reject()
+
+    def _request_job_cancel(self) -> None:
+        if (
+            self._current_job is None
+            or self._current_job.is_terminal
+            or self._current_profile_name is None
+        ):
+            return
+        profile = self._store.get(self._current_profile_name)
+        if profile is None or not profile.is_discovered:
+            return
+        job_id = self._current_job.id
+
+        def cancel(_handle):
+            return get_client(profile).import_jobs.cancel(job_id)
+
+        def done(_job) -> None:
+            _log.debug("import job %s cancelled", job_id)
+
+        def failed(exc: BaseException) -> None:
+            _log.error("cancel job failed", exc_info=exc)
+
+        run_in_task("GratisGIS publish: cancel job", cancel, done, failed, cancelable=False)
 
     def _set_busy(self, busy: bool) -> None:
         self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not busy)
@@ -472,13 +580,86 @@ class PublishVectorDialog(QDialog):
 
 
 # -----------------------------------------------------------
+# Worker-side helpers (no Qt in here)
+# -----------------------------------------------------------
+
+
+def _create_item_and_enqueue(
+    client: GratisGISClient,
+    *,
+    title: str,
+    description: str | None,
+    access: str,
+    envelope: dict,
+    layer_id: str,
+    staging_id: str,
+    source_layer_name: str,
+    cleanup_notes: list[str],
+) -> tuple[Item, ImportJob]:
+    """Create the data_layer item, then enqueue its import job.
+
+    Two portal calls with no transaction across them, so an enqueue
+    failure used to strand a freshly created empty item. Cleanup now
+    deletes it best-effort and records the outcome in
+    ``cleanup_notes`` so the dialog's error surface can tell the user
+    what happened either way.
+    """
+    item = client.items.create(
+        type="data_layer",
+        title=title,
+        description=description,
+        data=envelope,
+        access=access,
+    )
+    try:
+        job = client.import_jobs.enqueue(
+            item_id=item.id,
+            layer_id=layer_id,
+            staging_id=staging_id,
+            source_layer_name=source_layer_name,
+            mode="replace",
+        )
+    except BaseException:
+        if _delete_item_quietly(client, item.id):
+            cleanup_notes.append("The partly created portal item was removed.")
+        else:
+            cleanup_notes.append(
+                f"A partly created portal item ({item.id}) could not be "
+                "removed; delete it in the portal if it appears."
+            )
+        raise
+    return item, job
+
+
+def _delete_item_quietly(client: GratisGISClient, item_id: str) -> bool:
+    """Best-effort delete for orphan cleanup; never raises."""
+    try:
+        client.items.delete(item_id)
+    except Exception:
+        _log.exception("cleanup delete of item %s failed", item_id)
+        return False
+    return True
+
+
+# -----------------------------------------------------------
 # QGIS-side helpers
 # -----------------------------------------------------------
 
 
 def _summary_from_layer(layer: QgsVectorLayer) -> LayerSummary:
     """Translate a QgsVectorLayer into the validator's input shape."""
-    geom_type = QgsWkbTypes.displayString(int(layer.wkbType()))
+    wkb = layer.wkbType()
+    try:
+        # QGIS 4 / PyQt6: wkbType() returns the scoped Qgis.WkbType
+        # enum and displayString takes exactly that, so the enum goes
+        # straight through; the historical int() cast raises
+        # TypeError under strict enums. Passing the enum also works
+        # on QGIS 3, where sip accepts the int-backed value directly.
+        geom_type = QgsWkbTypes.displayString(wkb)
+    except TypeError:
+        # Older builds where wkbType() came back as a plain int and
+        # displayString insists on its own enum type.
+        geom_type = QgsWkbTypes.displayString(int(wkb))
     crs: QgsCoordinateReferenceSystem = layer.crs()
     crs_auth = crs.authid() if crs.isValid() else ""
     fields = [str(f.name()) for f in layer.fields()]
@@ -510,11 +691,18 @@ def _export_to_geopackage(layer: QgsVectorLayer) -> str:
     options.layerName = layer.name()
     options.fileEncoding = "UTF-8"
 
+    # QGIS 3 exposed NoError as a class-level shortcut; the scoped
+    # WriterError enum is its home on newer builds and the only
+    # spelling under QGIS 4's strict PyQt6.
+    no_error = resolve_enum(
+        (getattr(QgsVectorFileWriter, "WriterError", None), "NoError"),
+        (QgsVectorFileWriter, "NoError"),
+    )
     transform_context = QgsCoordinateTransformContext()
     err, msg, *_ = QgsVectorFileWriter.writeAsVectorFormatV3(
         layer, path, transform_context, options
     )
-    if err != QgsVectorFileWriter.NoError:
+    if err != no_error:
         raise RuntimeError(f"GeoPackage write failed: {msg or err}")
     return path
 
@@ -524,46 +712,3 @@ def _safe_unlink(path: str) -> None:
 
     with contextlib.suppress(OSError):
         os.unlink(path)
-
-
-# -----------------------------------------------------------
-# Async bridges -- thin closures that the sync helper in
-# browser/fetch.py can drive on a fresh event loop.
-# -----------------------------------------------------------
-
-
-async def _stage_upload(*, profile, gpkg_path):
-    async with _connected_client(profile) as client:
-        return await client.ingest.stage(file_path=gpkg_path)
-
-
-async def _create_item(*, profile, title, description, envelope, access):
-    async with _connected_client(profile) as client:
-        return await client.items.create(
-            type="data_layer",
-            title=title,
-            description=description,
-            data=envelope,
-            access=access,
-        )
-
-
-async def _enqueue_job(*, profile, item_id, layer_id, staging_id, source_layer_name):
-    async with _connected_client(profile) as client:
-        return await client.import_jobs.enqueue(
-            item_id=item_id,
-            layer_id=layer_id,
-            staging_id=staging_id,
-            source_layer_name=source_layer_name,
-            mode="replace",
-        )
-
-
-async def _get_job(profile, job_id: str):
-    async with _connected_client(profile) as client:
-        return await client.import_jobs.get(job_id)
-
-
-async def _cancel_job(profile, job_id: str):
-    async with _connected_client(profile) as client:
-        return await client.import_jobs.cancel(job_id)

@@ -18,12 +18,14 @@ the fetched item list on the bucket so re-expanding is cheap; a
 "Refresh" right-click on the bucket clears the cache and re-pulls.
 
 Drag-to-canvas works automatically because each leaf is a
-`QgsLayerItem` with a layer type + URI. For v3 data_layers we
-hand QGIS an OGC API Features URI pointing at
-`/api/public/ogc/collections/<itemId>` (the public surface; the
-authed user can still read it because they own the item, but the
-OGC route doesn't gate on auth -- which is fine because gating
-happens at the items level on the portal side).
+`QgsLayerItem` with a layer type + URI. Spatial data_layer
+sublayers render as vector tiles: public items point at the public
+OGC Tiles surface (so a saved project keeps working for anonymous
+viewers), while private and org items point at the portal's authed
+per-layer MVT route with the connection's layer authcfg attached,
+which is what makes non-public layers actually draw. Non-spatial
+sublayers fall through to OAPIF, a public-only surface; private
+tables therefore list with a tooltip pointing at the Clone flow.
 """
 from __future__ import annotations
 
@@ -35,11 +37,12 @@ from qgis.core import (  # type: ignore[import-not-found]
     QgsLayerItem,
     QgsMimeDataUtils,
 )
-from qgis.PyQt.QtCore import QCoreApplication  # type: ignore[import-not-found]
 
 from gratisgis_client.models.item import ItemSummary
 
 from ..log import get_logger
+from ..portal import get_item, list_items
+from ..qgis_compat import resolve_enum
 from ..settings import ConnectionProfile, ConnectionStore
 from .buckets import (
     BucketKind,
@@ -47,8 +50,7 @@ from .buckets import (
     filter_for_bucket,
     is_qgis_consumable,
 )
-from .fetch import get_item_sync, list_items_sync
-from .uris import oapif_uri, vector_tile_uri
+from .uris import authed_vector_tile_uri, oapif_uri, vector_tile_uri
 
 _log = get_logger(__name__)
 
@@ -56,11 +58,12 @@ _log = get_logger(__name__)
 # -----------------------------------------------------------
 # QGIS 3 / QGIS 4 compat for Browser-tree enum constants.
 #
-# QGIS 3 exposed Fertile / Fast / Populated as class-level
-# attributes on QgsDataItem. QGIS 4 moved them under scoped
+# QGIS 3 exposed Fertile / Fast / Populated / Vector / Raster /
+# VectorTile as class-level attributes on QgsDataItem and
+# QgsLayerItem. QGIS 4 moved them under scoped
 # Qgis.BrowserItemCapability / Qgis.BrowserItemType /
-# Qgis.BrowserItemState enums and dropped the QgsDataItem
-# shortcuts under strict PyQt6.
+# Qgis.BrowserItemState / Qgis.BrowserLayerType enums and dropped
+# the class-level shortcuts under strict PyQt6.
 #
 # The BrowserItemType enum membership also changed: QGIS 4 has
 # Collection / Directory / Layer / Error / Favorites / Project /
@@ -68,31 +71,12 @@ _log = get_logger(__name__)
 # (GenericItem, _MessageItem) Custom is the right fit -- we're
 # not a Layer (not draggable to canvas) but we are a tree node.
 #
-# Each lookup goes through a small helper that tries the scoped
-# Qgis path first, then the old QgsDataItem attr, then a list of
-# fallback names. Per-call sites stay readable; future QGIS
-# revisions that shuffle enum members again get a clear
-# AttributeError pointing at the resolver, not random call sites.
+# Each lookup goes through the shared resolver (qgis_compat),
+# scoped Qgis path first, then the old class attr, then fallback
+# names. Per-call sites stay readable; future QGIS revisions that
+# shuffle enum members again get a clear AttributeError pointing
+# at the resolver, not random call sites.
 # -----------------------------------------------------------
-
-
-def _resolve_enum(*candidates: tuple[object, str]) -> object:
-    """Try each (holder, attribute_name) pair until one resolves.
-
-    Raises AttributeError listing every attempted path if none
-    match, so a future Qt / QGIS shuffle gives a clean error
-    pointing at the resolver instead of a per-call-site mystery.
-    """
-    tried: list[str] = []
-    for holder, attr in candidates:
-        if holder is None:
-            continue
-        tried.append(f"{getattr(holder, '__name__', holder)}.{attr}")
-        if hasattr(holder, attr):
-            return getattr(holder, attr)
-    raise AttributeError(
-        f"None of these resolve to a usable enum value: {', '.join(tried)}"
-    )
 
 
 try:
@@ -104,23 +88,42 @@ except ImportError:  # pragma: no cover -- tests don't hit Qgis directly
 # documented "non-Directory, non-Layer, plugin-defined node"
 # value, present on both QGIS 3 (via QgsDataItem.Custom) and
 # QGIS 4 (via Qgis.BrowserItemType.Custom).
-_BROWSER_TYPE_NO_TYPE = _resolve_enum(
+_BROWSER_TYPE_NO_TYPE = resolve_enum(
     (getattr(Qgis, "BrowserItemType", None) if Qgis else None, "Custom"),
     (getattr(QgsDataItem, "Type", None), "Custom"),
     (QgsDataItem, "Custom"),
     (QgsDataItem, "NoType"),
 )
-_BROWSER_CAP_FERTILE = _resolve_enum(
+_BROWSER_CAP_FERTILE = resolve_enum(
     (getattr(Qgis, "BrowserItemCapability", None) if Qgis else None, "Fertile"),
     (QgsDataItem, "Fertile"),
 )
-_BROWSER_CAP_FAST = _resolve_enum(
+_BROWSER_CAP_FAST = resolve_enum(
     (getattr(Qgis, "BrowserItemCapability", None) if Qgis else None, "Fast"),
     (QgsDataItem, "Fast"),
 )
-_POPULATED_STATE = _resolve_enum(
+_POPULATED_STATE = resolve_enum(
     (getattr(Qgis, "BrowserItemState", None) if Qgis else None, "Populated"),
     (QgsDataItem, "Populated"),
+)
+
+# Layer-type values for QgsLayerItem construction. QGIS 3.20 moved
+# them to the scoped Qgis.BrowserLayerType enum and QGIS 4 under
+# strict PyQt6 drops the old QgsLayerItem class-level shortcuts
+# (Vector / Raster / VectorTile as class attributes), so every ctor
+# call routes through the same resolver as the capability flags
+# above instead of touching the unscoped spellings directly.
+_LAYER_TYPE_VECTOR = resolve_enum(
+    (getattr(Qgis, "BrowserLayerType", None) if Qgis else None, "Vector"),
+    (QgsLayerItem, "Vector"),
+)
+_LAYER_TYPE_RASTER = resolve_enum(
+    (getattr(Qgis, "BrowserLayerType", None) if Qgis else None, "Raster"),
+    (QgsLayerItem, "Raster"),
+)
+_LAYER_TYPE_VECTOR_TILE = resolve_enum(
+    (getattr(Qgis, "BrowserLayerType", None) if Qgis else None, "VectorTile"),
+    (QgsLayerItem, "VectorTile"),
 )
 
 
@@ -230,12 +233,21 @@ class BucketItem(QgsDataCollectionItem):
         # share roster is exposed cleanly through the API; the
         # plugin filters client-side.
         try:
-            items = list_items_sync(self._profile)
+            items = list_items(self._profile)
         except Exception as e:  # pragma: no cover - defensive
             _log.exception("BucketItem.createChildren list failed")
             return [_MessageItem(self, f"Failed to load: {e}")]
 
-        items = list(filter_for_bucket(items, self._kind))
+        items = list(
+            filter_for_bucket(
+                items,
+                self._kind,
+                # The sub claim captured at sign-in; empty for
+                # profiles that predate it, in which case the
+                # filter falls back to ownership inference.
+                caller_id=self._profile.user_id or None,
+            )
+        )
         # Trim down to types QGIS can actually render. Portal-only
         # surfaces (forms, dashboards, web apps, themes, templates,
         # pick lists, boundaries) get hidden here -- they're real
@@ -339,9 +351,15 @@ class _TypeGroupItem(QgsDataCollectionItem):
         )
         self._profile = profile
         self._items = items
-        # Fertile so the user can expand; Fast because expansion
-        # is just dispatching the in-memory list (no I/O).
-        self.setCapabilitiesV2(_BROWSER_CAP_FERTILE | _BROWSER_CAP_FAST)
+        # Fertile so the user can expand. Fast means "createChildren
+        # is instant, run it on the GUI thread"; that holds for every
+        # group except basemaps, whose children each need the item's
+        # data envelope fetched (see _make_item), so basemap groups
+        # keep the Browser worker thread by not claiming Fast.
+        caps = _BROWSER_CAP_FERTILE
+        if type_key != "basemap":
+            caps = caps | _BROWSER_CAP_FAST
+        self.setCapabilitiesV2(caps)
 
     def createChildren(self) -> list[QgsDataItem]:
         children: list[QgsDataItem] = []
@@ -400,12 +418,15 @@ class DataLayerItem(QgsDataCollectionItem):
         return self._item
 
     def createChildren(self) -> list[QgsDataItem]:
-        full = get_item_sync(self._profile, self._item.id) or {}
+        full = get_item(self._profile, self._item.id) or {}
         layers = _extract_v3_layers(full)
         if not layers:
             # No layers found in the data envelope. Fall back to
             # the bare-UUID alias the portal exposes for v1 back-
             # compat. One leaf, default label is the item title.
+            # No per-layer id exists on those old shapes, so the
+            # authed tile route (which needs one) is unavailable
+            # and the leaf stays on the public surface.
             return [
                 _DataLayerSublayerItem(
                     self,
@@ -414,6 +435,7 @@ class DataLayerItem(QgsDataCollectionItem):
                     collection_id=self._item.id,
                     label=self._item.title,
                     has_geometry=True,
+                    layer_id=None,
                 )
             ]
         children: list[QgsDataItem] = []
@@ -440,6 +462,7 @@ class DataLayerItem(QgsDataCollectionItem):
                     collection_id=collection_id,
                     label=label,
                     has_geometry=has_geometry,
+                    layer_id=layer_id,
                 )
             )
         return children
@@ -469,22 +492,65 @@ def _extract_v3_layers(full_item: dict[str, object]) -> list[dict[str, object]]:
     return out
 
 
+def _spatial_sublayer_uri(
+    profile: ConnectionProfile,
+    item: ItemSummary,
+    *,
+    collection_id: str,
+    layer_id: str | None,
+) -> str:
+    """Pick the vector-tile endpoint for a spatial sublayer.
+
+    Public items stay on the public OGC Tiles surface so a project
+    file saved with the layer keeps rendering for anonymous viewers
+    who never signed in. Anything else uses the portal's authed
+    per-layer MVT route with the connection's layer authcfg attached,
+    which is what makes private and org layers actually draw instead
+    of listing in the tree and rendering empty. Both degradations
+    (sign-in could not mint a layer key, or a v1/v2 item with no
+    per-layer id for the authed route to address) fall back to the
+    public surface, where a non-public layer behaves exactly as it
+    did before authed rendering existed.
+    """
+    if item.access == "public":
+        return vector_tile_uri(profile.portal_url, collection_id)
+    if profile.layer_authcfg_id and layer_id:
+        return authed_vector_tile_uri(
+            profile.portal_url,
+            item.id,
+            layer_id,
+            authcfg_id=profile.layer_authcfg_id,
+        )
+    _log.debug(
+        "Non-public sublayer %s falls back to the public tiles surface "
+        "(layer authcfg present: %s, layer id: %r)",
+        collection_id,
+        bool(profile.layer_authcfg_id),
+        layer_id,
+    )
+    return vector_tile_uri(profile.portal_url, collection_id)
+
+
 class _DataLayerSublayerItem(QgsLayerItem):
     """One sublayer leaf under a DataLayerItem.
 
     Spatial sublayers (``has_geometry=True``) add as MVT vector
-    tiles by default, pointing at the OGC API Tiles endpoint
-    ``/collections/<collectionId>/tiles/WebMercatorQuad``. Vector
-    tiles scale to county/state-extent zoom on huge layers like
-    WV Parcels (1.4M polygons) where an OAPIF GeoJSON request
-    would either time out or return a multi-megabyte unfiltered
-    dump that QGIS can't render. The engine simplifies geometry
-    and caps features per tile so low-zoom tiles complete in
-    sub-second time; high zoom shows full detail.
+    tiles by default. Vector tiles scale to county/state-extent
+    zoom on huge layers like WV Parcels (1.4M polygons) where an
+    OAPIF GeoJSON request would either time out or return a
+    multi-megabyte unfiltered dump that QGIS can't render. The
+    engine simplifies geometry and caps features per tile so
+    low-zoom tiles complete in sub-second time; high zoom shows
+    full detail. Which tile endpoint depends on the item's access;
+    see ``_spatial_sublayer_uri``.
 
     Non-spatial sublayers (tables, ``has_geometry=False``) can't
     render as MVT -- ST_AsMVTGeom skips them. They fall through
     to OAPIF so QGIS can still pull rows into an attribute table.
+    OAPIF is the PUBLIC surface, and no authed table endpoint
+    exists server-side (a documented portal follow-up), so private
+    tables stay listed but get a tooltip pointing at the Clone
+    flow, which reads them through the authed session.
 
     Editing isn't supported on MVT layers (they're a read-only
     rendering format). The Editor menu's "Add as editable
@@ -501,14 +567,17 @@ class _DataLayerSublayerItem(QgsLayerItem):
         collection_id: str,
         label: str,
         has_geometry: bool,
+        layer_id: str | None,
     ) -> None:
         if has_geometry:
-            uri = vector_tile_uri(profile.portal_url, collection_id)
-            layer_type = QgsLayerItem.VectorTile
+            uri = _spatial_sublayer_uri(
+                profile, item, collection_id=collection_id, layer_id=layer_id
+            )
+            layer_type = _LAYER_TYPE_VECTOR_TILE
             provider_key = "vectortile"
         else:
             uri = oapif_uri(profile.portal_url, collection_id)
-            layer_type = QgsLayerItem.Vector
+            layer_type = _LAYER_TYPE_VECTOR
             provider_key = "OAPIF"
         super().__init__(
             parent,
@@ -524,6 +593,12 @@ class _DataLayerSublayerItem(QgsLayerItem):
         self._label = label
         self._has_geometry = has_geometry
         self._provider_key = provider_key
+        if not has_geometry and item.access != "public":
+            self.setToolTip(
+                "Private table: rows are not readable through the public "
+                "OGC surface, so this layer will load empty. Use 'Clone "
+                "layer for offline use' to work with private tables."
+            )
 
     @property
     def item(self) -> ItemSummary:
@@ -569,7 +644,7 @@ class TileLayerItem(QgsLayerItem):
             item.title,
             f"gratisgis-tile-layer:/{profile.name}/{item.id}",
             uri,
-            QgsLayerItem.VectorTile,
+            _LAYER_TYPE_VECTOR_TILE,
             "vectortile",
         )
         self._item = item
@@ -577,6 +652,20 @@ class TileLayerItem(QgsLayerItem):
     @property
     def item(self) -> ItemSummary:
         return self._item
+
+    def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
+        u = QgsMimeDataUtils.Uri()
+        u.layerType = "vector-tile"
+        u.providerKey = "vectortile"
+        u.name = self._item.title
+        # Must be self.uri() (the real XYZ data-source URI passed to
+        # the QgsLayerItem ctor), NOT self.path() (the Browser-tree
+        # node identifier). Its siblings learned the hard way that
+        # the default mime payload can carry path() and the drop
+        # fails with "not a valid or recognized data source"; see
+        # BasemapItem.mimeUris.
+        u.uri = self.uri()
+        return [u]
 
 
 class BasemapItem(QgsLayerItem):
@@ -588,9 +677,12 @@ class BasemapItem(QgsLayerItem):
         "attribution": "..." }
 
     The item-list endpoint returns only ItemSummary (no data), so
-    we fetch the full envelope lazily on construction. With a
-    typical ~10 basemaps per bucket, those fetches happen once on
-    expand and the data is cached for the life of the tree node.
+    the full envelope has to be fetched separately. The fetch
+    happens in the PARENT'S createChildren (``_make_item``, on the
+    Browser worker thread), never here: a network call inside a
+    tree-item constructor would run on whatever thread instantiates
+    the node, and basemap leaves used to stall the GUI for one HTTP
+    round-trip each on expand.
     """
 
     def __init__(
@@ -598,9 +690,9 @@ class BasemapItem(QgsLayerItem):
         parent: QgsDataItem,
         profile: ConnectionProfile,
         item: ItemSummary,
+        *,
+        data: dict[str, object] | None,
     ) -> None:
-        full = get_item_sync(profile, item.id) or {}
-        data = full.get("data") if isinstance(full, dict) else None
         tile_url = ""
         if isinstance(data, dict):
             tile_url = str(data.get("tileUrl") or "")
@@ -619,7 +711,7 @@ class BasemapItem(QgsLayerItem):
             item.title,
             f"gratisgis-basemap:/{profile.name}/{item.id}",
             uri,
-            QgsLayerItem.Raster,
+            _LAYER_TYPE_RASTER,
             "wms",
         )
         self._item = item
@@ -685,7 +777,7 @@ class ServiceItem(QgsDataCollectionItem):
         return self._item
 
     def createChildren(self) -> list[QgsDataItem]:
-        full = get_item_sync(self._profile, self._item.id) or {}
+        full = get_item(self._profile, self._item.id) or {}
         data = full.get("data") if isinstance(full, dict) else None
         base_url = ""
         layers: list[dict[str, object]] = []
@@ -787,7 +879,7 @@ class _ServiceSublayerItem(QgsLayerItem):
         base_root = base_url.rstrip("/")
         if is_feature_server:
             provider = "arcgisfeatureserver"
-            layer_type = QgsLayerItem.Vector
+            layer_type = _LAYER_TYPE_VECTOR
             target_url = (
                 f"{base_root}/{layer_id}" if layer_id is not None else base_root
             )
@@ -795,7 +887,7 @@ class _ServiceSublayerItem(QgsLayerItem):
             path_suffix = layer_id if layer_id is not None else "root"
         else:
             provider = "arcgismapserver"
-            layer_type = QgsLayerItem.Raster
+            layer_type = _LAYER_TYPE_RASTER
             # Always point at the MapServer root; filter via layers
             # key. Drop the /N path segment if it slipped in.
             if base_root.rstrip("/").rsplit("/", 1)[-1].isdigit():
@@ -913,7 +1005,17 @@ def _make_item(
     if t == "tile_layer":
         return TileLayerItem(parent, profile, item)
     if t == "basemap":
-        return BasemapItem(parent, profile, item)
+        # The tile URL lives in the item's data envelope, which the
+        # list payload does not carry. Fetch it HERE: _make_item runs
+        # inside the parent group's createChildren, and basemap
+        # groups deliberately drop the Fast capability so QGIS calls
+        # that on the Browser worker thread. The leaf constructor
+        # stays network-free and safe on any thread.
+        full = get_item(profile, item.id) or {}
+        raw = full.get("data") if isinstance(full, dict) else None
+        return BasemapItem(
+            parent, profile, item, data=raw if isinstance(raw, dict) else None
+        )
     # Connected services: today every "service" item on prod is an
     # ArcGIS REST MapServer; the dedicated *_service legacy types
     # also flow through the same handler since they all carry a
@@ -927,12 +1029,3 @@ def _make_item(
     # to the item-properties dialog instead of an add-to-canvas
     # action that wouldn't apply.
     return GenericItem(parent, profile, item)
-
-
-def _tr(text: str) -> str:
-    """Wrap user-visible strings for QGIS's i18n machinery, even
-    though we don't yet ship a translation catalog. Cheap insurance
-    against having to retrofit later. QGIS picks up wrapped strings
-    automatically when pylupdate is run against the source tree.
-    """
-    return QCoreApplication.translate("gratisgis_qgis.browser", text)

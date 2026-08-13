@@ -50,16 +50,19 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QWidget,
 )
 
-from ..browser.fetch import _connected_client, _run
 from ..browser.uris import parse_oapif_uri
 from ..log import get_logger
 from ..offline.clone import (
     CloneTarget,
     make_target,
     normalize_feature_collection,
+    safe_write_path,
     validate_clone_target,
 )
+from ..portal import get_client
+from ..qgis_compat import resolve_enum
 from ..settings import ConnectionStore
+from ..tasks import format_error, run_in_task
 
 if TYPE_CHECKING:
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
@@ -77,6 +80,9 @@ class CloneToGeoPackageDialog(QDialog):
         self._iface = iface
         self._store = ConnectionStore()
         self._target_directory: str = ""
+        # Set on reject: a download completing after the user
+        # dismissed the dialog must not write files or add layers.
+        self._closed = False
 
         self._layer_combo = QComboBox()
         self._populate_layer_combo()
@@ -252,16 +258,36 @@ class CloneToGeoPackageDialog(QDialog):
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
         self._progress_label.setText("Downloading features from portal...")
+        layer_name = layer.name()
 
-        try:
-            body = _run(_download(profile=profile, item_id=item_id, layer_id=layer_id))
-        except Exception as e:
-            _log.exception("download failed")
-            QMessageBox.critical(self, "Download failed", str(e))
+        def download(_handle):
+            return get_client(profile).features.download_geojson(
+                item_id=item_id, layer_id=layer_id
+            )
+
+        def done(body) -> None:
+            if self._closed:
+                return
+            self._write_and_load(body, target=target, layer_name=layer_name)
+
+        def failed(exc: BaseException) -> None:
+            _log.error("download failed", exc_info=exc)
+            if self._closed:
+                return
+            QMessageBox.critical(self, "Download failed", format_error(exc))
             self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
-            return
 
+        run_in_task("GratisGIS: clone layer", download, done, failed, cancelable=False)
+
+    def reject(self) -> None:  # Qt override
+        self._closed = True
+        super().reject()
+
+    def _write_and_load(self, body, *, target: CloneTarget, layer_name: str) -> None:
+        # The GeoPackage write and layer registration use QGIS API
+        # objects, so they stay on the GUI thread; only the network
+        # download runs in the task.
         fc = normalize_feature_collection(body)
         count = len(fc.get("features", []))
         self._progress_label.setText(f"Writing {count} feature(s) to GeoPackage...")
@@ -280,7 +306,7 @@ class CloneToGeoPackageDialog(QDialog):
         # immediately.
         local = QgsVectorLayer(
             f"{target.gpkg_path}|layername={target.file_name}",
-            f"{layer.name()} (offline)",
+            f"{layer_name} (offline)",
             "ogr",
         )
         if local.isValid():
@@ -297,15 +323,8 @@ class CloneToGeoPackageDialog(QDialog):
 
 
 # -----------------------------------------------------------
-# Async + QGIS bridges
+# QGIS bridges
 # -----------------------------------------------------------
-
-
-async def _download(*, profile, item_id: str, layer_id: str):
-    async with _connected_client(profile) as client:
-        return await client.features.download_geojson(
-            item_id=item_id, layer_id=layer_id
-        )
 
 
 def _write_geojson_to_geopackage(
@@ -319,6 +338,11 @@ def _write_geojson_to_geopackage(
     QgsVectorFileWriter. Round-tripping via a tempfile keeps the
     helper independent of the QgsVectorFileWriter version
     (writeAsVectorFormatV3 vs the legacy API).
+
+    The GeoPackage itself is written via ``safe_write_path``: the
+    writer targets a sibling temp file that only replaces
+    ``gpkg_path`` once the write succeeded, so a failed re-clone
+    can never destroy an existing (possibly locally edited) copy.
     """
     import contextlib
 
@@ -341,19 +365,30 @@ def _write_geojson_to_geopackage(
         if not loader.crs().isValid():
             loader.setCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
 
-        if os.path.exists(gpkg_path):
-            os.unlink(gpkg_path)
-
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "GPKG"
         options.fileEncoding = "UTF-8"
+        # The GPKG's internal layer name used to default to the output
+        # file's stem back when the final path was written directly.
+        # The safe-write temp path carries a random name, so the stem
+        # has to be pinned explicitly or the "|layername=" reference
+        # the loader builds afterwards would not resolve.
+        options.layerName = os.path.splitext(os.path.basename(gpkg_path))[0]
 
-        ctx = QgsCoordinateTransformContext()
-        err, msg, *_ = QgsVectorFileWriter.writeAsVectorFormatV3(
-            loader, gpkg_path, ctx, options
+        # QGIS 3 exposed NoError as a class-level shortcut; the scoped
+        # WriterError enum is its home on newer builds and the only
+        # spelling under QGIS 4's strict PyQt6.
+        no_error = resolve_enum(
+            (getattr(QgsVectorFileWriter, "WriterError", None), "NoError"),
+            (QgsVectorFileWriter, "NoError"),
         )
-        if err != QgsVectorFileWriter.NoError:
-            raise RuntimeError(f"GeoPackage write failed: {msg or err}")
+        ctx = QgsCoordinateTransformContext()
+        with safe_write_path(gpkg_path) as tmp_gpkg:
+            err, msg, *_ = QgsVectorFileWriter.writeAsVectorFormatV3(
+                loader, tmp_gpkg, ctx, options
+            )
+            if err != no_error:
+                raise RuntimeError(f"GeoPackage write failed: {msg or err}")
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp_geojson)

@@ -20,21 +20,9 @@ import logging.handlers
 from pathlib import Path
 
 _INITIALIZED = False
-_LOG_DIR_OVERRIDE: Path | None = None
-
-
-def set_log_dir(path: Path) -> None:
-    """Override the log directory (tests use this; production reads
-    from QStandardPaths). Must be called before the first
-    ``get_logger`` call to take effect.
-    """
-    global _LOG_DIR_OVERRIDE
-    _LOG_DIR_OVERRIDE = path
 
 
 def _default_log_dir() -> Path:
-    if _LOG_DIR_OVERRIDE is not None:
-        return _LOG_DIR_OVERRIDE
     # Defer the PyQt import so the module loads outside QGIS for tests.
     try:
         from qgis.PyQt.QtCore import QStandardPaths  # type: ignore[import-not-found]
@@ -70,12 +58,17 @@ def _init_root_logger() -> None:
         )
     )
     logger.addHandler(handler)
-    # Also pipe to the QGIS log panel when running inside QGIS.
+    # Also pipe to the QGIS log panel when running inside QGIS. Catch
+    # broadly, not just ImportError: this runs on the plugin's first
+    # import, and the handler's constructor can also fail on a QGIS /
+    # Qt build whose message-level enums moved (AttributeError). Any
+    # such failure must degrade to file-only logging with no QGIS
+    # mirroring; raising here would break plugin load outright.
     try:
         from .log_qgis_handler import QGISLogPanelHandler
 
         logger.addHandler(QGISLogPanelHandler())
-    except ImportError:
+    except Exception:
         pass
     logger.propagate = False
     _INITIALIZED = True
@@ -89,3 +82,24 @@ def get_logger(name: str) -> logging.Logger:
     """
     _init_root_logger()
     return logging.getLogger(name)
+
+
+def teardown_logging() -> None:
+    """Detach and close every handler on the plugin's root logger.
+
+    Called from the plugin's ``unload`` hook. The stdlib logging
+    registry outlives a plugin reload (QGIS purges the plugin's
+    modules from ``sys.modules``, but ``logging`` keeps its logger
+    objects), while the ``_INITIALIZED`` guard dies with this
+    module. Without an explicit teardown every reload stacks one
+    more file handler onto the persistent logger: duplicated lines
+    in plugin.log and, on Windows, an open handle that keeps the
+    file locked across plugin upgrades. Resetting ``_INITIALIZED``
+    lets the next ``get_logger`` call rebuild handlers from scratch.
+    """
+    global _INITIALIZED
+    logger = logging.getLogger("gratisgis_qgis")
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    _INITIALIZED = False
