@@ -7,6 +7,69 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.0] - 2026-08-13
+
+A foundation release: same features as 0.1.0, rebuilt so they
+actually hold up in a real QGIS. Still pre-alpha.
+
+### Fixed
+
+- **The plugin zip now installs and runs on stock QGIS.** Previous
+  zips, including the 0.1.0 release, did not: the plugin required
+  Python packages (httpx, pydantic) that QGIS does not ship and the
+  zip could not carry, and the build's import rewriting left the
+  vendored client library unable to import itself. The client is
+  now pure Python standard library with no third-party dependencies
+  at all, the zip vendors it unmodified, and a packaging test
+  builds the zip and imports every module of it on a bare
+  interpreter so a dead-on-arrival zip cannot ship again.
+- **The UI no longer freezes during network work.** Sign-in,
+  vector / raster / project publishes, offline clone, and push
+  edits all run as background tasks with progress reporting and a
+  working Cancel. Previously each of these blocked the whole QGIS
+  window until it finished, up to half an hour for a large raster
+  upload.
+- **Safer failure behavior across the board.** A publish that fails
+  or is cancelled partway no longer leaves an orphaned half-created
+  item on the portal (the plugin deletes it and says so). Offline
+  clone writes to a temporary file and swaps it into place only on
+  success, so a failed download can no longer destroy an existing
+  GeoPackage. Push edits records the portal ids of created
+  features, so retrying after a partial failure updates them
+  instead of creating duplicates.
+- **QGIS 4 / Qt 6 compatibility.** Enum access and file-writer
+  error handling that QGIS 4 under Qt 6 removed or relocated are
+  resolved at runtime with QGIS 3 fallbacks, including a case that
+  broke plugin load outright. Log handlers no longer stack up
+  across plugin reloads.
+
+### Added
+
+- **Private and org-shared layers render on the canvas.** At
+  sign-in the plugin mints a read-only portal API key, stores it in
+  the QGIS authentication database, and attaches it to non-public
+  layer URIs so those layers actually draw. The key is revoked at
+  sign-out and on connection delete. Read-only means a leaked layer
+  URI cannot modify data; edits always use your signed-in session.
+
+### Changed
+
+- `gratisgis_client` was rewritten as a synchronous, dependency-free
+  library (urllib transport, frozen dataclass models). Its public
+  shape changed; it serves the plugin, and the standalone GratisGIS
+  Python SDK lives in the main repo.
+
+### Known limitations
+
+- Private non-spatial tables do not render live; clone them to
+  view and edit (the portal has no authenticated features surface
+  for tables yet).
+- Adding a layer from the search dock uses the public surface, so
+  private layers added that way draw empty; add them from the
+  Browser tree instead.
+- tile_layer items are served from the public surface only, so
+  private tile layers do not draw.
+
 ## [0.1.0] - 2026-05-20
 
 First end-to-end release: every phase of the original plan is in.

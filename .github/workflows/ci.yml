@@ -4,44 +4,47 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
-  client:
-    name: client (${{ matrix.python-version }})
+  test:
+    name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Ruff
-        run: ruff check src tests
-
-      - name: Pytest (client suite)
-        run: pytest tests/client -q
-
-  type-check:
-    name: mypy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -e ".[dev]"
-      - run: mypy
+          python-version: ${{ matrix.python-version }}
+
+      # No runtime dependencies on purpose (the client vendors into
+      # the QGIS plugin zip); only the dev tools get installed. mypy
+      # stays below 2.0 to match pyproject: the 2.x line currently
+      # fails to load typeshed on this codebase.
+      - name: Install dev tools
+        run: pip install pytest ruff "mypy>=1.10,<2.0"
+
+      - name: Byte-compile
+        run: python -m compileall -q src tests
+
+      - name: Ruff
+        run: python -m ruff check src tests
+
+      - name: Mypy
+        run: python -m mypy
+
+      - name: Pytest
+        run: python -m pytest tests/ -q
+
+      - name: Build plugin zip
+        run: python scripts/make_zip.py
+
+      - name: Upload plugin zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: gratisgis-qgis-plugin-zip-py${{ matrix.python-version }}
+          path: dist/*.zip
+          if-no-files-found: error

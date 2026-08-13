@@ -13,8 +13,13 @@ metadata.txt + __init__.py at the root. Our repo layout is
   3. Vendors the ``gratisgis_client`` library into
      ``build/gratisgis_qgis/_vendor/gratisgis_client`` so the
      plugin works on a stock QGIS install with no extra pip steps.
-  4. Patches the plugin's imports of ``gratisgis_client`` to use
-     the vendored path under ``_vendor``.
+     No import rewriting: the plugin's ``__init__`` registers the
+     vendored package in ``sys.modules`` under its canonical name
+     (see ``_install_vendored_client`` there), so plain
+     ``gratisgis_client`` imports resolve to the vendored copy in
+     both the plugin's files and the vendored library's own.
+  4. Copies the repo LICENSE into the staged plugin directory so
+     the zip carries the license text.
   5. Drops test code, ``__pycache__``, and any dev-only artifacts.
   6. Zips the result as ``dist/gratisgis_qgis-<version>.zip``.
 
@@ -83,22 +88,23 @@ def main() -> int:
     vendor_root.mkdir(exist_ok=True)
     (vendor_root / "__init__.py").write_text(
         "# SPDX-License-Identifier: AGPL-3.0-or-later\n"
-        "# Vendored third-party / sibling packages for the plugin.\n"
-        "# Do not import directly; use the plugin's own re-export.\n"
+        "# Vendored sibling packages for the plugin. Do not import\n"
+        "# through this path: the plugin's __init__ registers the\n"
+        "# vendored gratisgis_client in sys.modules under its\n"
+        "# canonical name, so import it as plain gratisgis_client.\n"
     )
     shutil.copytree(
         SRC / "gratisgis_client",
         vendor_root / "gratisgis_client",
     )
+    # No import rewriting here. The plugin's __init__ aliases
+    # sys.modules["gratisgis_client"] to the vendored package when
+    # the _vendor tree is present, so plain ``gratisgis_client``
+    # imports work in the plugin's files and inside the vendored
+    # library alike, regardless of the installed plugin folder name.
 
-    # 3) Rewrite imports inside the plugin so they reach the
-    # vendored library. We rewrite top-level absolute imports of
-    # ``gratisgis_client`` to ``gratisgis_qgis._vendor.gratisgis_client``.
-    # Relative imports (`from .x`) and intra-package imports of
-    # the client itself ("from gratisgis_client.foo") survive
-    # because the rewrite leaves them in place inside the vendored
-    # tree -- everything stays consistent.
-    _rewrite_client_imports(staged_plugin)
+    # 3) Ship the license text alongside the code, as the AGPL asks.
+    shutil.copy2(REPO_ROOT / "LICENSE", staged_plugin / "LICENSE")
 
     # 4) Prune caches, tests, dev-only files.
     _prune(staged_plugin)
@@ -120,9 +126,7 @@ def main() -> int:
     return 0
 
 
-# -----------------------------------------------------------
 # Helpers
-# -----------------------------------------------------------
 
 
 _VERSION_RE = re.compile(r"^version\s*=\s*([^\s#]+)", re.MULTILINE)
@@ -134,37 +138,6 @@ def _read_plugin_version() -> str:
     if not match:
         raise RuntimeError("metadata.txt is missing a `version=` line")
     return match.group(1).strip()
-
-
-# Patterns we rewrite. ``gratisgis_qgis._vendor.gratisgis_client``
-# is the target path the user's QGIS will see.
-_REWRITE_TARGETS = (
-    ("from gratisgis_client", "from gratisgis_qgis._vendor.gratisgis_client"),
-    ("import gratisgis_client", "import gratisgis_qgis._vendor.gratisgis_client as gratisgis_client"),
-)
-
-
-def _rewrite_client_imports(root: Path) -> None:
-    """Patch absolute gratisgis_client imports to the vendored path.
-
-    Only rewrites the plugin's own files; leaves the vendored
-    library alone so its internal cross-imports keep resolving
-    against the same package name.
-    """
-    vendor_marker = root / "_vendor"
-    for path in root.rglob("*.py"):
-        # Skip files inside the vendor tree; their internal imports
-        # of `gratisgis_client.*` resolve to the vendored copy
-        # because Python sees the package by its leaf name in
-        # sys.modules. No rewrite needed.
-        if vendor_marker in path.parents or path == vendor_marker:
-            continue
-        text = path.read_text(encoding="utf-8")
-        original = text
-        for src_str, dst_str in _REWRITE_TARGETS:
-            text = text.replace(src_str, dst_str)
-        if text != original:
-            path.write_text(text, encoding="utf-8")
 
 
 def _prune(root: Path) -> None:
