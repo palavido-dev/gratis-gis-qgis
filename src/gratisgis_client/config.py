@@ -16,6 +16,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
+from gratisgis_client._version import __version__
+
+DEFAULT_USER_AGENT = f"gratisgis-client/{__version__}"
+"""User-Agent sent when the caller does not override it. Built from
+the package version so portal access logs identify the client
+release without a hand-maintained string to forget on bumps."""
+
 
 def _strip_trailing_slash(url: str) -> str:
     return url.rstrip("/")
@@ -46,8 +53,8 @@ class PortalConfig:
     (recommended). A fixed port is useful if the Keycloak client
     only allows a single redirect URI.
 
-    ``verify_tls`` is the usual httpx flag. Set to ``False`` only
-    for local self-signed development.
+    ``verify_tls`` disables TLS certificate verification when set to
+    ``False``. Only for local self-signed development.
     """
 
     portal_url: str
@@ -57,7 +64,7 @@ class PortalConfig:
     redirect_port: int = 0
     scope: tuple[str, ...] = ("openid", "profile", "email", "offline_access")
     verify_tls: bool = True
-    user_agent: str = field(default_factory=lambda: "gratisgis-client/0.0.1.dev0")
+    user_agent: str = field(default_factory=lambda: DEFAULT_USER_AGENT)
 
     def __post_init__(self) -> None:
         for name, value in (

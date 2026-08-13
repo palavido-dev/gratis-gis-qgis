@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from gratisgis_client.auth.tokens import TokenSet
+from gratisgis_client.auth.tokens import TokenSet, jwt_subject
 
 
 def _now() -> float:
@@ -113,3 +113,59 @@ def test_tokenset_is_frozen() -> None:
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         tokens.access_token = "b"  # type: ignore[misc]
+
+
+def _fake_jwt(payload: dict[str, object]) -> str:
+    """Build an unsigned JWT-shaped token: header.payload.signature
+    with base64url segments and the padding stripped, the way real
+    issuers emit them.
+    """
+    import base64
+    import json
+
+    def seg(obj: dict[str, object]) -> str:
+        raw = json.dumps(obj).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{seg({'alg': 'RS256', 'typ': 'JWT'})}.{seg(payload)}.c2ln"
+
+
+def test_jwt_subject_extracts_sub_claim() -> None:
+    token = _fake_jwt({"sub": "user-123", "preferred_username": "matt"})
+    assert jwt_subject(token) == "user-123"
+
+
+def test_jwt_subject_returns_none_for_opaque_or_malformed_tokens() -> None:
+    assert jwt_subject("not-a-jwt") is None
+    assert jwt_subject("a.b") is None
+    assert jwt_subject("a.!!notbase64!!.c") is None
+    # Decodable payload, but no sub claim in it.
+    assert jwt_subject(_fake_jwt({})) is None
+
+
+def test_tokenset_subject_prefers_access_token_then_id_token() -> None:
+    with_access_sub = TokenSet(
+        access_token=_fake_jwt({"sub": "from-access"}),
+        refresh_token="r",
+        access_expires_at=0.0,
+        refresh_expires_at=0.0,
+        id_token=_fake_jwt({"sub": "from-id"}),
+    )
+    assert with_access_sub.subject() == "from-access"
+
+    opaque_access = TokenSet(
+        access_token="opaque",
+        refresh_token="r",
+        access_expires_at=0.0,
+        refresh_expires_at=0.0,
+        id_token=_fake_jwt({"sub": "from-id"}),
+    )
+    assert opaque_access.subject() == "from-id"
+
+    no_jwt_anywhere = TokenSet(
+        access_token="opaque",
+        refresh_token="r",
+        access_expires_at=0.0,
+        refresh_expires_at=0.0,
+    )
+    assert no_jwt_anywhere.subject() is None

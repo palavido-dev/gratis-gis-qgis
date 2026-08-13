@@ -65,3 +65,15 @@ def test_default_scope_includes_offline_access() -> None:
     )
     assert "offline_access" in c.scope
     assert "openid" in c.scope
+
+
+def test_default_user_agent_is_built_from_package_version() -> None:
+    # Single-sourced: bumping __version__ must change the UA without
+    # touching a hand-maintained string.
+    from gratisgis_client import __version__
+
+    c = PortalConfig(
+        portal_url="https://portal.example.com",
+        keycloak_url="https://auth.example.com",
+    )
+    assert c.user_agent == f"gratisgis-client/{__version__}"

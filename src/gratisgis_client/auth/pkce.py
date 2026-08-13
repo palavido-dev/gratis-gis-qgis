@@ -6,25 +6,24 @@ catch the authorization code redirect. It is suitable for CLI
 scripts, notebooks, and any environment where launching the user's
 default browser is acceptable.
 
-The QGIS plugin substitutes a QtWebEngine-based flow in
-``gratisgis_qgis.auth_bridge`` that uses an embedded browser dialog
-instead. Both produce the same token response and feed the same
-``AuthManager``.
+``run`` blocks the calling thread until the callback lands, the
+timeout expires, or the caller's ``cancel`` probe fires. The QGIS
+plugin runs it inside a background task so the GUI thread never
+waits on the browser.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import secrets
 import socket
+import threading
+import time
 import webbrowser
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
 from urllib.parse import parse_qs, urlencode, urlparse
 
 
@@ -88,16 +87,27 @@ class _AuthorizationResult:
     error_description: str | None = None
 
 
+@dataclass
+class _CallbackOutcome:
+    """Mutable slot the handler thread writes the result into.
+
+    A plain holder plus an ``Event`` instead of a Future: the waiting
+    side is a normal thread, not an event loop.
+    """
+
+    result: _AuthorizationResult | None = None
+
+
 class _CallbackHandler(BaseHTTPRequestHandler):
     """HTTP handler that captures the OIDC redirect.
 
-    Subclassed per flow so that the handler's class attribute holds
-    the future to resolve. This keeps the handler thread-safe without
-    a module-global.
+    Subclassed per flow so that the handler's class attributes hold
+    the outcome slot and completion event. This keeps the handler
+    thread-safe without a module-global.
     """
 
-    result_future: asyncio.Future[_AuthorizationResult]
-    loop: asyncio.AbstractEventLoop
+    outcome: _CallbackOutcome
+    done: threading.Event
 
     def log_message(self, format: str, *args: object) -> None:
         # The default handler logs to stderr, which clutters CLI use.
@@ -105,6 +115,14 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # http.server API name
         parsed = urlparse(self.path)
+        # Browsers request /favicon.ico from the loopback origin right
+        # around the redirect. Only the /callback path may complete the
+        # flow; anything else 404s without touching the outcome.
+        if parsed.path != "/callback":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         params = parse_qs(parsed.query)
         result = _AuthorizationResult(
             code=(params["code"][0] if "code" in params else None),
@@ -121,11 +139,11 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
         self.wfile.write(body_bytes)
-        # Hand the captured params back to the awaiting flow. Done via
-        # ``call_soon_threadsafe`` because the HTTP server runs on its
-        # own thread.
-        if not self.result_future.done():
-            self.loop.call_soon_threadsafe(self.result_future.set_result, result)
+        # First callback wins; a stray re-load of the callback page
+        # must not overwrite the captured code.
+        if self.outcome.result is None:
+            self.outcome.result = result
+            self.done.set()
 
 
 def _build_callback_html(result: _AuthorizationResult) -> str:
@@ -157,34 +175,6 @@ def _build_callback_html(result: _AuthorizationResult) -> str:
     )
 
 
-@asynccontextmanager
-async def _loopback_server(
-    port: int, future: asyncio.Future[_AuthorizationResult]
-) -> AsyncIterator[HTTPServer]:
-    """Run a one-shot HTTP server on ``127.0.0.1:port`` for the duration
-    of the context.
-
-    The server runs on its own daemon thread; this coroutine returns
-    when ``future`` resolves (or when the context exits, whichever is
-    first).
-    """
-    loop = asyncio.get_running_loop()
-    handler_cls = type(
-        "_CallbackHandlerBound",
-        (_CallbackHandler,),
-        {"result_future": future, "loop": loop},
-    )
-    server = HTTPServer(("127.0.0.1", port), handler_cls)
-    thread = Thread(target=server.serve_forever, name="gratisgis-pkce-loopback", daemon=True)
-    thread.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2.0)
-
-
 class PKCEFlow:
     """Drives a PKCE authorization code flow against an OIDC server.
 
@@ -209,14 +199,24 @@ class PKCEFlow:
         self.redirect_port = redirect_port
         self._browser_opener = browser_opener
 
-    async def run(self, *, timeout: float = 300.0) -> tuple[str, PKCEChallenge, str]:
-        """Run the flow.
+    def run(
+        self,
+        *,
+        timeout: float = 300.0,
+        cancel: Callable[[], bool] | None = None,
+    ) -> tuple[str, PKCEChallenge, str]:
+        """Run the flow, blocking until the browser round-trip lands.
 
         Returns ``(authorization_code, pkce, redirect_uri)``.
         ``authorization_code`` is what the token exchange step needs.
         ``pkce`` carries the verifier the token exchange must present.
         ``redirect_uri`` is the same one the auth server saw, also
         required by the token exchange.
+
+        ``cancel`` is polled every 0.25 s; when it returns ``True``
+        the flow aborts with ``RuntimeError``, which is how a caller
+        (a QGIS task's cancel button) interrupts a wait it cannot
+        otherwise reach into.
 
         Raises ``TimeoutError`` if no callback arrives within
         ``timeout`` seconds. Raises ``RuntimeError`` on PKCE error
@@ -228,10 +228,19 @@ class PKCEFlow:
         state = secrets.token_urlsafe(32)
         pkce = PKCEChallenge.generate()
 
-        loop = asyncio.get_running_loop()
-        result_future: asyncio.Future[_AuthorizationResult] = loop.create_future()
-
-        async with _loopback_server(port, result_future):
+        outcome = _CallbackOutcome()
+        done = threading.Event()
+        handler_cls = type(
+            "_CallbackHandlerBound",
+            (_CallbackHandler,),
+            {"outcome": outcome, "done": done},
+        )
+        server = HTTPServer(("127.0.0.1", port), handler_cls)
+        thread = threading.Thread(
+            target=server.serve_forever, name="gratisgis-pkce-loopback", daemon=True
+        )
+        thread.start()
+        try:
             params = {
                 "response_type": "code",
                 "client_id": self.client_id,
@@ -244,13 +253,24 @@ class PKCEFlow:
             auth_url = f"{self.authorization_endpoint}?{urlencode(params)}"
             self._browser_opener(auth_url)
 
-            try:
-                result = await asyncio.wait_for(result_future, timeout=timeout)
-            except asyncio.TimeoutError as exc:
-                raise TimeoutError(
-                    f"No PKCE callback received within {timeout:.0f}s"
-                ) from exc
+            deadline = time.monotonic() + timeout
+            while not done.wait(0.25):
+                if cancel is not None and cancel():
+                    raise RuntimeError("Sign-in cancelled")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"No PKCE callback received within {timeout:.0f}s"
+                    )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2.0)
 
+        result = outcome.result
+        if result is None:
+            # Defensive: the event only sets after the slot is filled,
+            # so this indicates a bug rather than a flow outcome.
+            raise RuntimeError("Authorization callback produced no result")
         if result.error:
             raise RuntimeError(
                 f"Authorization failed: {result.error} ({result.error_description or ''})"

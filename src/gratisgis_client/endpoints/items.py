@@ -21,14 +21,14 @@ if TYPE_CHECKING:
 class ItemsEndpoint:
     """Wrapper over ``/api/items`` and related routes.
 
-    All methods are async. The endpoint does not cache; that's the
-    plugin's responsibility (Layer 5 in the architecture).
+    All methods block on the network. The endpoint does not cache;
+    that's the plugin's responsibility (Layer 5 in the architecture).
     """
 
     def __init__(self, http: PortalHttp) -> None:
         self._http = http
 
-    async def list(
+    def list(
         self,
         *,
         types: list[ItemType] | None = None,
@@ -58,19 +58,19 @@ class ItemsEndpoint:
             params["q"] = query
         if cursor:
             params["cursor"] = cursor
-        body = await self._http.request_json("GET", "/items", params=params)
+        body = self._http.request_json("GET", "/items", params=params)
         # Portal returns either a bare array or a paginated object.
         # Normalize both into ItemList so callers don't have to care.
         if isinstance(body, list):
-            return ItemList(items=[ItemSummary.model_validate(it) for it in body])
-        return ItemList.model_validate(body)
+            return ItemList(items=[ItemSummary.from_api(it) for it in body])
+        return ItemList.from_api(body)
 
-    async def get(self, item_id: str) -> Item:
+    def get(self, item_id: str) -> Item:
         """Fetch a single item envelope by id."""
-        body = await self._http.request_json("GET", f"/items/{item_id}")
-        return Item.model_validate(body)
+        body = self._http.request_json("GET", f"/items/{item_id}")
+        return Item.from_api(body)
 
-    async def create(
+    def create(
         self,
         *,
         type: ItemType,
@@ -90,7 +90,7 @@ class ItemsEndpoint:
         web-map JSON; and so on. Endpoint-level helpers for the
         common types land in Phase 1.
         """
-        body = await self._http.request_json(
+        body = self._http.request_json(
             "POST",
             "/items",
             json={
@@ -102,9 +102,9 @@ class ItemsEndpoint:
                 "access": access,
             },
         )
-        return Item.model_validate(body)
+        return Item.from_api(body)
 
-    async def update(
+    def update(
         self,
         item_id: str,
         *,
@@ -126,9 +126,9 @@ class ItemsEndpoint:
             patch["data"] = data
         if access is not None:
             patch["access"] = access
-        body = await self._http.request_json("PATCH", f"/items/{item_id}", json=patch)
-        return Item.model_validate(body)
+        body = self._http.request_json("PATCH", f"/items/{item_id}", json=patch)
+        return Item.from_api(body)
 
-    async def delete(self, item_id: str) -> None:
+    def delete(self, item_id: str) -> None:
         """Soft-delete an item (moves to trash, can be restored)."""
-        await self._http.request_json("DELETE", f"/items/{item_id}")
+        self._http.request_json("DELETE", f"/items/{item_id}")

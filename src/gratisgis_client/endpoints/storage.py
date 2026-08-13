@@ -14,9 +14,16 @@ API. The plugin uses this for:
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from gratisgis_client._parse import (
+    int_or,
+    opt_str,
+    req_bool,
+    req_str,
+    require_dict,
+)
 
 if TYPE_CHECKING:
     from gratisgis_client.http import PortalHttp
@@ -33,7 +40,8 @@ AssetKind = Literal[
 ]
 
 
-class PresignedUpload(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class PresignedUpload:
     """Response from POST /storage/presign-upload.
 
     The plugin uses ``upload_url`` to PUT bytes directly to MinIO
@@ -41,12 +49,10 @@ class PresignedUpload(BaseModel):
     that gets handed to the finalize step.
     """
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    upload_url: str = Field(alias="uploadUrl")
+    upload_url: str
     """Short-lived presigned PUT URL. Expires in ~60 seconds."""
 
-    public_url: str = Field(alias="publicUrl")
+    public_url: str
     """Where the object will be readable after upload. For private
     kinds (item-file, item-tile-layer, feature-attachment) this
     URL is mediated by the portal's ACL-checked proxy."""
@@ -55,18 +61,32 @@ class PresignedUpload(BaseModel):
     """The bare UUID portion of the storage key. The full key is
     ``<kind>/<key>``."""
 
-    max_bytes: int = Field(default=0, alias="maxBytes")
+    max_bytes: int = 0
     """Per-file ceiling the portal enforces. Callers should
     refuse uploads above this before initiating the PUT."""
 
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> PresignedUpload:
+        payload = require_dict(data, "PresignedUpload")
+        return cls(
+            upload_url=req_str(payload, "uploadUrl"),
+            public_url=req_str(payload, "publicUrl"),
+            key=req_str(payload, "key"),
+            max_bytes=int_or(payload, "maxBytes", 0),
+        )
 
-class TileLayerSpaceCheck(BaseModel):
+
+@dataclass(frozen=True, kw_only=True)
+class TileLayerSpaceCheck:
     """Response from POST /tile-layer/check-space."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     ok: bool
     reason: str | None = None
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> TileLayerSpaceCheck:
+        payload = require_dict(data, "TileLayerSpaceCheck")
+        return cls(ok=req_bool(payload, "ok"), reason=opt_str(payload, "reason"))
 
 
 class StorageEndpoint:
@@ -75,21 +95,32 @@ class StorageEndpoint:
     def __init__(self, http: PortalHttp) -> None:
         self._http = http
 
-    async def presign_upload(
+    def presign_upload(
         self,
         *,
         kind: AssetKind,
         content_type: str = "application/octet-stream",
+        size_bytes: int | None = None,
     ) -> PresignedUpload:
-        """Mint a short-lived presigned PUT URL."""
-        body = await self._http.request_json(
+        """Mint a short-lived presigned PUT URL.
+
+        Pass ``size_bytes`` whenever the caller knows the file size:
+        the portal enforces its per-kind size cap at presign time
+        (rejecting oversized files before any bytes move) and bakes
+        the length into the presigned signature, so the subsequent
+        PUT must send exactly that ``Content-Length``.
+        """
+        payload: dict[str, Any] = {"kind": kind, "contentType": content_type}
+        if size_bytes is not None:
+            payload["sizeBytes"] = size_bytes
+        body = self._http.request_json(
             "POST",
             "/storage/presign-upload",
-            json={"kind": kind, "contentType": content_type},
+            json=payload,
         )
-        return PresignedUpload.model_validate(body)
+        return PresignedUpload.from_api(body)
 
-    async def check_tile_layer_space(
+    def check_tile_layer_space(
         self,
         *,
         file_name: str,
@@ -100,9 +131,9 @@ class StorageEndpoint:
         Best-effort: if the portal returns 4xx/5xx the dialog
         should fail-open and let the real PUT surface the error.
         """
-        body = await self._http.request_json(
+        body = self._http.request_json(
             "POST",
             "/tile-layer/check-space",
             json={"fileName": file_name, "sizeBytes": size_bytes},
         )
-        return TileLayerSpaceCheck.model_validate(body)
+        return TileLayerSpaceCheck.from_api(body)

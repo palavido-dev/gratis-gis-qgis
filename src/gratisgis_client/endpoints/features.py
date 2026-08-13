@@ -10,48 +10,100 @@ Wraps the routes under
 
 The portal returns a typed insert summary for append; PATCH returns
 the updated feature row; DELETE returns 204. We stay forgiving on
-the response shapes (``extra='ignore'``) so a portal-side addition
+the response shapes (unknown keys ignored) so a portal-side addition
 doesn't break already-deployed plugins.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from gratisgis_client._parse import (
+    int_or,
+    opt_dict,
+    opt_str,
+    req_str,
+    require_dict,
+    str_list,
+)
 
 if TYPE_CHECKING:
     from gratisgis_client.http import PortalHttp
 
 
-class FeatureIn(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class FeatureIn:
     """Payload for one feature in an append.
 
-    Matches the portal's ``AppendFeatureDto``. ``globalId`` is an
+    Matches the portal's ``AppendFeatureDto``. ``global_id`` is an
     optional client-supplied stable identifier; the engine uses it
     to dedupe re-submissions (the offline-sync path in Phase 7
     depends on this being honored).
     """
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    global_id: str | None = Field(default=None, alias="globalId")
+    global_id: str | None = None
     geometry: dict[str, Any] | None = None
     properties: dict[str, Any] | None = None
 
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> FeatureIn:
+        payload = require_dict(data, "FeatureIn")
+        return cls(
+            global_id=opt_str(payload, "globalId"),
+            geometry=opt_dict(payload, "geometry"),
+            properties=opt_dict(payload, "properties"),
+        )
 
-class AppendResult(BaseModel):
+    def to_api_dict(self) -> dict[str, Any]:
+        """The wire shape, camelCase, with unset fields omitted.
+
+        None values are dropped rather than sent: the portal treats
+        an explicit null geometry as "clear", and the dedupe path
+        must not see a null globalId key.
+        """
+        out: dict[str, Any] = {}
+        if self.global_id is not None:
+            out["globalId"] = self.global_id
+        if self.geometry is not None:
+            out["geometry"] = self.geometry
+        if self.properties is not None:
+            out["properties"] = self.properties
+        return out
+
+
+@dataclass(frozen=True, kw_only=True)
+class AppendResult:
     """Outcome of a POST features call."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     inserted: int = 0
     """Number of feature rows written. Equal to len(features) on a
     fully-successful append; less when the engine deduped via
     globalId."""
 
+    deduplicated: int = 0
+    """Inputs the engine resolved to an existing live feature via
+    globalId instead of writing a new row."""
 
-class UpdateResult(BaseModel):
+    global_ids: list[str] = field(default_factory=list)
+    """Feature ids, order-aligned with the request's features array,
+    covering new and deduplicated rows alike. This is the id the
+    update / delete routes address, so the push-edits flow writes it
+    back into the local layer; a re-push can then update the feature
+    instead of duplicating it with a second create."""
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> AppendResult:
+        payload = require_dict(data, "AppendResult")
+        return cls(
+            inserted=int_or(payload, "inserted", 0),
+            deduplicated=int_or(payload, "deduplicated", 0),
+            global_ids=str_list(payload, "globalIds"),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class UpdateResult:
     """Outcome of a PATCH features/:fid call.
 
     The portal returns the updated feature shape, but we only model
@@ -59,11 +111,18 @@ class UpdateResult(BaseModel):
     against the raw response dict for the full shape.
     """
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
     id: str
     geometry: dict[str, Any] | None = None
     properties: dict[str, Any] | None = None
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> UpdateResult:
+        payload = require_dict(data, "UpdateResult")
+        return cls(
+            id=req_str(payload, "id"),
+            geometry=opt_dict(payload, "geometry"),
+            properties=opt_dict(payload, "properties"),
+        )
 
 
 class FeaturesEndpoint:
@@ -72,7 +131,7 @@ class FeaturesEndpoint:
     def __init__(self, http: PortalHttp) -> None:
         self._http = http
 
-    async def append(
+    def append(
         self,
         *,
         item_id: str,
@@ -85,21 +144,17 @@ class FeaturesEndpoint:
         call; for larger batches the caller should chunk so a
         partial failure doesn't roll back everything.
         """
-        body = {
-            "features": [
-                f.model_dump(by_alias=True, exclude_none=True) for f in features
-            ]
-        }
-        out = await self._http.request_json(
+        body = {"features": [f.to_api_dict() for f in features]}
+        out = self._http.request_json(
             "POST",
             f"/items/{item_id}/layers/{layer_id}/features",
             json=body,
         )
         if isinstance(out, dict):
-            return AppendResult.model_validate(out)
+            return AppendResult.from_api(out)
         return AppendResult()
 
-    async def update(
+    def update(
         self,
         *,
         item_id: str,
@@ -120,14 +175,14 @@ class FeaturesEndpoint:
             body["geometry"] = geometry
         if properties is not None:
             body["properties"] = properties
-        out = await self._http.request_json(
+        out = self._http.request_json(
             "PATCH",
             f"/items/{item_id}/layers/{layer_id}/features/{feature_id}",
             json=body,
         )
-        return UpdateResult.model_validate(out or {})
+        return UpdateResult.from_api(out or {})
 
-    async def delete(
+    def delete(
         self,
         *,
         item_id: str,
@@ -135,12 +190,12 @@ class FeaturesEndpoint:
         feature_id: str,
     ) -> None:
         """Soft-delete a single feature (204 No Content on success)."""
-        await self._http.request_json(
+        self._http.request_json(
             "DELETE",
             f"/items/{item_id}/layers/{layer_id}/features/{feature_id}",
         )
 
-    async def download_geojson(
+    def download_geojson(
         self,
         *,
         item_id: str,
@@ -162,7 +217,7 @@ class FeaturesEndpoint:
         params: dict[str, Any] = {}
         if bbox is not None:
             params["bbox"] = ",".join(str(x) for x in bbox)
-        body = await self._http.request_json(
+        body = self._http.request_json(
             "GET",
             f"/items/{item_id}/layers/{layer_id}/geojson",
             params=params or None,

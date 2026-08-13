@@ -14,10 +14,19 @@ item types.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from gratisgis_client._parse import (
+    opt_dict,
+    opt_int,
+    opt_str,
+    req_datetime,
+    req_str,
+    require_dict,
+    str_list,
+)
 
 # Free-form string rather than a closed Literal union. The portal
 # adds new item types over time (per packages/shared-types/src/
@@ -66,6 +75,10 @@ KNOWN_ITEM_TYPES: tuple[str, ...] = (
     "app_template",
     "theme",
     "print_template",
+    # #179 point clouds served as ordinary layers (COPC-backed).
+    "point_cloud",
+    # #221 server-side Python scripts stored as items.
+    "script",
 )
 """Mirrors `ITEM_TYPES` in packages/shared-types/src/item-types.ts
 exactly. When a new type lands on the portal, add it here too so
@@ -74,8 +87,20 @@ the search dock's filter dropdown surfaces it."""
 
 ItemSharingScope = Literal["private", "org", "public"]
 
+_SHARING_SCOPES: tuple[ItemSharingScope, ...] = ("private", "org", "public")
 
-class ItemSummary(BaseModel):
+
+def _sharing_scope(data: dict[str, Any]) -> ItemSharingScope:
+    value = req_str(data, "access")
+    if value not in _SHARING_SCOPES:
+        raise ValueError(
+            f"field 'access': expected one of {', '.join(_SHARING_SCOPES)}, got {value!r}"
+        )
+    return value
+
+
+@dataclass(frozen=True, kw_only=True)
+class ItemSummary:
     """The slim version of an item, as returned by ``GET /api/items``
     list responses.
 
@@ -83,24 +108,74 @@ class ItemSummary(BaseModel):
     sharing scope, modification timestamps, tags, thumbnail URL.
     """
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
     id: str
     type: ItemType
     title: str
     summary: str | None = None
     description: str | None = None
-    tags: list[str] = Field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     access: ItemSharingScope
-    owner_id: str = Field(alias="ownerId")
-    owner_username: str | None = Field(default=None, alias="ownerUsername")
-    org_id: str = Field(alias="orgId")
-    folder_id: str | None = Field(default=None, alias="folderId")
-    thumbnail_url: str | None = Field(default=None, alias="thumbnailUrl")
-    created_at: datetime = Field(alias="createdAt")
-    updated_at: datetime = Field(alias="updatedAt")
+    owner_id: str
+    owner_username: str | None = None
+    org_id: str
+    folder_id: str | None = None
+    thumbnail_url: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> ItemSummary:
+        return cls(**_summary_kwargs(require_dict(data, "ItemSummary")))
+
+    def to_api_dict(self) -> dict[str, Any]:
+        """The wire shape back, camelCase keys, JSON-safe values.
+
+        Round-trips with ``from_api`` so callers can stash a summary
+        in a Qt item role (or any JSON sink) and re-hydrate it later.
+        """
+        return {
+            "id": self.id,
+            "type": self.type,
+            "title": self.title,
+            "summary": self.summary,
+            "description": self.description,
+            "tags": list(self.tags),
+            "access": self.access,
+            "ownerId": self.owner_id,
+            "ownerUsername": self.owner_username,
+            "orgId": self.org_id,
+            "folderId": self.folder_id,
+            "thumbnailUrl": self.thumbnail_url,
+            "createdAt": self.created_at.isoformat(),
+            "updatedAt": self.updated_at.isoformat(),
+        }
 
 
+def _summary_kwargs(data: dict[str, Any]) -> dict[str, Any]:
+    """Parsed constructor kwargs for the ``ItemSummary`` fields.
+
+    Shared between ``ItemSummary.from_api`` and ``Item.from_api`` so
+    the alias map exists exactly once.
+    """
+    return {
+        "id": req_str(data, "id"),
+        "type": req_str(data, "type"),
+        "title": req_str(data, "title"),
+        "summary": opt_str(data, "summary"),
+        "description": opt_str(data, "description"),
+        "tags": str_list(data, "tags"),
+        "access": _sharing_scope(data),
+        "owner_id": req_str(data, "ownerId"),
+        "owner_username": opt_str(data, "ownerUsername"),
+        "org_id": req_str(data, "orgId"),
+        "folder_id": opt_str(data, "folderId"),
+        "thumbnail_url": opt_str(data, "thumbnailUrl"),
+        "created_at": req_datetime(data, "createdAt"),
+        "updated_at": req_datetime(data, "updatedAt"),
+    }
+
+
+@dataclass(frozen=True, kw_only=True)
 class Item(ItemSummary):
     """The full version of an item, as returned by ``GET /api/items/:id``.
 
@@ -108,18 +183,46 @@ class Item(ItemSummary):
     payload), license, and thumbnail design.
     """
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    data: dict[str, Any] = Field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
     license: str | None = None
-    thumbnail_design: dict[str, Any] | None = Field(default=None, alias="thumbnailDesign")
+    thumbnail_design: dict[str, Any] | None = None
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> Item:
+        payload = require_dict(data, "Item")
+        kwargs = _summary_kwargs(payload)
+        envelope = payload.get("data")
+        kwargs["data"] = require_dict(envelope, "field 'data'") if envelope is not None else {}
+        kwargs["license"] = opt_str(payload, "license")
+        kwargs["thumbnail_design"] = opt_dict(payload, "thumbnailDesign")
+        return cls(**kwargs)
+
+    def to_api_dict(self) -> dict[str, Any]:
+        out = super().to_api_dict()
+        out["data"] = dict(self.data)
+        out["license"] = self.license
+        out["thumbnailDesign"] = (
+            dict(self.thumbnail_design) if self.thumbnail_design is not None else None
+        )
+        return out
 
 
-class ItemList(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class ItemList:
     """Paginated list response for ``GET /api/items``."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     items: list[ItemSummary]
     total: int | None = None
-    next_cursor: str | None = Field(default=None, alias="nextCursor")
+    next_cursor: str | None = None
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> ItemList:
+        payload = require_dict(data, "ItemList")
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            raise ValueError("field 'items': expected a list")
+        return cls(
+            items=[ItemSummary.from_api(row) for row in rows],
+            total=opt_int(payload, "total"),
+            next_cursor=opt_str(payload, "nextCursor"),
+        )

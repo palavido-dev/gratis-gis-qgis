@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""HTTP transport for portal-api calls.
+"""HTTP layer for portal-api calls.
 
-Wraps ``httpx.AsyncClient`` with:
+Wraps a ``Transport`` with:
 
 - ``Authorization: Bearer`` injection from the ``AuthManager``
 - One-shot refresh-on-401 retry
@@ -9,17 +9,18 @@ Wraps ``httpx.AsyncClient`` with:
   ``gratisgis_client.errors``
 
 Endpoint modules use ``PortalHttp.request_json(...)`` rather than
-hitting ``httpx`` directly, so the error mapping and refresh logic
-stay in one place.
+hitting the transport directly, so the error mapping and refresh
+logic stay in one place.
 """
 
 from __future__ import annotations
 
+import json as _json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
+from urllib.parse import urlencode
 
-import httpx
-
+from gratisgis_client.config import PortalConfig
 from gratisgis_client.errors import (
     AuthError,
     ConflictError,
@@ -27,50 +28,66 @@ from gratisgis_client.errors import (
     PortalError,
     ValidationError,
 )
-
-if TYPE_CHECKING:
-    from gratisgis_client.auth.manager import AuthManager
-    from gratisgis_client.config import PortalConfig
+from gratisgis_client.transport import (
+    Transport,
+    TransportError,
+    TransportRequest,
+    TransportResponse,
+    UrllibTransport,
+    encode_multipart,
+)
 
 _log = logging.getLogger(__name__)
 
+# Regular JSON calls: generous enough for a slow county-scale list
+# response, small enough that a dead portal fails within a dialog's
+# patience.
+_DEFAULT_TIMEOUT = 60.0
+
+# Multipart uploads: 10 minutes covers a half-GB upload on a
+# 1 MB/s link with margin. Real wall-clock would be much less on
+# normal links; this is a safety net, not a target.
+_MULTIPART_TIMEOUT = 600.0
+
+
+class _TokenSource(Protocol):
+    """The slice of ``AuthManager`` this layer needs.
+
+    A structural protocol so tests can hand in a two-method fake
+    without subclassing the real manager.
+    """
+
+    def access_token(self) -> str: ...
+
+    def force_refresh(self) -> str: ...
+
 
 class PortalHttp:
-    """Thin wrapper over httpx that injects auth and maps errors."""
+    """Thin wrapper over a ``Transport`` that injects auth and maps errors."""
 
     def __init__(
         self,
         config: PortalConfig,
-        auth: AuthManager,
+        auth: _TokenSource,
         *,
-        client: httpx.AsyncClient | None = None,
+        transport: Transport | None = None,
     ) -> None:
         self._config = config
         self._auth = auth
-        self._client = client
-        self._owns_client = client is None
+        self._transport: Transport = (
+            transport
+            if transport is not None
+            else UrllibTransport(verify_tls=config.verify_tls)
+        )
 
-    async def _ensure_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                base_url=self._config.api_base,
-                verify=self._config.verify_tls,
-                headers={"User-Agent": self._config.user_agent},
-                timeout=httpx.Timeout(60.0, connect=10.0),
-                # follow_redirects so a www / no-www or http / https
-                # canonicalization 301 from a reverse proxy doesn't
-                # break every authenticated call. Discovery follows
-                # redirects too (see discovery.py).
-                follow_redirects=True,
-            )
-        return self._client
+    def close(self) -> None:
+        """Release resources. Currently a no-op.
 
-    async def close(self) -> None:
-        if self._owns_client and self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        Kept so ``GratisGISClient.close()`` has a stable hook if the
+        transport ever grows pooled connections.
+        """
 
-    async def request_json(
+    def request_json(
         self,
         method: str,
         path: str,
@@ -89,17 +106,24 @@ class PortalHttp:
         Returns the parsed JSON body. Endpoint modules turn it into a
         typed model.
         """
-        return await self._request(
+        request_headers: dict[str, str] = {"Accept": "application/json"}
+        if headers:
+            request_headers.update(headers)
+        body: bytes | None = None
+        if json is not None:
+            body = _json.dumps(json).encode("utf-8")
+            request_headers["Content-Type"] = "application/json"
+        return self._send_authed(
             method,
             path,
             params=params,
-            json=json,
-            headers=headers,
+            body=body,
+            headers=request_headers,
+            timeout=_DEFAULT_TIMEOUT,
             expect_status=expect_status,
-            stream=False,
         )
 
-    async def request_multipart(
+    def request_multipart(
         self,
         method: str,
         path: str,
@@ -124,91 +148,101 @@ class PortalHttp:
         the 60 s default. Callers can override ``timeout`` if they
         already know their file size and link speed.
         """
-        client = await self._ensure_client()
-        access = await self._auth.access_token()
+        fields = {key: str(value) for key, value in (data or {}).items()}
+        content_type, body = encode_multipart(fields, files or {})
         request_headers: dict[str, str] = {"Accept": "application/json"}
         if headers:
             request_headers.update(headers)
-        request_headers["Authorization"] = f"Bearer {access}"
-        # httpx infers content-type from the files= kwarg; passing it
-        # in headers would override that and break the boundary.
-
-        # 10 minutes covers a half-GB upload on a 1 MB/s link with
-        # margin. Real wall-clock would be much less on normal links;
-        # this is a safety net, not a target.
-        effective_timeout = timeout if timeout is not None else 600.0
-
-        response = await client.request(
+        # Set after the caller's headers so the boundary-bearing value
+        # cannot be clobbered; a mismatched boundary breaks the parse
+        # server-side in a way that reads as a corrupt upload.
+        request_headers["Content-Type"] = content_type
+        return self._send_authed(
             method,
             path,
             params=params,
-            files=files,
-            data=data,
+            body=body,
             headers=request_headers,
-            timeout=httpx.Timeout(effective_timeout, connect=10.0),
-        )
-        if response.status_code == 401:
-            access = await self._auth.force_refresh()
-            request_headers["Authorization"] = f"Bearer {access}"
-            response = await client.request(
-                method,
-                path,
-                params=params,
-                files=files,
-                data=data,
-                headers=request_headers,
-                timeout=httpx.Timeout(effective_timeout, connect=10.0),
-            )
-
-        return self._handle_response(
-            response, method=method, path=path, expect_status=expect_status
+            timeout=timeout if timeout is not None else _MULTIPART_TIMEOUT,
+            expect_status=expect_status,
         )
 
-    async def _request(
+    def _send_authed(
         self,
         method: str,
         path: str,
         *,
         params: dict[str, Any] | None,
-        json: Any | None,
-        headers: dict[str, str] | None,
+        body: bytes | None,
+        headers: dict[str, str],
+        timeout: float,
         expect_status: int | None,
-        stream: bool,
     ) -> Any:
-        client = await self._ensure_client()
-        access = await self._auth.access_token()
-        request_headers: dict[str, str] = {"Accept": "application/json"}
-        if headers:
-            request_headers.update(headers)
-        request_headers["Authorization"] = f"Bearer {access}"
+        url = self._build_url(path, params)
+        headers.setdefault("User-Agent", self._config.user_agent)
+        headers["Authorization"] = f"Bearer {self._auth.access_token()}"
 
-        response = await client.request(
-            method, path, params=params, json=json, headers=request_headers
-        )
-        if response.status_code == 401:
+        response = self._send(method, url, headers, body, timeout, path=path)
+        if response.status == 401:
             # One-shot retry: force a refresh and re-send.
             _log.debug("401 from %s %s; refreshing and retrying once", method, path)
-            access = await self._auth.force_refresh()
-            request_headers["Authorization"] = f"Bearer {access}"
-            response = await client.request(
-                method, path, params=params, json=json, headers=request_headers
-            )
+            headers["Authorization"] = f"Bearer {self._auth.force_refresh()}"
+            response = self._send(method, url, headers, body, timeout, path=path)
 
         return self._handle_response(response, method=method, path=path, expect_status=expect_status)
 
+    def _send(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        timeout: float,
+        *,
+        path: str,
+    ) -> TransportResponse:
+        request = TransportRequest(
+            method=method, url=url, headers=dict(headers), body=body, timeout=timeout
+        )
+        try:
+            return self._transport.send(request)
+        except TransportError as exc:
+            # status=None distinguishes "never got an HTTP answer"
+            # from every mapped portal error.
+            raise PortalError(
+                f"Portal {method} {path} failed before a response arrived: {exc}",
+                status=None,
+            ) from exc
+
+    def _build_url(self, path: str, params: dict[str, Any] | None) -> str:
+        base = self._config.api_base
+        url = f"{base}{path}" if path.startswith("/") else f"{base}/{path}"
+        if params:
+            pairs: list[tuple[str, str]] = []
+            for key, value in params.items():
+                if value is None:
+                    continue
+                if isinstance(value, (list, tuple)):
+                    pairs.extend((key, str(item)) for item in value)
+                else:
+                    pairs.append((key, str(value)))
+            if pairs:
+                url = f"{url}?{urlencode(pairs)}"
+        return url
+
     def _handle_response(
         self,
-        response: httpx.Response,
+        response: TransportResponse,
         *,
         method: str,
         path: str,
         expect_status: int | None,
     ) -> Any:
-        status = response.status_code
+        status = response.status
         if expect_status is not None and status != expect_status:
             raise self._error_for(status, response, method, path)
         if 200 <= status < 300:
-            if status == 204 or not response.content:
+            if status == 204 or not response.body:
                 return None
             try:
                 return response.json()
@@ -222,7 +256,7 @@ class PortalHttp:
 
     @staticmethod
     def _error_for(
-        status: int, response: httpx.Response, method: str, path: str
+        status: int, response: TransportResponse, method: str, path: str
     ) -> PortalError:
         body = _safe_json(response)
         code = _extract_code(body)
@@ -238,7 +272,7 @@ class PortalHttp:
         return PortalError(message, status=status, body=body, code=code)
 
 
-def _safe_json(response: httpx.Response) -> Any:
+def _safe_json(response: TransportResponse) -> Any:
     try:
         return response.json()
     except ValueError:

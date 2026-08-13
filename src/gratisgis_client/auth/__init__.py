@@ -4,9 +4,9 @@
 Two surfaces matter to callers:
 
 - ``PKCEFlow`` runs the interactive sign-in via a loopback HTTP
-  server. The pure-Python implementation here is what CLI scripts
-  and notebooks use. The QGIS plugin substitutes a QtWebEngine-based
-  flow when available.
+  server and the system browser, blocking the calling thread until
+  the redirect lands. The QGIS plugin runs it inside a background
+  task.
 
 - ``TokenStorage`` is a protocol for persisting tokens. The default
   implementation keeps them in-memory; the QGIS plugin substitutes

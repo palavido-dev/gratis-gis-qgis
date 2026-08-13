@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gratisgis-client"
-version = "0.0.1.dev0"
-description = "Python client for GratisGIS portals. Used by the QGIS plugin and as a standalone library."
+dynamic = ["version"]
+description = "Synchronous, dependency-free Python client for GratisGIS portals. Built to be vendored into the QGIS plugin."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
 authors = [
@@ -26,23 +26,22 @@ classifiers = [
   "Topic :: Scientific/Engineering :: GIS",
 ]
 
-dependencies = [
-  "httpx>=0.27,<1.0",
-  "pydantic>=2.6,<3.0",
-]
+# Stdlib only, on purpose. The client vendors into the QGIS plugin
+# zip, and stock QGIS Python ships no pip-installed packages (and
+# cannot portably vendor compiled wheels like pydantic_core). The
+# main repo's clients/python is the standalone SDK; this package
+# exists to serve the plugin.
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
-  "pytest-asyncio>=0.23",
-  "pytest-httpx>=0.30",
   "ruff>=0.5",
   # mypy 2.x has a typeshed loading bug ("Failed to find builtin
   # module '_typeshed'") that breaks our codebase, and 2.1.0 also
   # has an internal-error crash. Pin to the last 1.x line until
   # 2.x stabilizes.
   "mypy>=1.10,<2.0",
-  "types-requests",
 ]
 
 [project.urls]
@@ -50,19 +49,21 @@ Homepage = "https://gratisgis.org"
 Source = "https://github.com/palavido-dev/gratis-gis-qgis"
 Issues = "https://github.com/palavido-dev/gratis-gis-qgis/issues"
 
+[tool.hatch.version]
+# Single source: bump __version__ in _version.py and nothing else.
+path = "src/gratisgis_client/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/gratisgis_client"]
 
 # The QGIS plugin code (src/gratisgis_qgis) is NOT packaged into the
 # Python wheel. It ships as a QGIS plugin zip via a separate build
-# step in scripts/build-qgis-plugin.py.
+# step in scripts/make_zip.py.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
 filterwarnings = [
   "error",
-  "ignore::DeprecationWarning:pydantic.*",
 ]
 
 [tool.ruff]
@@ -99,10 +100,9 @@ files = ["src/gratisgis_client", "tests"]
 module = "gratisgis_qgis.*"
 ignore_errors = true
 
-# Tests use pytest fixtures and parametrize decorators that are not
-# fully typed in pytest-asyncio and friends. Relaxing the strict-mode
-# rules that complain about those keeps the signal (real type errors
-# in test bodies) without the noise.
+# Tests exercise fakes and fixtures whose exact types are noise;
+# relaxing the strict-mode rules that complain about those keeps the
+# signal (real type errors in test bodies) without the noise.
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_decorators = false

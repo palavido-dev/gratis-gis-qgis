@@ -16,61 +16,111 @@ job per layer without re-uploading the bytes.
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from gratisgis_client._parse import (
+    int_or,
+    opt_str,
+    req_str,
+    require_dict,
+)
 
 if TYPE_CHECKING:
     from gratisgis_client.http import PortalHttp
 
 
-class IngestField(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class IngestField:
     """One attribute column from a probed source layer."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     name: str
     type: str
     """Portal-side normalized type: 'string' | 'number' | 'boolean' | 'date'."""
 
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> IngestField:
+        payload = require_dict(data, "IngestField")
+        return cls(name=req_str(payload, "name"), type=req_str(payload, "type"))
 
-class IngestLayer(BaseModel):
+
+@dataclass(frozen=True, kw_only=True)
+class IngestLayer:
     """Per-source-layer probe result.
 
     Mirrors what the portal returns from ``/ingest/probe`` and from
     the ``layers`` field of ``/ingest/stage``.
     """
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
     name: str
     """Source-layer name inside the uploaded file. Matches what the
     later import call passes as ``sourceLayerName``."""
 
-    geometry_type: str | None = Field(default=None, alias="geometryType")
+    geometry_type: str | None = None
     """'point' | 'line' | 'polygon' | None. None means a non-spatial
-    layer (a table) -- still importable, just no map preview."""
+    layer (a table), still importable, just no map preview."""
 
-    fields: list[IngestField] = Field(default_factory=list)
-    feature_count: int = Field(default=0, alias="featureCount")
+    fields: list[IngestField] = field(default_factory=list)
+    feature_count: int = 0
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> IngestLayer:
+        payload = require_dict(data, "IngestLayer")
+        rows = payload.get("fields") or []
+        if not isinstance(rows, list):
+            raise ValueError("field 'fields': expected a list")
+        return cls(
+            name=req_str(payload, "name"),
+            geometry_type=opt_str(payload, "geometryType"),
+            fields=[IngestField.from_api(row) for row in rows],
+            feature_count=int_or(payload, "featureCount", 0),
+        )
+
+    def to_api_dict(self) -> dict[str, Any]:
+        """The probe wire shape back, camelCase keys.
+
+        The publish wizard feeds this straight into the v3
+        layer-from-probe builder, which expects the same keys the
+        portal's probe response uses.
+        """
+        return {
+            "name": self.name,
+            "geometryType": self.geometry_type,
+            "fields": [{"name": f.name, "type": f.type} for f in self.fields],
+            "featureCount": self.feature_count,
+        }
 
 
-class StageResult(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class StageResult:
     """Response envelope for ``POST /api/ingest/stage``."""
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    staging_id: str = Field(alias="stagingId")
+    staging_id: str
     """Opaque id the caller hands back to the import-jobs endpoint."""
 
-    file_name: str = Field(alias="fileName")
+    file_name: str
     """Original filename the user uploaded (for display in the wizard)."""
 
-    size_bytes: int = Field(default=0, alias="sizeBytes")
-    layers: list[IngestLayer] = Field(default_factory=list)
-    expires_at: str | None = Field(default=None, alias="expiresAt")
+    size_bytes: int = 0
+    layers: list[IngestLayer] = field(default_factory=list)
+    expires_at: str | None = None
     """ISO-8601 UTC. Helps the dialog warn before the upload silently
     falls out of /tmp/gg-staging/."""
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> StageResult:
+        payload = require_dict(data, "StageResult")
+        rows = payload.get("layers") or []
+        if not isinstance(rows, list):
+            raise ValueError("field 'layers': expected a list")
+        return cls(
+            staging_id=req_str(payload, "stagingId"),
+            file_name=req_str(payload, "fileName"),
+            size_bytes=int_or(payload, "sizeBytes", 0),
+            layers=[IngestLayer.from_api(row) for row in rows],
+            expires_at=opt_str(payload, "expiresAt"),
+        )
 
 
 class IngestEndpoint:
@@ -79,7 +129,7 @@ class IngestEndpoint:
     def __init__(self, http: PortalHttp) -> None:
         self._http = http
 
-    async def stage(
+    def stage(
         self,
         *,
         file_path: str,
@@ -94,20 +144,18 @@ class IngestEndpoint:
         ``file_name`` defaults to the basename of ``file_path`` so the
         portal's ``originalName`` matches what the user picked.
         """
-        import os
-
         with open(file_path, "rb") as fh:
             blob = fh.read()
         name = file_name or os.path.basename(file_path)
 
-        body = await self._http.request_multipart(
+        body = self._http.request_multipart(
             "POST",
             "/ingest/stage",
             files={"file": (name, blob, content_type)},
         )
-        return StageResult.model_validate(body)
+        return StageResult.from_api(body)
 
-    async def probe(
+    def probe(
         self,
         *,
         file_path: str,
@@ -121,13 +169,11 @@ class IngestEndpoint:
         portal's /tmp budget for an hour, so we expose probe as a
         first-class option for read-only inspection.
         """
-        import os
-
         with open(file_path, "rb") as fh:
             blob = fh.read()
         name = file_name or os.path.basename(file_path)
 
-        body = await self._http.request_multipart(
+        body = self._http.request_multipart(
             "POST",
             "/ingest/probe",
             files={"file": (name, blob, content_type)},

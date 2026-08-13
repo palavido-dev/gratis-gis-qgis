@@ -20,7 +20,7 @@ class TileLayerEndpoint:
     def __init__(self, http: PortalHttp) -> None:
         self._http = http
 
-    async def finalize(
+    def finalize(
         self,
         *,
         item_id: str,
@@ -37,7 +37,7 @@ class TileLayerEndpoint:
         rather than a typed model; the dialog mostly cares about
         the success/failure of the call, not the shape.
         """
-        body = await self._http.request_json(
+        body = self._http.request_json(
             "POST",
             f"/items/{item_id}/tile-layer/finalize",
             json={
@@ -49,7 +49,7 @@ class TileLayerEndpoint:
         )
         return body if isinstance(body, dict) else {}
 
-    async def retry_pyramid(self, *, item_id: str) -> dict[str, Any]:
+    def retry_pyramid(self, *, item_id: str) -> dict[str, Any]:
         """Retry a failed PMTiles pyramid build.
 
         Flips the item back to processingState='cog-ready' so the
@@ -57,7 +57,7 @@ class TileLayerEndpoint:
         dialog when finalize succeeds but the async pyramid pass
         later fails (the dialog can offer a Retry button).
         """
-        body = await self._http.request_json(
+        body = self._http.request_json(
             "POST",
             f"/items/{item_id}/tile-layer/retry-pyramid",
         )

@@ -8,7 +8,7 @@ a notebook) can use to:
 
 - show the resolved portal name in a "Connect to..." UI
 - construct a ``PortalConfig`` for subsequent authenticated calls
-  via ``PortalConfig.from_discovery``
+  via ``portal_config_from_discovery``
 - decide whether the portal version meets a minimum requirement
 
 Discovery is intentionally a free function rather than a method on
@@ -20,11 +20,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import httpx
-
-from gratisgis_client.config import PortalConfig
+from gratisgis_client.config import DEFAULT_USER_AGENT, PortalConfig
 from gratisgis_client.errors import PortalError
 from gratisgis_client.models.portal_info import PortalInfo
+from gratisgis_client.transport import (
+    Transport,
+    TransportError,
+    TransportRequest,
+    UrllibTransport,
+)
 
 
 @dataclass(frozen=True)
@@ -55,12 +59,13 @@ class PortalDiscoveryError(PortalError):
         self.url = url
 
 
-async def discover(
+def discover(
     portal_url: str,
     *,
     verify_tls: bool = True,
     timeout: float = 10.0,
-    user_agent: str = "gratisgis-client/0.0.1.dev0",
+    user_agent: str = DEFAULT_USER_AGENT,
+    transport: Transport | None = None,
 ) -> DiscoveryResult:
     """Fetch the discovery doc from ``{portal_url}/api/portal-info``.
 
@@ -69,40 +74,48 @@ async def discover(
     returns a response that does not match the ``PortalInfo`` shape.
 
     ``verify_tls`` should stay ``True`` outside of local self-signed
-    dev. ``timeout`` is the total request timeout in seconds.
+    dev; it only affects the default transport, so callers injecting
+    their own ``transport`` configure TLS there instead. ``timeout``
+    is the total request timeout in seconds.
     """
     base = portal_url.rstrip("/")
     url = f"{base}/api/portal-info"
-    headers = {"User-Agent": user_agent, "Accept": "application/json"}
+    # The transport follows redirects, which covers two
+    # common-deployment realities:
+    #   - www / no-www canonicalization redirects (a user typing
+    #     "https://www.example.org" when the portal lives at
+    #     "https://example.org") returns a 301 we must follow.
+    #   - http -> https upgrades behind a reverse proxy.
+    # Neither indicates a non-portal service; following the
+    # redirect lets the real probe land on the actual host.
+    active_transport: Transport = (
+        transport if transport is not None else UrllibTransport(verify_tls=verify_tls)
+    )
+    request = TransportRequest(
+        method="GET",
+        url=url,
+        headers={"User-Agent": user_agent, "Accept": "application/json"},
+        timeout=timeout,
+    )
     try:
-        # follow_redirects=True covers two common-deployment realities:
-        #   - www / no-www canonicalization redirects (a user typing
-        #     "https://www.example.org" when the portal lives at
-        #     "https://example.org") returns a 301 we must follow.
-        #   - http -> https upgrades behind a reverse proxy.
-        # Neither indicates a non-portal service; following the
-        # redirect lets the real probe land on the actual host.
-        async with httpx.AsyncClient(
-            verify=verify_tls, timeout=timeout, follow_redirects=True
-        ) as client:
-            response = await client.get(url, headers=headers)
-    except httpx.HTTPError as exc:
+        response = active_transport.send(request)
+    except TransportError as exc:
         raise PortalDiscoveryError(
             f"Could not reach portal at {url}: {exc}", url=url
         ) from exc
 
-    if response.status_code != 200:
+    if response.status != 200:
         raise PortalDiscoveryError(
-            f"Portal discovery returned HTTP {response.status_code}. "
+            f"Portal discovery returned HTTP {response.status}. "
             f"This does not look like a GratisGIS portal.",
             url=url,
         )
 
     try:
-        info = PortalInfo.model_validate(response.json())
+        info = PortalInfo.from_api(response.json())
     except ValueError as exc:
-        # Wraps both JSONDecodeError and pydantic ValidationError;
-        # both are subclasses of ValueError and the calling code does
+        # Wraps both the JSON decode failure and the from_api shape
+        # failures; both raise ValueError and the calling code does
         # not need to distinguish them.
         raise PortalDiscoveryError(
             f"Portal discovery response at {url} was not a valid PortalInfo: {exc}",
@@ -113,8 +126,8 @@ async def discover(
     # so the caller can save the canonical URL on the connection
     # profile. Falls back to the user-supplied input when the
     # response URL doesn't end in the expected suffix (e.g. a
-    # mock-server response in a test).
-    final_url = str(response.url)
+    # fake-transport response in a test).
+    final_url = response.url
     suffix = "/api/portal-info"
     canonical = (
         final_url[: -len(suffix)] if final_url.endswith(suffix) else base

@@ -17,20 +17,25 @@ from gratisgis_client.auth.tokens import TokenSet
 class TokenStorage(Protocol):
     """Where the client persists the active token set for a portal.
 
-    Implementations must be safe to call from multiple coroutines on
-    the same event loop. Cross-process or cross-thread sharing is
-    not a requirement of the protocol; implementations that want to
-    support it can add their own locks.
+    Calls are serialized by ``AuthManager``'s refresh lock in the
+    paths that matter (load-then-save during refresh), so
+    implementations do not need their own locking for correctness
+    within one manager. Cross-process sharing is not a requirement
+    of the protocol; implementations that want it can add their own
+    coordination.
     """
 
-    async def load(self) -> TokenSet | None:
+    def load(self) -> TokenSet | None:
         """Return the stored tokens, or ``None`` if nothing is stored."""
+        ...
 
-    async def save(self, tokens: TokenSet) -> None:
+    def save(self, tokens: TokenSet) -> None:
         """Persist ``tokens``, replacing anything previously stored."""
+        ...
 
-    async def clear(self) -> None:
+    def clear(self) -> None:
         """Remove any stored tokens. Idempotent."""
+        ...
 
 
 class InMemoryTokenStorage:
@@ -44,11 +49,11 @@ class InMemoryTokenStorage:
     def __init__(self, initial: TokenSet | None = None) -> None:
         self._tokens = initial
 
-    async def load(self) -> TokenSet | None:
+    def load(self) -> TokenSet | None:
         return self._tokens
 
-    async def save(self, tokens: TokenSet) -> None:
+    def save(self, tokens: TokenSet) -> None:
         self._tokens = tokens
 
-    async def clear(self) -> None:
+    def clear(self) -> None:
         self._tokens = None

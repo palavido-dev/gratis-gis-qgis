@@ -14,36 +14,49 @@ hard-codes its own client_id (the QGIS plugin uses ``qgis-plugin``).
 
 from __future__ import annotations
 
-from typing import Literal
+from dataclasses import dataclass
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from gratisgis_client._parse import req_str, require_dict
 
 
-class PortalApiInfo(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class PortalApiInfo:
     """API location metadata."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
-    base_url: str = Field(alias="baseUrl")
+    base_url: str
     """Fully-qualified base URL for portal-api calls."""
 
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> PortalApiInfo:
+        payload = require_dict(data, "PortalApiInfo")
+        return cls(base_url=req_str(payload, "baseUrl"))
 
-class PortalAuthInfo(BaseModel):
+
+@dataclass(frozen=True, kw_only=True)
+class PortalAuthInfo:
     """Authentication backend metadata."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
     type: Literal["oidc"]
-    """Auth backend kind. Today only ``oidc`` exists; extending this
-    union as other backends land won't break older readers because
-    pydantic Literal narrows on parse."""
+    """Auth backend kind. Today only ``oidc`` exists; parsing stays
+    strict so a future backend kind fails loudly here instead of
+    producing a client that silently cannot sign in."""
 
     issuer: str
     """OIDC issuer URL. The full discovery doc lives at
     ``{issuer}/.well-known/openid-configuration``."""
 
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> PortalAuthInfo:
+        payload = require_dict(data, "PortalAuthInfo")
+        kind = req_str(payload, "type")
+        if kind != "oidc":
+            raise ValueError(f"field 'type': unsupported auth backend {kind!r} (expected 'oidc')")
+        return cls(type="oidc", issuer=req_str(payload, "issuer"))
 
-class PortalInfo(BaseModel):
+
+@dataclass(frozen=True, kw_only=True)
+class PortalInfo:
     """Public discovery document for a portal.
 
     Fetched unauthenticated. The portal returns this from every
@@ -51,8 +64,6 @@ class PortalInfo(BaseModel):
     portals serve the same shape with the resolved single-tenant
     name (or the configured default) as the display string.
     """
-
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     name: str
     """Human-readable portal name suitable for a connection list."""
@@ -62,3 +73,13 @@ class PortalInfo(BaseModel):
 
     api: PortalApiInfo
     auth: PortalAuthInfo
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> PortalInfo:
+        payload = require_dict(data, "PortalInfo")
+        return cls(
+            name=req_str(payload, "name"),
+            version=req_str(payload, "version"),
+            api=PortalApiInfo.from_api(require_dict(payload.get("api"), "field 'api'")),
+            auth=PortalAuthInfo.from_api(require_dict(payload.get("auth"), "field 'auth'")),
+        )

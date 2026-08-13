@@ -4,21 +4,49 @@
 Kept deliberately small. ``TokenSet`` is immutable; refreshing
 returns a new instance rather than mutating in place, so that the
 client's "current tokens" reference is always a consistent snapshot
-even across the await boundary during refresh.
+even while another thread is mid-refresh.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import time
 from dataclasses import dataclass
 
-# Sentinel "never expires" timestamp. Year 2286 — well past any
-# plausible install lifetime — chosen as a finite value so the
+# Sentinel "never expires" timestamp. Year 2286, well past any
+# plausible install lifetime, chosen as a finite value so the
 # persisted JSON stays standards-compliant (json.dumps of
 # float('inf') emits the non-RFC `Infinity` literal which other
 # JSON consumers reject). The token-refresh check treats any value
 # this large as effectively never-expires.
 _NEVER_EXPIRES_AT: float = 9_999_999_999.0
+
+
+def jwt_subject(token: str) -> str | None:
+    """Best-effort ``sub`` claim from a JWT, without verification.
+
+    Decodes only the payload segment (base64url with the stripped
+    padding restored). No signature check on purpose: the token
+    arrived over TLS from the issuer we asked, no crypto dependency
+    is available here, and the extracted id is used for display and
+    client-side filtering, never for an access decision (the portal
+    enforces those server-side on every call). Returns ``None`` for
+    opaque or malformed tokens.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+    except ValueError:
+        # Covers binascii.Error, JSONDecodeError, UnicodeDecodeError.
+        return None
+    if not isinstance(claims, dict):
+        return None
+    sub = claims.get("sub")
+    return sub if isinstance(sub, str) and sub else None
 
 
 def _as_float(value: object) -> float:
@@ -61,6 +89,17 @@ class TokenSet:
     id_token: str | None = None
     token_type: str = "Bearer"
     scope: str | None = None
+
+    def subject(self) -> str | None:
+        """The signed-in user's id (the ``sub`` claim), or ``None``
+        when neither token is a decodable JWT. Prefers the access
+        token; falls back to the id token, which carries the same
+        ``sub`` and covers hypothetical opaque-access-token setups.
+        """
+        sub = jwt_subject(self.access_token)
+        if sub is None and self.id_token:
+            sub = jwt_subject(self.id_token)
+        return sub
 
     def access_is_stale(self, leeway: float = 30.0) -> bool:
         """True when the access token has expired or is about to.

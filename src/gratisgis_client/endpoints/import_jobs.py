@@ -22,9 +22,16 @@ county-scale data).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from gratisgis_client._parse import (
+    int_or,
+    opt_int,
+    opt_str,
+    req_str,
+    require_dict,
+)
 
 if TYPE_CHECKING:
     from gratisgis_client.http import PortalHttp
@@ -33,8 +40,18 @@ if TYPE_CHECKING:
 ImportJobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 ImportMode = Literal["replace", "append"]
 
+_STATUSES: tuple[ImportJobStatus, ...] = (
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "cancelled",
+)
+_MODES: tuple[ImportMode, ...] = ("replace", "append")
 
-class ImportJob(BaseModel):
+
+@dataclass(frozen=True, kw_only=True)
+class ImportJob:
     """One row from the portal's ``ImportJob`` table.
 
     The portal's ``toWire`` shapes this; we stay forgiving by
@@ -42,28 +59,56 @@ class ImportJob(BaseModel):
     doesn't break already-deployed plugins.
     """
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
     id: str
-    item_id: str = Field(alias="itemId")
-    layer_id: str = Field(alias="layerId")
+    item_id: str
+    layer_id: str
     status: ImportJobStatus
     mode: ImportMode
-    source_layer_name: str | None = Field(default=None, alias="sourceLayerName")
-    source_file_name: str | None = Field(default=None, alias="sourceFileName")
+    source_layer_name: str | None = None
+    source_file_name: str | None = None
 
-    total_features: int | None = Field(default=None, alias="totalFeatures")
+    total_features: int | None = None
     """Best-effort upper bound; set by the probe step. The detail-
     page banner uses it to render percentage. Missing means
     indeterminate (the dialog should show a spinner without %)."""
 
-    processed_features: int = Field(default=0, alias="processedFeatures")
-    inserted_features: int = Field(default=0, alias="insertedFeatures")
-    replaced_features: int = Field(default=0, alias="replacedFeatures")
+    processed_features: int = 0
+    inserted_features: int = 0
+    replaced_features: int = 0
 
-    error_message: str | None = Field(default=None, alias="errorMessage")
-    started_at: str | None = Field(default=None, alias="startedAt")
-    finished_at: str | None = Field(default=None, alias="finishedAt")
+    error_message: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> ImportJob:
+        payload = require_dict(data, "ImportJob")
+        status = req_str(payload, "status")
+        if status not in _STATUSES:
+            raise ValueError(
+                f"field 'status': expected one of {', '.join(_STATUSES)}, got {status!r}"
+            )
+        mode = req_str(payload, "mode")
+        if mode not in _MODES:
+            raise ValueError(
+                f"field 'mode': expected one of {', '.join(_MODES)}, got {mode!r}"
+            )
+        return cls(
+            id=req_str(payload, "id"),
+            item_id=req_str(payload, "itemId"),
+            layer_id=req_str(payload, "layerId"),
+            status=status,
+            mode=mode,
+            source_layer_name=opt_str(payload, "sourceLayerName"),
+            source_file_name=opt_str(payload, "sourceFileName"),
+            total_features=opt_int(payload, "totalFeatures"),
+            processed_features=int_or(payload, "processedFeatures", 0),
+            inserted_features=int_or(payload, "insertedFeatures", 0),
+            replaced_features=int_or(payload, "replacedFeatures", 0),
+            error_message=opt_str(payload, "errorMessage"),
+            started_at=opt_str(payload, "startedAt"),
+            finished_at=opt_str(payload, "finishedAt"),
+        )
 
     @property
     def is_terminal(self) -> bool:
@@ -98,7 +143,7 @@ class ImportJobsEndpoint:
     def __init__(self, http: PortalHttp) -> None:
         self._http = http
 
-    async def enqueue(
+    def enqueue(
         self,
         *,
         item_id: str,
@@ -108,7 +153,7 @@ class ImportJobsEndpoint:
         mode: ImportMode = "replace",
     ) -> ImportJob:
         """Enqueue a per-layer ingest job. Returns immediately."""
-        body = await self._http.request_json(
+        body = self._http.request_json(
             "POST",
             f"/items/{item_id}/layers/{layer_id}/import-jobs",
             json={
@@ -117,30 +162,30 @@ class ImportJobsEndpoint:
                 "mode": mode,
             },
         )
-        return ImportJob.model_validate(body)
+        return ImportJob.from_api(body)
 
-    async def get(self, job_id: str) -> ImportJob:
+    def get(self, job_id: str) -> ImportJob:
         """Single-job poll. Used by the wizard's progress dialog."""
-        body = await self._http.request_json("GET", f"/import-jobs/{job_id}")
-        return ImportJob.model_validate(body)
+        body = self._http.request_json("GET", f"/import-jobs/{job_id}")
+        return ImportJob.from_api(body)
 
-    async def list_active(self, item_id: str) -> list[ImportJob]:
+    def list_active(self, item_id: str) -> list[ImportJob]:
         """All queued + running jobs for an item.
 
         Useful when the dialog is reopened against an item that has
         a job already in flight (e.g. a publish that the user closed
         the dialog on but didn't cancel).
         """
-        body = await self._http.request_json(
+        body = self._http.request_json(
             "GET", f"/items/{item_id}/import-jobs/active"
         )
         if not isinstance(body, list):
             return []
-        return [ImportJob.model_validate(row) for row in body]
+        return [ImportJob.from_api(row) for row in body]
 
-    async def cancel(self, job_id: str) -> ImportJob:
+    def cancel(self, job_id: str) -> ImportJob:
         """User-initiated cancel. Idempotent on terminal states."""
-        body = await self._http.request_json(
+        body = self._http.request_json(
             "POST", f"/import-jobs/{job_id}/cancel"
         )
-        return ImportJob.model_validate(body)
+        return ImportJob.from_api(body)
