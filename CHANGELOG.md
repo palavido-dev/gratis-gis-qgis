@@ -7,6 +7,18 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.6] - 2026-08-14
+
+### Fixed
+
+- **Item properties showed a raw ID instead of the owner's name.** The
+  portal sends the owner as a small record (username, full name), but
+  the dialog looked for a single flat field the portal has never sent,
+  so it always fell through to the internal identifier. It now reads
+  the record and shows, for example, "Site Admin (admin)", keeping the
+  identifier only as a last resort for an owner whose account no longer
+  exists.
+
 ## [0.2.5] - 2026-08-14
 
 ### Fixed
