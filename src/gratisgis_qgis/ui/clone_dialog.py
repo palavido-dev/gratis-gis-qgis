@@ -6,10 +6,10 @@ to a local GeoPackage so the user can keep working offline.
 
 Flow:
 
-  1. List vector layers in the project whose source URI resolves
-     to a portal item, in any of the shapes the Browser tree emits
-     (OAPIF for tables, public or authed vector tiles for spatial
-     sublayers).
+  1. List the project's vector AND vector-tile layers whose source
+     URI resolves to a portal item, in any of the shapes the Browser
+     tree emits (OAPIF for tables, public or authed vector tiles for
+     spatial sublayers).
   2. User picks one + a target directory.
   3. Plugin downloads the full GeoJSON FeatureCollection via the
      client's `features.download_geojson(...)`.
@@ -35,6 +35,7 @@ from qgis.core import (  # type: ignore[import-not-found]
     QgsCoordinateReferenceSystem,
     QgsProject,
     QgsVectorLayer,
+    QgsVectorTileLayer,
 )
 from qgis.PyQt.QtCore import Qt  # type: ignore[import-not-found]
 from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
@@ -135,12 +136,21 @@ class CloneToGeoPackageDialog(QDialog):
         self._on_layer_changed()
 
     def _populate_layer_combo(self) -> None:
-        # isinstance covers both QGIS 3 and QGIS 4; the
-        # QgsMapLayer.VectorLayer integer constant was retired in
-        # QGIS 4 in favor of Qgis.LayerType.Vector.
+        # Both classes, and the second one is the whole point: a
+        # spatial sublayer from the Browser tree is a
+        # QgsVectorTileLayer, which is NOT a QgsVectorLayer subclass.
+        # Accepting only the latter is what left this dropdown empty
+        # for ordinary data even after the source parser had been
+        # taught all three URI shapes. Cloning reads features over
+        # HTTP and never touches the layer's provider, so a read-only
+        # rendering format is a perfectly good thing to clone FROM.
+        #
+        # isinstance rather than a layer-type constant because
+        # QgsMapLayer.VectorLayer was retired in QGIS 4 in favor of
+        # Qgis.LayerType.Vector; the classes are stable across both.
         project = QgsProject.instance()
         for layer_id, layer in project.mapLayers().items():
-            if not isinstance(layer, QgsVectorLayer):
+            if not isinstance(layer, (QgsVectorLayer, QgsVectorTileLayer)):
                 continue
             if parse_portal_layer_source(layer.source()) is None:
                 continue
@@ -201,12 +211,14 @@ class CloneToGeoPackageDialog(QDialog):
             row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._issues_list.addItem(row)
 
-    def _selected_layer(self) -> QgsVectorLayer | None:
+    def _selected_layer(self) -> QgsVectorLayer | QgsVectorTileLayer | None:
         layer_id = self._layer_combo.currentData()
         if not layer_id:
             return None
         layer = QgsProject.instance().mapLayer(layer_id)
-        return layer if isinstance(layer, QgsVectorLayer) else None
+        if isinstance(layer, (QgsVectorLayer, QgsVectorTileLayer)):
+            return layer
+        return None
 
     def _on_clone(self) -> None:
         layer = self._selected_layer()

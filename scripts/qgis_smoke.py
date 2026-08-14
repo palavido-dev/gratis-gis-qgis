@@ -226,7 +226,47 @@ def _run_checks() -> None:
         ),
     )
 
-    print("\n[7] auth: the API Header method private layers depend on")
+    print("\n[7] dialog layer pickers accept the classes QGIS really builds")
+    # Cloning shipped broken twice because the unit tests use one
+    # stand-in class for every QGIS layer class, which makes an
+    # isinstance check pass no matter which class the code asks for.
+    # These checks use the real bindings, where the class hierarchy is
+    # the actual fact in question.
+    from types import SimpleNamespace
+
+    from qgis.core import QgsProject, QgsVectorLayer, QgsVectorTileLayer
+
+    from gratisgis_qgis.ui.clone_dialog import CloneToGeoPackageDialog
+
+    check(
+        "QgsVectorTileLayer is NOT a QgsVectorLayer (the premise of the bug)",
+        lambda: _assert(
+            not issubclass(QgsVectorTileLayer, QgsVectorLayer),
+            "QgsVectorTileLayer now subclasses QgsVectorLayer; the clone "
+            "picker's two-class check can be simplified",
+        ),
+    )
+
+    tile_layer = QgsVectorTileLayer(
+        uris.vector_tile_uri("https://example.test", "item-1__trails"), "Trails"
+    )
+    QgsProject.instance().addMapLayer(tile_layer)
+    try:
+        combo = _CollectingCombo()
+        CloneToGeoPackageDialog._populate_layer_combo(
+            SimpleNamespace(_layer_combo=combo)
+        )
+        check(
+            "clone picker offers a real vector-tile layer",
+            lambda: _assert(
+                "Trails" in [text for text, _ in combo.items],
+                f"clone picker did not offer the layer; it listed {combo.items!r}",
+            ),
+        )
+    finally:
+        QgsProject.instance().removeMapLayer(tile_layer.id())
+
+    print("\n[8] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
     method = check("find_api_header_method()", find_api_header_method)
@@ -238,6 +278,27 @@ def _run_checks() -> None:
             "silently fall back to public-only rendering",
         ),
     )
+
+
+class _CollectingCombo:
+    """The parts of QComboBox a dialog's combo-population method uses.
+
+    Real enough for the production method, without needing a Qt widget
+    tree in a headless run.
+    """
+
+    def __init__(self) -> None:
+        self.items: list[tuple[str, object]] = []
+        self.enabled = True
+
+    def addItem(self, text: str, userData: object = None) -> None:  # Qt API name
+        self.items.append((text, userData))
+
+    def count(self) -> int:  # Qt API name
+        return len(self.items)
+
+    def setEnabled(self, value: bool) -> None:  # Qt API name
+        self.enabled = value
 
 
 def _run_one_task() -> None:

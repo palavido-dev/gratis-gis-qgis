@@ -1,12 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Which project layers each dialog offers.
 
-This is where the feature was broken while the tests were green. Both
-dialogs decided a layer was portal-backed by parsing it as OAPIF, but
-the Browser tree only emits OAPIF for NON-SPATIAL sublayers; ordinary
-spatial data arrives as a vector-tile layer. Every test here therefore
-builds its layer sources by calling the real URI builders, so the
-picker logic is exercised against what the tree actually produces.
+This is where the feature was broken while the tests were green, twice,
+for two different reasons.
+
+First the dialogs decided a layer was portal-backed by parsing it as
+OAPIF, but the Browser tree only emits OAPIF for NON-SPATIAL sublayers;
+ordinary spatial data arrives as a vector-tile layer. Every test here
+therefore builds its layer sources by calling the real URI builders, so
+the picker logic is exercised against what the tree actually produces.
+
+Teaching the parser all three shapes still did not fix it, because the
+picker rejected the layer on TYPE before ever parsing its source, and
+these tests could not see that: a single fake stood in for every layer
+class, so `isinstance` was true by construction no matter which class
+the production code asked for. A fake that cannot fail the check under
+test is not testing it. So the fakes now model the QGIS class hierarchy
+faithfully, one per real class, and each is bound to the module name it
+stands in for. `_FakeVectorTileLayer` is deliberately NOT a subclass of
+`_FakeVectorLayer`, because `QgsVectorTileLayer` is not a subclass of
+`QgsVectorLayer` and that non-relationship is the entire bug.
 
 The dialogs' ``_populate_layer_combo`` runs unbound against a
 stand-in ``self``. Constructing the real QDialog would need a Qt
@@ -77,6 +90,7 @@ def clone_mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
                 "QgsCoordinateReferenceSystem": type("QgsCRS", (), {}),
                 "QgsProject": type("QgsProject", (), {}),
                 "QgsVectorLayer": type("QgsVectorLayer", (), {}),
+                "QgsVectorTileLayer": type("QgsVectorTileLayer", (), {}),
             },
             "qgis.PyQt.QtCore": {
                 "Qt": type("Qt", (), {}),
@@ -115,7 +129,9 @@ def push_mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 # ----- Stand-ins for the Qt / QGIS objects the pickers touch -----
 
 
-class _FakeVectorLayer:
+class _LayerBase:
+    """Everything a QgsMapLayer offers the pickers."""
+
     def __init__(self, name: str, source: str) -> None:
         self._name = name
         self._source = source
@@ -126,18 +142,30 @@ class _FakeVectorLayer:
     def source(self) -> str:  # QGIS API name
         return self._source
 
+
+class _FakeVectorLayer(_LayerBase):
+    """Stands in for QgsVectorLayer: editable, so it has an edit buffer."""
+
     def editBuffer(self) -> None:  # QGIS API name
         # Not in edit mode: the picker only cares that the layer is
         # offered at all, and a 0-op plan is a valid outcome.
         return None
 
 
-class _NotAVectorLayer:
-    def name(self) -> str:
-        return "raster"
+class _FakeVectorTileLayer(_LayerBase):
+    """Stands in for QgsVectorTileLayer.
 
-    def source(self) -> str:
-        return oapif_uri(_PORTAL, "item-1__roads")
+    Not a subclass of _FakeVectorLayer, mirroring QGIS: a vector-tile
+    layer derives from QgsMapLayer directly. It has no editBuffer()
+    either, which is the real reason the push dialog cannot take one.
+    """
+
+
+class _NotAVectorLayer(_LayerBase):
+    """A raster: portal-shaped source, but a class neither dialog takes."""
+
+    def __init__(self) -> None:
+        super().__init__("raster", oapif_uri(_PORTAL, "item-1__roads"))
 
 
 class _FakeCombo:
@@ -190,8 +218,16 @@ def _populate(
     monkeypatch: pytest.MonkeyPatch,
     layers: dict[str, Any],
 ) -> _FakeCombo:
-    """Run the dialog's real combo-population method over ``layers``."""
+    """Run the dialog's real combo-population method over ``layers``.
+
+    Each fake class is bound to the module name it stands in for, so an
+    isinstance check in the production code discriminates between them
+    exactly as it would against the real QGIS classes. Binding one fake
+    to every name is what hid the type gate that broke cloning.
+    """
     monkeypatch.setattr(mod, "QgsVectorLayer", _FakeVectorLayer)
+    if hasattr(mod, "QgsVectorTileLayer"):
+        monkeypatch.setattr(mod, "QgsVectorTileLayer", _FakeVectorTileLayer)
     monkeypatch.setattr(mod, "QgsProject", _fake_project(layers))
     combo = _FakeCombo()
     getattr(mod, dialog_name)._populate_layer_combo(
@@ -232,7 +268,9 @@ class TestCloneDialogLayerList:
         self, clone_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The exact reported bug: a spatial sublayer of a public item.
-        layer = _FakeVectorLayer(
+        # QGIS builds a QgsVectorTileLayer for this URI, so the fake has
+        # to be one too or the test cannot fail.
+        layer = _FakeVectorTileLayer(
             "Trails", vector_tile_uri(_PORTAL, "item-1__trails")
         )
         combo = _populate(
@@ -245,7 +283,7 @@ class TestCloneDialogLayerList:
         self, clone_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Same bug for private and org items, which is most of them.
-        layer = _FakeVectorLayer(
+        layer = _FakeVectorTileLayer(
             "Parcels",
             authed_vector_tile_uri(
                 _PORTAL, "item-9", "parcels", authcfg_id="lyr1234"
@@ -302,7 +340,10 @@ class TestPushDialogLayerList:
     ) -> None:
         # QGIS vector tiles are a read-only rendering format. Offering
         # one here could only produce an empty plan and a confused user.
-        layer = _FakeVectorLayer("Trails", source)
+        # The clone dialog now accepts this same class, so the fake
+        # being a faithful QgsVectorTileLayer stand-in is what keeps
+        # the two dialogs' rules genuinely distinguishable here.
+        layer = _FakeVectorTileLayer("Trails", source)
         combo = _populate(push_mod, "PushEditsDialog", monkeypatch, {"L1": layer})
         assert combo.items == [("(no editable portal layers in project)", None)]
         assert not combo.enabled

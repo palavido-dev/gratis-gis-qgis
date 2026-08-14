@@ -188,6 +188,9 @@ def clone_mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
                 "QgsProject": type("QgsProject", (), {}),
                 "QgsVectorFileWriter": _RecordingWriter,
                 "QgsVectorLayer": _FakeVectorLayer,
+                # Only imported so the module loads; the write path
+                # here never inspects a layer's class.
+                "QgsVectorTileLayer": type("QgsVectorTileLayer", (), {}),
             },
             "qgis.PyQt.QtCore": {
                 "Qt": type("Qt", (), {}),
