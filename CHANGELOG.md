@@ -7,6 +7,29 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.3] - 2026-08-14
+
+### Fixed
+
+- **Tile layers added an empty layer instead of the imagery.** Tile
+  layers hold raster data (elevation, hillshade, imagery), but the
+  plugin was asking the portal for them as vector tiles, an address
+  that does not exist for these items, so QGIS added a layer that drew
+  nothing and reported no error. Tile layers stored as Cloud Optimized
+  GeoTIFF now open directly over the network, reading only the parts of
+  the image needed for the current view, and private and organization
+  layers carry their credential so they draw for anyone signed in.
+
+### Changed
+
+- **Tile layers QGIS cannot open now say so instead of failing
+  quietly.** Layers stored as PMTiles cannot be opened by QGIS at all
+  (its raster reader does not support that container), and layers still
+  being prepared on the portal are not ready yet. Both now appear in
+  the browser with an explanation rather than as a layer that silently
+  draws nothing. Use the Download button on the item's portal page to
+  work with a PMTiles layer in QGIS for now.
+
 ## [0.2.2] - 2026-08-13
 
 ### Fixed
