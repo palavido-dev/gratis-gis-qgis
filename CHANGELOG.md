@@ -7,6 +7,26 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.10] - 2026-08-14
+
+### Fixed
+
+- **"Zoom to Layer" on a portal layer zoomed out to the whole world.**
+  Portal layers draw as map tiles, and a tile pyramid covers the entire
+  planet no matter how little data is in it, so that is the only extent
+  QGIS could work out on its own. The portal already knows where the
+  data really is, so layers now carry their extent with them and zoom
+  to it. This was most obvious on a layer just published from a handful
+  of features, where the whole point is to look at what you published.
+
+  Raster and tile layers on the demo will still zoom to the world for
+  now: the portal is not yet recording an extent for that kind of item,
+  so there is nothing for them to carry. That is a portal-side fix.
+
+### Changed
+
+- Layers remember their extent when a project is saved and reopened.
+
 ## [0.2.9] - 2026-08-14
 
 ### Fixed
