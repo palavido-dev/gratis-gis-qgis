@@ -130,6 +130,12 @@ def test_extracted_zip_imports_everywhere_without_repo_or_deps(
     )
     counted = re.search(r"IMPORTED (\d+) modules", proc.stdout)
     assert counted, f"runner did not report a module count:\n{proc.stdout}"
+    # The reload half: QGIS reloads a plugin in-process on install or
+    # enable, and the first attempt at vendoring crashed on the second
+    # load rather than the first.
+    assert "RELOADED OK" in proc.stdout, (
+        f"plugin did not survive a QGIS-style reload:\n{proc.stdout}\n{proc.stderr}"
+    )
     # Guard against a vacuous pass: the plugin plus the vendored
     # client is dozens of modules, so a tiny count means the walk
     # never descended.
@@ -384,6 +390,50 @@ def main(extract_dir, stub_dir):
         return 1
 
     print(f"IMPORTED {len(names) + 1} modules")
+
+    # Second load, simulating a QGIS plugin reload. QGIS does not clear
+    # sys.modules wholesale: qgis.utils replaces builtins.__import__,
+    # records every name a plugin imports, and on unload deletes only
+    # that recorded set. Modules the plugin registers directly in
+    # sys.modules (our vendored-client alias) were never observed by
+    # that hook, so they SURVIVE. Reproducing that asymmetry here is
+    # what makes this catch the reload crash without needing QGIS: a
+    # surviving gratisgis_qgis._vendor.gratisgis_client used to make
+    # find_spec skip importing its parent, and the reload died with
+    # KeyError: 'gratisgis_qgis._vendor'.
+    # Purge what QGIS's hook would have RECORDED, and nothing else.
+    # It records names imported through builtins.__import__ whose root
+    # package is the plugin, so gratisgis_qgis and its normally
+    # imported submodules go. Two families deliberately stay:
+    #   - gratisgis_qgis._vendor.gratisgis_client, injected directly
+    #     into sys.modules and therefore never seen by the hook;
+    #   - gratisgis_client*, whose root package is not a plugin name.
+    # Popping the first of those would defeat the whole test: it is the
+    # survivor that triggers the find_spec fast path.
+    survives = "gratisgis_qgis._vendor.gratisgis_client"
+    for name in list(sys.modules):
+        if name != "gratisgis_qgis" and not name.startswith("gratisgis_qgis."):
+            continue
+        if name == survives or name.startswith(survives + "."):
+            continue
+        sys.modules.pop(name, None)
+
+    if survives not in sys.modules:
+        print(f"test bug: {survives} should have survived the purge", file=sys.stderr)
+        return 1
+
+    try:
+        import gratisgis_qgis as reloaded
+    except BaseException:
+        print("FAILED to re-import gratisgis_qgis after a QGIS-style purge:", file=sys.stderr)
+        traceback.print_exc()
+        return 1
+
+    if not _under(reloaded.__file__ or "", extract_dir):
+        print(f"reloaded plugin resolved outside the zip: {reloaded.__file__}", file=sys.stderr)
+        return 1
+
+    print("RELOADED OK")
     return 0
 
 

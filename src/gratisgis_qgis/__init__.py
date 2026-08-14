@@ -13,11 +13,34 @@ from pathlib import Path
 
 
 def _purge_client_modules() -> None:
-    """Drop every ``gratisgis_client`` entry from ``sys.modules``."""
+    """Drop stale client entries from ``sys.modules``.
+
+    Two families, because they rot independently:
+
+    - ``gratisgis_client*``: the canonical alias and its submodules.
+    - ``gratisgis_qgis._vendor*``: the vendored package itself.
+
+    Both must go, and the second one is the subtle half. QGIS removes
+    only the modules its own import hook observed: ``qgis.utils``
+    replaces ``builtins.__import__`` and records each name a plugin
+    imports, then deletes exactly that set on unload. The entries this
+    module injects straight into ``sys.modules`` are never seen by that
+    hook, so they survive an unload. A surviving
+    ``gratisgis_qgis._vendor.gratisgis_client`` then makes
+    ``importlib.util.find_spec`` take its already-registered fast path,
+    which returns the stale spec WITHOUT importing the parent package,
+    and the next reload failed with ``KeyError:
+    'gratisgis_qgis._vendor'``. Purging both families keeps every load
+    a real import.
+    """
+    vendor_prefix = __name__ + "._vendor"
     for key in [
         k
         for k in sys.modules
-        if k == "gratisgis_client" or k.startswith("gratisgis_client.")
+        if k == "gratisgis_client"
+        or k.startswith("gratisgis_client.")
+        or k == vendor_prefix
+        or k.startswith(vendor_prefix + ".")
     ]:
         del sys.modules[key]
 
@@ -66,15 +89,19 @@ def _install_vendored_client() -> None:
     try:
         spec.loader.exec_module(module)
     except BaseException:
-        # Leave no partial client modules behind on a failed import;
-        # a retry should start from a clean registry.
+        # Leave no partial client modules behind on a failed import; a
+        # retry should start from a clean registry. The purge covers
+        # both the alias and the vendored name.
         _purge_client_modules()
-        sys.modules.pop(vendor_name, None)
         raise
     # exec_module bypasses the part of the import system that binds a
     # submodule as an attribute on its parent package; set it so
     # attribute access on ``gratisgis_qgis._vendor`` behaves normally.
-    sys.modules[__name__ + "._vendor"].gratisgis_client = module  # type: ignore[attr-defined]
+    # Import the parent rather than indexing sys.modules: whether it is
+    # already registered depends on which path find_spec took above, and
+    # assuming it was there is what broke plugin reloads.
+    vendor_pkg = importlib.import_module(__name__ + "._vendor")
+    vendor_pkg.gratisgis_client = module  # type: ignore[attr-defined]
 
 
 _install_vendored_client()
