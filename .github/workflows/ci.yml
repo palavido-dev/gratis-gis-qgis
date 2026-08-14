@@ -28,10 +28,10 @@ jobs:
         run: pip install pytest ruff "mypy>=1.10,<2.0"
 
       - name: Byte-compile
-        run: python -m compileall -q src tests
+        run: python -m compileall -q src tests scripts
 
       - name: Ruff
-        run: python -m ruff check src tests
+        run: python -m ruff check src tests scripts
 
       - name: Mypy
         run: python -m mypy

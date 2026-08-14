@@ -32,13 +32,13 @@ hand to a user for manual install via Plugins -> Install from ZIP.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
 import sys
 import zipfile
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC = REPO_ROOT / "src"
@@ -150,10 +150,10 @@ def _prune(root: Path) -> None:
                 shutil.rmtree(Path(current_root) / d, ignore_errors=True)
         for f in files:
             if f.endswith(_PRUNE_FILE_SUFFIXES):
-                try:
+                # A file we cannot delete is dev junk we failed to
+                # strip, not a reason to fail the build.
+                with contextlib.suppress(OSError):
                     (Path(current_root) / f).unlink()
-                except OSError:
-                    pass
 
 
 if __name__ == "__main__":

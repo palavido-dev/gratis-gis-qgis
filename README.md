@@ -88,6 +88,8 @@ tests/
                         it in a clean interpreter.
 scripts/
   make_zip.py           Builds dist/gratisgis_qgis-<version>.zip.
+  qgis_smoke.py         Checks the plugin against a real QGIS
+                        install (see Development).
 docs/
   development.md        Dev environment and loading the plugin into
                         QGIS without packaging it.
@@ -104,6 +106,26 @@ python -m pytest tests/ -q
 python -m ruff check src tests
 python -m mypy
 ```
+
+Those tests run against a simulated QGIS, so they are fast and need
+nothing installed, but a simulated QGIS accepts anything: it cannot
+catch a value of the wrong type being handed to a real QGIS function.
+That gap is real, and it shipped a crash once. So there is a second
+check that runs against an actual QGIS install, using QGIS's own
+Python rather than your virtual environment:
+
+```
+# Windows / OSGeo4W
+C:\OSGeo4W\bin\python-qgis.bat scripts\qgis_smoke.py
+
+# Linux / macOS, where python3 already has the qgis bindings
+python3 scripts/qgis_smoke.py
+```
+
+It needs no portal and no network, prints a line per check, and exits
+non-zero if anything fails. Run it before releasing, and after any
+change that touches QGIS APIs, enums, or background tasks. It is not
+part of CI because the CI runners have no QGIS.
 
 To run the plugin inside a live QGIS during development, see
 [`docs/development.md`](docs/development.md).

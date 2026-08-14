@@ -22,7 +22,6 @@ import re
 import sys
 from pathlib import Path
 
-
 REWRITES = [
     # (regex pattern, replacement). Use word boundaries to avoid
     # matching the scoped names themselves on a second pass.
