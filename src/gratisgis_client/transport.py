@@ -157,17 +157,30 @@ class UrllibTransport:
             # urllib raises on every non-2xx/3xx; to us those are
             # ordinary responses. Read the body so PortalHttp can
             # surface the portal's structured error detail.
+            #
+            # The close() is not tidiness. HTTPError is itself a
+            # file-like object wrapping the live connection, and the
+            # success path above only gets closed because `with` does
+            # it. Leaving this one to the garbage collector leaks a
+            # socket on every non-2xx, and non-2xx is routine here: a
+            # 404 probing for an item, a 401 that triggers a token
+            # refresh. It also surfaced as a ResourceWarning attributed
+            # to whichever unrelated test happened to be running when
+            # the collector caught up.
             try:
-                body = err.read()
-            except (OSError, ValueError):
-                body = b""
-            headers = dict(err.headers.items()) if err.headers is not None else {}
-            return TransportResponse(
-                status=err.code,
-                headers=headers,
-                body=body,
-                url=err.geturl() or request.url,
-            )
+                try:
+                    body = err.read()
+                except (OSError, ValueError):
+                    body = b""
+                headers = dict(err.headers.items()) if err.headers is not None else {}
+                return TransportResponse(
+                    status=err.code,
+                    headers=headers,
+                    body=body,
+                    url=err.geturl() or request.url,
+                )
+            finally:
+                err.close()
         except urllib.error.URLError as err:
             raise TransportError(
                 f"{request.method} {request.url} failed: {err.reason}"

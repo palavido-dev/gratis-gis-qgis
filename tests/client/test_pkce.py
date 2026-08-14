@@ -131,9 +131,16 @@ def test_flow_ignores_non_callback_paths() -> None:
         params = _auth_url_parts(auth_url)
         origin = params["redirect_uri"].rsplit("/", 1)[0]
         try:
-            urllib.request.urlopen(f"{origin}/favicon.ico", timeout=5.0)
+            with urllib.request.urlopen(f"{origin}/favicon.ico", timeout=5.0):
+                pass
         except urllib.error.HTTPError as err:
-            assert err.code == 404
+            # Close it: HTTPError is itself the live response object, so
+            # dropping the reference leaves the socket for the garbage
+            # collector, and pytest reports the resulting ResourceWarning
+            # against whichever unrelated test is running when the
+            # collector gets to it.
+            with err:
+                assert err.code == 404
         with urllib.request.urlopen(
             f"{params['redirect_uri']}?code=real&state={quote(params['state'])}",
             timeout=5.0,
