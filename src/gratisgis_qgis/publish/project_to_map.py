@@ -133,6 +133,16 @@ class MapTranslation:
     proceeds without them.
     """
 
+    included_layer_ids: list[str] = field(default_factory=list)
+    """QGIS layer id for each entry of ``data['layers']``, in order.
+
+    Kept alongside the payload rather than inside it: the dialog needs
+    to know which project layer a row came from, so its checkbox can
+    take that layer out again, but a QGIS-internal id has no business
+    being stored on the portal. An entry is "" for a layer QGIS gave
+    no id, which only happens in tests.
+    """
+
 
 @dataclass(frozen=True)
 class SkippedLayer:
@@ -245,6 +255,9 @@ def translate(
     """
     index = portal_index or PortalIndex()
     map_layers: list[dict[str, Any]] = []
+    # Parallel to map_layers: which project layer produced each
+    # entry, so the dialog can offer a checkbox that removes it.
+    included_ids: list[str] = []
     skipped: list[SkippedLayer] = []
     basemap_item_id = ""
     # Top-of-list = bottom-of-canvas; QGIS draws bottom-up. The
@@ -264,6 +277,7 @@ def translate(
                 basemap_item_id = resolved.item_id
             continue
         if isinstance(resolved, _ResolvedDataLayer):
+            included_ids.append(lyr.qgis_layer_id or "")
             map_layers.append(
                 _emit_layer(
                     lyr,
@@ -304,6 +318,7 @@ def translate(
             }
             if ref.bbox_wgs84 is not None:
                 tile_source["bboxWgs84"] = list(ref.bbox_wgs84)
+            included_ids.append(lyr.qgis_layer_id or "")
             map_layers.append(_emit_layer(lyr, source=tile_source))
             continue
         if isinstance(resolved, _ResolvedArcgisRest):
@@ -315,6 +330,7 @@ def translate(
             }
             if resolved.source_item_id:
                 source["sourceItemId"] = resolved.source_item_id
+            included_ids.append(lyr.qgis_layer_id or "")
             map_layers.append(_emit_layer(lyr, source=source))
             continue
         # _resolve_layer returned an unknown type -- shouldn't
@@ -335,7 +351,9 @@ def translate(
             "zoom": snapshot.viewport.zoom,
         },
     }
-    return MapTranslation(data=data, skipped=skipped)
+    return MapTranslation(
+        data=data, skipped=skipped, included_layer_ids=included_ids
+    )
 
 
 def _emit_layer(lyr: CanvasLayer, *, source: dict[str, Any]) -> dict[str, Any]:

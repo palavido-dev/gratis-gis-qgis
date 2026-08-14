@@ -7,6 +7,19 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.6.0] - 2026-08-14
+
+### Added
+
+- **Tick which layers go in the map.** Every portal layer in your
+  project gets a checkbox, ticked to begin with. Untick one and it is
+  left out. The count underneath follows along, and what gets published
+  is read from the ticks at the moment you press Publish, not from
+  whatever the list said when it was drawn.
+
+  Unticking survives the list refreshing itself, which it does whenever
+  the plugin re-checks the portal.
+
 ## [0.5.1] - 2026-08-14
 
 ### Fixed

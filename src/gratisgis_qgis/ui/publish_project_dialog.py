@@ -75,6 +75,10 @@ class PublishProjectDialog(QDialog):
         # dialog can render the layer audit instantly; the real index
         # loads in a background task and re-renders when it lands.
         self._index = PortalIndex()
+        # QGIS layer ids the user unticked. Held here rather than read
+        # off the widgets at publish time so the choice survives the
+        # list being rebuilt, which happens on every index refresh.
+        self._excluded_layer_ids: set[str] = set()
         self._busy = False
         # Set on reject: task completions landing after the user
         # dismissed the dialog must not pop message boxes or keep
@@ -125,7 +129,7 @@ class PublishProjectDialog(QDialog):
 
         layout = QVBoxLayout()
         layout.addLayout(form)
-        layout.addWidget(QLabel("Layers included in the map:"))
+        layout.addWidget(QLabel("Layers to include in the map (untick to leave out):"))
         layout.addWidget(self._included_list, 2)
         layout.addWidget(
             QLabel("Layers not on the portal (won't be in the map):")
@@ -135,6 +139,8 @@ class PublishProjectDialog(QDialog):
         layout.addWidget(self._summary_label)
         layout.addWidget(buttons)
         self.setLayout(layout)
+
+        self._included_list.itemChanged.connect(self._on_layer_ticked)
 
         # Populate the lists with the current project state, then
         # load the portal index in the background. Publishing stays
@@ -213,6 +219,13 @@ class PublishProjectDialog(QDialog):
             self._connection_combo.setEnabled(False)
 
     def _snapshot_and_render(self) -> None:
+        """Rebuild the layer audit from the project as it stands now.
+
+        Deliberately renders the WHOLE project, including layers the
+        user has unticked: an excluded layer that disappeared from the
+        list could never be put back. What is ticked is applied when
+        publishing instead, by ``_publish_snapshot``.
+        """
         snapshot = _build_snapshot(self._iface, title=self._title_input.text())
         result = translate(snapshot, portal_index=self._index)
         self._translation = result
@@ -229,11 +242,28 @@ class PublishProjectDialog(QDialog):
             )
             row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self._included_list.addItem(row)
-        for lyr in result.data.get("layers", []):
+        # One checkbox per layer. Ticked means "put this in the map";
+        # everything on the portal starts ticked, because a layer being
+        # in your project is the reason you opened this dialog.
+        # zip rather than counting rows: the basemap row above has no
+        # layer of its own, so any index arithmetic here would be off
+        # by one exactly when a basemap is present.
+        layers = result.data.get("layers", [])
+        ids = list(result.included_layer_ids) + [""] * len(layers)
+        for lyr, layer_id in zip(layers, ids, strict=False):
             row = QListWidgetItem(
                 f"{lyr['title']}  ->  {_format_source(lyr['source'])}"
             )
-            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            row.setFlags(
+                (row.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                & ~Qt.ItemFlag.ItemIsSelectable
+            )
+            row.setData(Qt.ItemDataRole.UserRole, layer_id)
+            row.setCheckState(
+                Qt.CheckState.Unchecked
+                if layer_id and layer_id in self._excluded_layer_ids
+                else Qt.CheckState.Checked
+            )
             self._included_list.addItem(row)
 
         self._skipped_list.clear()
@@ -273,6 +303,54 @@ class PublishProjectDialog(QDialog):
         # map is a legitimate starting point. The skipped list
         # already tells the user which canvas layers won't carry
         # over.
+
+    def _on_layer_ticked(self, item: QListWidgetItem) -> None:
+        """Remember an untick so it survives the list being rebuilt.
+
+        The list is rebuilt on every index refresh, which would
+        otherwise silently re-tick everything the user had turned off.
+        """
+        layer_id = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(layer_id, str) or not layer_id:
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            self._excluded_layer_ids.discard(layer_id)
+        else:
+            self._excluded_layer_ids.add(layer_id)
+        self._refresh_summary()
+
+    def _publish_translation(self) -> MapTranslation:
+        """The translation to publish, honouring the checkboxes.
+
+        Re-translated from a snapshot with the unticked layers removed
+        rather than by deleting entries from the rendered result: a
+        layer can affect more than its own row (a basemap sets a field
+        instead of adding a layer), so filtering the output would leave
+        the payload disagreeing with the ticks.
+        """
+        snapshot = _build_snapshot(self._iface, title=self._title_input.text())
+        kept = ProjectSnapshot(
+            title=snapshot.title,
+            layers=[
+                lyr
+                for lyr in snapshot.layers
+                if (lyr.qgis_layer_id or "") not in self._excluded_layer_ids
+            ],
+            viewport=snapshot.viewport,
+        )
+        return translate(kept, portal_index=self._index)
+
+    def _refresh_summary(self) -> None:
+        """Recount what will be published, without rebuilding the list."""
+        result = self._publish_translation()
+        kept = len(result.data.get("layers", []))
+        basemap_note = " (plus 1 basemap)" if result.data.get("basemap") else ""
+        left_out = len(self._excluded_layer_ids)
+        excluded_note = f", {left_out} unticked" if left_out else ""
+        self._summary_label.setText(
+            f"{kept} layer(s){basemap_note} will be referenced from the new "
+            f"map{excluded_note}."
+        )
 
     # ----- Actions on skipped rows -----
 
@@ -512,7 +590,10 @@ class PublishProjectDialog(QDialog):
         # initial snapshot.
         title = self._title_input.text().strip() or "Untitled map"
         description = self._description_input.toPlainText().strip() or None
-        data = dict(self._translation.data)
+        # Re-translated at the moment of publishing, so what ships is
+        # what the ticks say now rather than what the list said when it
+        # was last drawn.
+        data = dict(self._publish_translation().data)
 
         self._set_busy(True)
         self._summary_label.setText("Creating map item on the portal...")

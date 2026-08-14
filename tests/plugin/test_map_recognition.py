@@ -182,6 +182,91 @@ class TestLayersKnownByOrigin:
             assert "checkbox" not in skipped.reason.lower()
 
 
+class TestIncludedLayerIds:
+    """Which project layer each published row came from.
+
+    The dialog needs this to offer a checkbox that takes a layer back
+    out. It rides alongside the payload rather than inside it: a
+    QGIS-internal id has no business being stored on the portal.
+    """
+
+    def test_ids_line_up_with_the_emitted_layers(self) -> None:
+        snap = _snapshot(
+            CanvasLayer(
+                name="A",
+                source_uri=tile_layer_cog_uri(_PORTAL, _RASTER),
+                provider="gdal",
+                visible=True,
+                qgis_layer_id="L-a",
+            ),
+            CanvasLayer(
+                name="B",
+                source_uri="C:/x.gpkg|layername=b",
+                provider="ogr",
+                visible=True,
+                qgis_layer_id="L-b",
+                portal_item_id="item-b",
+            ),
+        )
+        result = translate(snap, portal_index=_index())
+        assert result.included_layer_ids == ["L-a", "L-b"]
+        assert len(result.included_layer_ids) == len(result.data["layers"])
+
+    def test_a_skipped_layer_does_not_shift_the_ids(self) -> None:
+        # The failure this guards: a skipped layer between two included
+        # ones would offset every id after it, so unticking one row
+        # would remove a different layer.
+        snap = _snapshot(
+            CanvasLayer(
+                name="A",
+                source_uri=tile_layer_cog_uri(_PORTAL, _RASTER),
+                provider="gdal",
+                visible=True,
+                qgis_layer_id="L-a",
+            ),
+            CanvasLayer(
+                name="local",
+                source_uri="C:/roads.shp",
+                provider="ogr",
+                visible=True,
+                qgis_layer_id="L-skip",
+            ),
+            CanvasLayer(
+                name="B",
+                source_uri="C:/x.gpkg|layername=b",
+                provider="ogr",
+                visible=True,
+                qgis_layer_id="L-b",
+                portal_item_id="item-b",
+            ),
+        )
+        result = translate(snap, portal_index=_index())
+        assert result.included_layer_ids == ["L-a", "L-b"]
+
+    def test_removing_a_layer_removes_exactly_that_row(self) -> None:
+        # What the checkbox does: translate a snapshot without it.
+        layers = [
+            CanvasLayer(
+                name="A",
+                source_uri=tile_layer_cog_uri(_PORTAL, _RASTER),
+                provider="gdal",
+                visible=True,
+                qgis_layer_id="L-a",
+            ),
+            CanvasLayer(
+                name="B",
+                source_uri="C:/x.gpkg|layername=b",
+                provider="ogr",
+                visible=True,
+                qgis_layer_id="L-b",
+                portal_item_id="item-b",
+            ),
+        ]
+        kept = translate(_snapshot(layers[0]), portal_index=_index())
+        assert kept.included_layer_ids == ["L-a"]
+        assert [x["title"] for x in kept.data["layers"]] == ["A"]
+
+
 class TestSkipReasonsAvoidJargon:
     """These are read by someone publishing a map, not debugging QGIS."""
 
