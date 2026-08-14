@@ -7,6 +7,21 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.4] - 2026-08-14
+
+Requires GratisGIS portal v0.9.26 or newer for the layers below.
+
+### Added
+
+- **The remaining tile layers now draw.** Layers stored as PMTiles
+  (hillshade, steepness, visible area, height above ground) could not
+  be opened by QGIS at all: nothing in QGIS reads that container when
+  it holds image tiles. The portal now serves their individual tiles,
+  and the plugin points at that, so they behave like any other tile
+  service. Private and organization layers sign in automatically;
+  public ones stay public so a shared project keeps working for
+  viewers who are not signed in.
+
 ## [0.2.3] - 2026-08-14
 
 ### Fixed
