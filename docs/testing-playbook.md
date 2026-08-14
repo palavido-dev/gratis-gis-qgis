@@ -12,7 +12,7 @@ Everything here targets the public demo at https://gratisgis.org.
 ## Before you start
 
 1. **Check the version.** `Plugins > Manage and Install Plugins >
-   Installed`, find GratisGIS. It should read **0.2.11**.
+   Installed`, find GratisGIS. It should read **0.3.0**.
 2. **Check you are signed in.** `Plugins > GratisGIS > Manage GratisGIS
    connections...`. The row should show the portal and a signed-in
    state. If anything later fails with "Your session has expired",
@@ -168,51 +168,57 @@ called **"Trails (offline)"** that draws.
 
 ---
 
-## Test 5. Push edits from an offline clone (10 min, trickiest)
+## Test 5. Sync an offline clone back to the portal (10 min)
 
-Read the setup carefully. The dialog only accepts a specific kind of
-layer, and only while edits are **unsaved**.
+**Rewritten in 0.3.0.** The old version told you not to save your
+edits, which was backwards. Now it is the opposite: **save normally**,
+and only saved work is sent.
 
-The round trip is: clone a portal layer (Test 4), edit the clone, push
-the clone's edits back to the portal item it came from. The clone knows
-where it came from because the plugin records the portal, item and
-layer inside the GeoPackage itself, so a clone you moved or emailed
-still pushes to the right place.
+The round trip is clone (Test 4), edit the clone, sync. The clone knows
+where it belongs because the plugin records the portal, item and layer
+inside the GeoPackage, so a copy you moved or emailed still syncs to
+the right place.
 
-### Setup that actually qualifies
+### Edit the clone
 
 1. Do **Test 4** first. Edit the **"Trails (offline)"** layer it
-   produced, not the layer you cloned FROM.
-   - The layer you dragged out of the Browser tree draws as vector
-     tiles, which QGIS cannot edit at all. It will not appear in this
-     dialog's dropdown, and the dialog says so.
-   - A **non-spatial** table added from the tree (a plain vector layer,
-     not vector tiles) is the other thing that qualifies. Editing that
-     one live is the alternative to cloning.
-2. Click the **pencil** to toggle editing on the offline layer.
-3. Make a few edits: move a vertex, change an attribute, add a feature,
-   delete one.
-4. **Do NOT click Save Edits.** The dialog reads QGIS's pending edit
-   buffer; saving empties it.
+   produced, not the layer you cloned FROM. (The tree layer draws as
+   vector tiles, which QGIS cannot edit at all; the dialog says so.)
+2. Click the **pencil**, then make a few edits: move a vertex, change
+   an attribute, add a feature, delete one.
+3. **Click Save Layer Edits and turn editing off.** This is the change
+   worth confirming. Save as many times as you like along the way.
 
-### Push
+**Bonus, and the real point:** close QGIS entirely, reopen it, and add
+the offline GeoPackage back to a project. Your pending changes should
+still be there in step 5. They live in the file, not in a QGIS buffer.
 
-5. `Plugins > GratisGIS > Push edits to GratisGIS...`
-6. **Layer:** `Trails (offline)`. **Portal:** your connection.
-7. Read the summary line: `N create(s), N update(s), N delete(s);
-   N skipped.` and the operations list.
-8. Click **Push**.
+### Sync
 
-**Expect:** the summary cycles "Pushing operation 1 of N...", then a
-**"Pushed"** box: `N operations pushed successfully.`
+4. `Plugins > GratisGIS > Sync layer with GratisGIS...`
+5. **Layer:** `Trails (offline)`. **Portal:** your connection.
+6. Read the summary and the change list. It should match what you did.
+7. Click **Sync**.
 
-9. **Verify:** open the item in the portal (or refresh the Browser tree
-   and re-add the layer) and confirm your edits are there.
+**Expect:** a **"Synced"** box: `N change(s) sent to the portal.`
 
-**Worth trying deliberately:** open the dialog with only a vector-tile
-layer in the project. The dropdown should read `(no editable portal
-layers in project)` and the dialog should explain that tree layers are
-read only and point you at the clone flow.
+8. **Verify:** refresh the Browser tree, re-add the layer, and confirm
+   your edits are there.
+9. **Open the dialog again.** It should now show nothing pending: the
+   clone and the portal agree.
+
+### Worth trying deliberately
+
+- **Leave edits unsaved** and open the dialog. It should tell you to
+  save first rather than sending half your work.
+- **The conflict path.** Edit a feature in your clone and save. Then
+  change the *same* feature on the portal (in the web app). Now sync.
+  You should get a warning naming the conflict and offering
+  **Overwrite with mine** / **Skip those, send the rest** / Cancel.
+  This is the case that used to overwrite silently.
+- **Open the dialog with only a vector-tile layer** in the project. The
+  dropdown should read `(no editable portal layers in project)` and
+  point you at the clone flow.
 
 ---
 

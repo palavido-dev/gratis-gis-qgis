@@ -7,6 +7,41 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.3.0] - 2026-08-14
+
+### Changed
+
+- **"Push edits" is now "Sync layer", and it works the way you would
+  expect.** Save your edits as often as you like, close QGIS, come back
+  next week: your pending changes are still there, because they are
+  recorded inside the offline copy rather than in QGIS's unsaved-edit
+  buffer. The old flow only saw edits while they were UNSAVED, so it
+  had to ask you not to save, which is a strange thing to ask during a
+  long editing session.
+
+  It also only ever sends work you have saved. That closes a real hole:
+  before, you could send unsaved edits and then answer "discard" in
+  QGIS, leaving the portal holding changes your own copy never had,
+  with nothing anywhere aware the two had drifted apart.
+
+### Added
+
+- **Sync tells you when someone else changed the same features.**
+  Before sending, it re-reads the portal and compares each feature
+  against the version you cloned. Anything that moved on both sides is
+  listed by name, and you choose: send yours over theirs, or skip those
+  and send the rest. It will not overwrite someone else's work without
+  saying so.
+- **New features get their identity before they are sent**, so a sync
+  interrupted by a dropped connection can be run again without creating
+  duplicates on the portal.
+
+### Fixed
+
+- The portal's own id for a feature (`_global_id`) was not among the
+  names the clone looked for when recording which portal feature each
+  local row came from.
+
 ## [0.2.11] - 2026-08-14
 
 ### Fixed
