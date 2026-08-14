@@ -29,7 +29,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -37,6 +37,12 @@ from urllib.request import pathname2url
 
 from ..browser.uris import PortalLayerRef
 from ..log import get_logger
+from .sync_state import (
+    BASELINE_FIELDS,
+    BASELINE_TABLE,
+    PORTAL_ID_FALLBACKS,
+    BaselineEntry,
+)
 
 _log = get_logger(__name__)
 
@@ -165,12 +171,14 @@ def _extract_portal_id(
     Order matches what the push-edits flow looks at, so the round-
     trip is lossless: id-on-feature first, then properties variants.
     """
+    # `_global_id` first among the property fallbacks because it is
+    # what the portal actually sends; it was missing from this list
+    # entirely. The top-level `id` stays ahead of it only because the
+    # portal sets the two to the same value, verified across a whole
+    # layer, so preferring either is correct and `id` is cheaper.
     candidates = (
         raw_feature.get("id"),
-        properties.get("id"),
-        properties.get("fid"),
-        properties.get("feature_id"),
-        properties.get("featureId"),
+        *(properties.get(key) for key in PORTAL_ID_FALLBACKS),
     )
     for value in candidates:
         if value is None or value == "":
@@ -307,6 +315,103 @@ def read_clone_source(gpkg_path: str) -> PortalLayerRef | None:
     if not portal_url or not item_id or not layer_id:
         return None
     return PortalLayerRef(portal_url=portal_url, item_id=item_id, layer_id=layer_id)
+
+
+# -----------------------------------------------------------
+# The baseline: what the clone looked like when it was taken.
+# -----------------------------------------------------------
+
+
+def write_baseline(
+    gpkg_path: str, entries: Mapping[str, BaselineEntry]
+) -> None:
+    """Record (or replace) the clone's baseline table.
+
+    Written through sqlite3 rather than a QGIS writer because it is a
+    plain attribute table, and because QgsVectorFileWriter would need a
+    memory layer, a field spec and an enum dance to say something this
+    simple. A GeoPackage is a SQLite database by definition.
+
+    Replaces the table wholesale: after a successful sync the baseline
+    should describe the new state exactly, and reconciling row by row
+    would leave stale entries behind on any path that missed one.
+    """
+    columns = ", ".join(f'"{name}" TEXT' for name in BASELINE_FIELDS)
+    placeholders = ", ".join("?" for _ in BASELINE_FIELDS)
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        conn.execute(f'DROP TABLE IF EXISTS "{BASELINE_TABLE}"')
+        conn.execute(f'CREATE TABLE "{BASELINE_TABLE}" ({columns})')
+        conn.executemany(
+            f'INSERT INTO "{BASELINE_TABLE}" VALUES ({placeholders})',
+            [
+                (gid, entry.attr_hash, entry.geom_hash, entry.portal_edited_at)
+                for gid, entry in entries.items()
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def read_baseline(gpkg_path: str) -> dict[str, BaselineEntry]:
+    """Read back the clone's baseline, or {} if it has none.
+
+    An empty result is meaningful and is NOT the same as "no changes":
+    a clone written before baselines existed has no table, and every
+    one of its features would then look newly created. Callers must
+    distinguish the two, which is what ``has_baseline`` is for.
+    """
+    if not gpkg_path or not os.path.isfile(gpkg_path):
+        return {}
+    columns = ", ".join(f'"{name}"' for name in BASELINE_FIELDS)
+    try:
+        uri = f"file:{pathname2url(os.path.abspath(gpkg_path))}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            rows = conn.execute(
+                f'SELECT {columns} FROM "{BASELINE_TABLE}"'
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        _log.debug("no baseline table in %s", gpkg_path, exc_info=True)
+        return {}
+    out: dict[str, BaselineEntry] = {}
+    for global_id, attr_hash, geom_hash, edited_at in rows:
+        if not global_id:
+            continue
+        out[str(global_id)] = BaselineEntry(
+            attr_hash=str(attr_hash or ""),
+            geom_hash=str(geom_hash or ""),
+            portal_edited_at=str(edited_at) if edited_at else None,
+        )
+    return out
+
+
+def has_baseline(gpkg_path: str) -> bool:
+    """Whether this GeoPackage carries a baseline table at all.
+
+    Distinguishes "cloned, nothing changed yet" from "made by a version
+    that did not record one". The second cannot be synced safely,
+    because with no baseline every existing feature reads as new and a
+    sync would duplicate the entire layer on the portal.
+    """
+    if not gpkg_path or not os.path.isfile(gpkg_path):
+        return False
+    try:
+        uri = f"file:{pathname2url(os.path.abspath(gpkg_path))}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (BASELINE_TABLE,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 # -----------------------------------------------------------

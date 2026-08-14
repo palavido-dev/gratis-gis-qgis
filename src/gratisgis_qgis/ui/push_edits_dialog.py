@@ -1,25 +1,45 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Push-edits dialog (Phase 4).
+"""Send an offline clone's changes back to the portal.
 
-QGIS-side wrapper around the pure-Python sync planner in
-`edit/sync.py`. The dialog:
+The dialog lists the project layers that have somewhere to send
+changes to, works out what changed, checks whether anyone else moved
+the same features, and sends the result one call at a time.
 
-  1. Lists the vector layers in the project that can be pushed: a
-     live OAPIF layer, or an offline clone that recorded its origin.
-     Vector-tile layers are portal-backed but read-only in QGIS, so
-     they are deliberately not offered.
-  2. For each, walks the layer's `editBuffer()` to capture added,
-     changed-geometry, changed-attribute, and deleted features.
-  3. Builds a SyncPlan and shows it for confirmation.
-  4. On Push, executes the plan against the portal's features
-     endpoint, one HTTP call per SyncOp, reporting progress and
-     per-op failures.
+Where "what changed" comes from depends on the layer, and the split is
+forced by what each kind of layer is:
 
-The push isn't QGIS's built-in "Save Edits" because not every
-portal we recognize exposes WFS-T through the OAPIF provider.
-Going through the portal's REST CRUD lets us push edits even
-against read-only OAPIF endpoints (and is the path the offline-
-sync flow in Phase 7 reuses).
+  - An **offline clone** is a GeoPackage this plugin wrote, carrying a
+    baseline of how every feature looked when it was cloned. The
+    difference between the file and that baseline is the pending work.
+    That makes it durable: it survives saving, closing QGIS, reopening
+    next week, even being emailed to someone else, because it is all
+    inside the one file.
+  - A **live OAPIF layer** has no local file to baseline against, so
+    QGIS's pending edit buffer is the only record that exists. That
+    path keeps its original behaviour, and its original limitation.
+
+The clone path deliberately reads SAVED state only. The first version
+of this dialog read the edit buffer for everything, which was wrong in
+a way that mattered: it meant edits were invisible unless left unsaved
+(so the ordinary habit of saving through a long session broke it), and
+it made it possible to push and then answer "discard" in QGIS, leaving
+the portal holding changes the local file never had with nothing aware
+the two had diverged.
+
+Conflicts are detected, not merged. Before sending, the portal is read
+back and each feature's ``_edited_at`` compared against the value
+recorded at clone time; anything that moved on both sides is named and
+the user picks a side. That is the honest limit of what is possible:
+the portal accepts no version token on a write and has no
+compare-and-set, so nothing can make the write itself conditional. A
+merge UI would imply a safety the server cannot provide.
+
+Sending goes through the portal's REST CRUD rather than QGIS's own
+Save Edits because not every portal exposes WFS-T through the OAPIF
+provider.
+
+The module name is historical; it predates this being a sync rather
+than a one-way push.
 """
 from __future__ import annotations
 
@@ -57,7 +77,19 @@ from ..edit.sync import (
     summarize_plan,
 )
 from ..log import get_logger
-from ..offline.clone import PORTAL_ID_PROPERTY, read_clone_source
+from ..offline.clone import (
+    PORTAL_ID_PROPERTY,
+    has_baseline,
+    read_baseline,
+    read_clone_source,
+    write_baseline,
+)
+from ..offline.reader import (
+    baseline_from_features,
+    portal_edited_stamps,
+    read_local_features,
+)
+from ..offline.sync_state import find_conflicts, plan_local_changes
 from ..portal import get_client
 from ..settings import ConnectionStore
 from ..tasks import TaskHandle, format_error, run_in_task
@@ -73,16 +105,16 @@ _log = get_logger(__name__)
 # the id spellings the OAPIF provider / GeoJSON responses have used.
 _PORTAL_ID_FIELDS = (PORTAL_ID_PROPERTY, "featureId", "feature_id", "id", "fid_portal")
 
-# Shown when nothing in the project can be pushed. Naming the fix is
+# Shown when nothing in the project can be synced. Naming the fix is
 # the point: the Browser tree hands out vector-tile layers for spatial
 # data, which QGIS cannot edit at all, so a user staring at a portal
 # layer in their Layers panel has no way to guess why this dialog
-# claims there is nothing to push.
+# claims there is nothing to send.
 _NO_PUSHABLE_LAYERS = (
-    "Nothing in this project can be pushed. A layer added from the "
+    "Nothing in this project can be synced. A layer added from the "
     "Browser tree draws as vector tiles, which are read only in QGIS. "
     "Use 'Clone layer for offline use...' on it first, then edit the "
-    "offline copy and push that back."
+    "offline copy and sync that."
 )
 
 
@@ -91,7 +123,7 @@ class PushEditsDialog(QDialog):
 
     def __init__(self, iface: QgisInterface, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Push edits to GratisGIS")
+        self.setWindowTitle("Sync layer with GratisGIS")
         self.setMinimumWidth(560)
         self._iface = iface
         self._store = ConnectionStore()
@@ -116,7 +148,7 @@ class PushEditsDialog(QDialog):
         self._skipped_list = QListWidget()
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Push")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Sync")
         buttons.accepted.connect(self._on_push)
         buttons.rejected.connect(self.reject)
         self._buttons = buttons
@@ -124,9 +156,9 @@ class PushEditsDialog(QDialog):
         root = QVBoxLayout()
         root.addLayout(form)
         root.addWidget(self._summary_label)
-        root.addWidget(QLabel("Operations to push:"))
+        root.addWidget(QLabel("Changes to send:"))
         root.addWidget(self._ops_list, 2)
-        root.addWidget(QLabel("Skipped (not pushable):"))
+        root.addWidget(QLabel("Skipped:"))
         root.addWidget(self._skipped_list, 1)
         root.addWidget(buttons)
         self.setLayout(root)
@@ -182,7 +214,10 @@ class PushEditsDialog(QDialog):
         self._target_item_id = ref.item_id
         self._target_layer_id = ref.layer_id
 
-        edits = _collect_edits(layer)
+        edits, note = _collect_changes(layer)
+        if note:
+            self._summary_label.setText(note)
+            return
         plan = build_sync_plan(edits)
         self._plan = plan
         self._render_plan(plan)
@@ -265,6 +300,53 @@ class PushEditsDialog(QDialog):
         item_id = self._target_item_id
         layer_id = self._target_layer_id
         layer = self._selected_layer()
+        gpkg_path = _gpkg_path_from_source(layer.source()) if layer else None
+        is_clone = bool(gpkg_path) and read_clone_source(gpkg_path or "") is not None
+
+        if is_clone and gpkg_path:
+            # Record every minted id locally BEFORE anything is sent.
+            # If the run dies halfway, or a response is lost, the ids
+            # are already in the file, so re-syncing resends the same
+            # ids and the portal's dedupe turns the retry into a no-op
+            # instead of a duplicate row. Doing this afterwards would
+            # make a lost response indistinguishable from a rejection.
+            if not _stamp_minted_ids(layer, ops):
+                QMessageBox.critical(
+                    self,
+                    "Could not prepare the sync",
+                    "The new features could not be given their ids in the "
+                    "local file, so sending them now could create "
+                    "duplicates on a retry. Nothing was sent.",
+                )
+                ok_button.setEnabled(True)
+                self._layer_combo.setEnabled(True)
+                self._connection_combo.setEnabled(True)
+                return
+
+            conflicts = self._check_conflicts(profile, ops, item_id, layer_id, gpkg_path)
+            if conflicts is None:
+                ok_button.setEnabled(True)
+                self._layer_combo.setEnabled(True)
+                self._connection_combo.setEnabled(True)
+                return
+            if conflicts:
+                ops = self._resolve_conflicts(ops, conflicts)
+                if ops is None:
+                    ok_button.setEnabled(True)
+                    self._layer_combo.setEnabled(True)
+                    self._connection_combo.setEnabled(True)
+                    return
+                if not ops:
+                    QMessageBox.information(
+                        self,
+                        "Nothing left to send",
+                        "Every change you had was in conflict and you chose "
+                        "to keep the portal's version.",
+                    )
+                    ok_button.setEnabled(True)
+                    self._layer_combo.setEnabled(True)
+                    self._connection_combo.setEnabled(True)
+                    return
 
         def push_all(handle: TaskHandle) -> _PushOutcome:
             client = get_client(profile)
@@ -302,7 +384,7 @@ class PushEditsDialog(QDialog):
             if outcome.cancelled:
                 QMessageBox.warning(
                     self,
-                    "Push cancelled",
+                    "Sync cancelled",
                     f"Stopped after {outcome.attempted} of {len(ops)} operations. "
                     f"Operations already sent are on the portal; "
                     f"{len(outcome.failures)} of them failed.",
@@ -320,10 +402,16 @@ class PushEditsDialog(QDialog):
                     f"Details:\n{details}",
                 )
                 return
+            if is_clone and gpkg_path:
+                # Only now is the local copy in step with the portal,
+                # so only now may the baseline move. Doing it before
+                # the send, or after a partial one, would mark unsent
+                # work as already synced and lose it silently.
+                self._refresh_baseline(profile, layer, gpkg_path, item_id, layer_id)
             QMessageBox.information(
                 self,
-                "Pushed",
-                f"{len(ops)} operations pushed successfully.",
+                "Synced",
+                f"{len(ops)} change(s) sent to the portal.",
             )
             self.accept()
 
@@ -333,7 +421,7 @@ class PushEditsDialog(QDialog):
             ok_button.setEnabled(True)
             self._layer_combo.setEnabled(True)
             self._connection_combo.setEnabled(True)
-            QMessageBox.critical(self, "Push failed", format_error(exc))
+            QMessageBox.critical(self, "Sync failed", format_error(exc))
 
         def progress(pct: float) -> None:
             done_ops = round(pct * len(ops) / 100.0)
@@ -345,6 +433,110 @@ class PushEditsDialog(QDialog):
         self._push_task = run_in_task(
             "GratisGIS: push edits", push_all, done, failed, on_progress=progress
         )
+
+    # ----- Conflicts -----
+
+    def _check_conflicts(self, profile, ops, item_id, layer_id, gpkg_path):
+        """Ask the portal whether anything moved under us.
+
+        Returns the conflicts (possibly empty), or None if the check
+        itself failed and the user chose not to continue.
+
+        Run synchronously, unlike the push loop, because it is one
+        request and its answer decides whether the push happens at
+        all. Doing it in the background would mean either blocking the
+        dialog anyway or letting the user press Sync twice.
+        """
+        try:
+            body = get_client(profile).features.download_geojson(
+                item_id=item_id, layer_id=layer_id
+            )
+            stamps = portal_edited_stamps(body)
+        except Exception as e:
+            _log.exception("conflict check failed")
+            answer = QMessageBox.question(
+                self,
+                "Could not check the portal",
+                "The portal could not be read to check whether anyone else "
+                f"changed these features.\n\n{format_error(e)}\n\n"
+                "Send your changes anyway?",
+            )
+            return [] if answer == QMessageBox.StandardButton.Yes else None
+
+        changes = [
+            EditedFeature(
+                kind=op.kind,
+                portal_id=op.portal_id,
+                qgis_fid=op.qgis_fid,
+                geometry=op.geometry,
+                properties=op.properties,
+            )
+            for op in ops
+        ]
+        return find_conflicts(changes, read_baseline(gpkg_path), stamps)
+
+    def _resolve_conflicts(self, ops, conflicts):
+        """Let the user decide what happens to conflicting rows.
+
+        Returns the ops to send, or None to abandon the sync.
+
+        Two choices only, and no merge. The portal accepts no version
+        token on a write, so there is no way to write "only if it is
+        still what I read"; a merge UI would imply a safety the server
+        cannot provide. Naming the rows and letting the user pick a
+        side is the honest limit of what can be offered here.
+        """
+        conflicted = {c.global_id for c in conflicts}
+        detail = "\n".join(f"- {c.detail}" for c in conflicts[:10])
+        if len(conflicts) > 10:
+            detail += f"\n- and {len(conflicts) - 10} more"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Changed on the portal too")
+        box.setText(
+            f"{len(conflicts)} of your changes affect features that someone "
+            "else has changed on the portal since you cloned them."
+        )
+        box.setInformativeText(
+            f"{detail}\n\nSending yours will overwrite theirs. There is no "
+            "way to merge the two automatically."
+        )
+        keep_mine = box.addButton("Overwrite with mine", QMessageBox.ButtonRole.DestructiveRole)
+        keep_theirs = box.addButton("Skip those, send the rest", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is keep_mine:
+            return ops
+        if clicked is keep_theirs:
+            return [op for op in ops if op.portal_id not in conflicted]
+        return None
+
+    def _refresh_baseline(self, profile, layer, gpkg_path, item_id, layer_id):
+        """Re-record the clone's baseline after a successful sync.
+
+        Without this every change would be sent again on the next sync:
+        the baseline still describes the pre-edit state, so the same
+        rows keep reading as changed. Best-effort, and loudly logged if
+        it fails, because a stale baseline costs a duplicate send that
+        the portal's dedupe absorbs, whereas failing the whole sync
+        after the changes have landed would be worse.
+        """
+        try:
+            layer.reload()
+            body = get_client(profile).features.download_geojson(
+                item_id=item_id, layer_id=layer_id
+            )
+            write_baseline(
+                gpkg_path,
+                baseline_from_features(
+                    read_local_features(layer), portal_edited_stamps(body)
+                ),
+            )
+        except Exception:
+            _log.exception("could not refresh the clone baseline")
 
     def reject(self) -> None:  # Qt override
         # Cancel button / Esc / window close during a push: stop the
@@ -396,6 +588,65 @@ def _gpkg_path_from_source(source: str) -> str | None:
         return None
     path = source.split("|", 1)[0].strip()
     return path if path.lower().endswith(".gpkg") else None
+
+
+# -----------------------------------------------------------
+# Working out what changed
+# -----------------------------------------------------------
+
+
+def _collect_changes(layer: QgsVectorLayer) -> tuple[list[EditedFeature], str]:
+    """Find a layer's pending changes, by whichever route suits it.
+
+    Returns the changes and, if the layer cannot be read right now, a
+    sentence explaining why instead.
+
+    Two routes, and the split is forced by what each kind of layer
+    actually is:
+
+      - An offline clone is a GeoPackage the plugin wrote, so it
+        carries a baseline of how every feature looked when it was
+        cloned. Comparing the file against that baseline is what makes
+        the changes DURABLE: they survive saving, closing QGIS, and
+        reopening next week, because they live in the file rather than
+        in a UI buffer.
+      - A live OAPIF layer has no local file, so there is nothing to
+        baseline against and QGIS's pending edit buffer is the only
+        record that exists. That path keeps its original behaviour and
+        its original limitation.
+
+    The clone route deliberately reads only SAVED state. That is the
+    fix for the flaw the buffer version had: it could push edits that
+    were still unsaved, after which answering "discard" in QGIS left
+    the portal holding changes the local file never had, with nothing
+    aware the two had diverged.
+    """
+    gpkg_path = _gpkg_path_from_source(layer.source())
+    if gpkg_path is None or read_clone_source(gpkg_path) is None:
+        return _collect_edits(layer), ""
+
+    if not has_baseline(gpkg_path):
+        return [], (
+            "This copy was made by an older version of the plugin, which "
+            "did not record what it started from. Clone the layer again "
+            "to sync it."
+        )
+    if _layer_has_unsaved_edits(layer):
+        return [], (
+            "This layer has unsaved edits. Save them first (the pencil, "
+            "then Save Layer Edits), then reopen this window. Only saved "
+            "work is sent, so that discarding edits afterwards can never "
+            "leave the portal out of step with your copy."
+        )
+    baseline = read_baseline(gpkg_path)
+    return plan_local_changes(read_local_features(layer), baseline), ""
+
+
+def _layer_has_unsaved_edits(layer: QgsVectorLayer) -> bool:
+    try:
+        return bool(layer.isModified())
+    except AttributeError:
+        return False
 
 
 # -----------------------------------------------------------
@@ -589,10 +840,24 @@ def _apply_op(
             item_id=item_id,
             layer_id=layer_id,
             features=[
-                FeatureIn(geometry=op.geometry, properties=op.properties)
+                # The id travels with the create when the caller has
+                # one. A clone mints it and records it locally BEFORE
+                # sending, which is what makes a retry safe: the portal
+                # dedupes an append on globalId, so resending after a
+                # lost response cannot produce a second copy. Sending
+                # None leaves the portal to assign one, which is still
+                # right for the live-OAPIF path where there is no local
+                # file to have recorded anything in.
+                FeatureIn(
+                    global_id=op.portal_id,
+                    geometry=op.geometry,
+                    properties=op.properties,
+                )
             ],
         )
-        return result.global_ids[0] if result.global_ids else None
+        if result.global_ids:
+            return result.global_ids[0]
+        return op.portal_id
     if op.kind == "update":
         assert op.portal_id is not None
         client.features.update(
@@ -612,6 +877,51 @@ def _apply_op(
         )
         return None
     raise AssertionError(f"unknown op kind: {op.kind!r}")
+
+
+def _stamp_minted_ids(
+    layer: QgsVectorLayer | None, ops: list[SyncOp]
+) -> bool:
+    """Write each create's minted id into the clone before sending.
+
+    Returns False if the write could not be made, in which case the
+    caller must not send: an unrecorded id turns a retry into a
+    duplicate, which is the one failure mode the whole minting scheme
+    exists to prevent.
+
+    A no-op when there is nothing to stamp, or when every create
+    already carries its id from a previous attempt, which is the
+    normal state on a retry.
+    """
+    pending = [
+        op
+        for op in ops
+        if op.kind == "create" and op.portal_id and op.qgis_fid is not None
+    ]
+    if not pending:
+        return True
+    if layer is None:
+        return False
+    try:
+        index = layer.fields().indexOf(PORTAL_ID_PROPERTY)
+        if index < 0:
+            # A clone always has this column; its absence means this is
+            # not the file we think it is, so refuse rather than invent
+            # a column on someone's layer.
+            _log.warning("clone layer has no %r column", PORTAL_ID_PROPERTY)
+            return False
+        if not layer.startEditing():
+            return False
+        for op in pending:
+            layer.changeAttributeValue(op.qgis_fid, index, op.portal_id)
+        if not layer.commitChanges():
+            _log.warning("could not commit minted ids: %s", layer.commitErrors())
+            layer.rollBack()
+            return False
+    except Exception:
+        _log.exception("could not stamp minted ids")
+        return False
+    return True
 
 
 def _write_back_created_ids(

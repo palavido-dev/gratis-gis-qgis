@@ -441,7 +441,175 @@ def _run_checks() -> None:
         applier.remove()
         QgsProject.instance().clear()
 
-    print("\n[10] auth: the API Header method private layers depend on")
+    print("\n[10] a clone's pending changes survive being saved")
+    # The point of the whole baseline design. The previous flow read
+    # QGIS's unsaved edit buffer, so saving made edits invisible to the
+    # plugin and closing QGIS lost them. Everything here happens
+    # through SAVED state and a reopened layer.
+    from gratisgis_qgis.offline.clone import (
+        has_baseline,
+        read_baseline,
+        write_baseline,
+    )
+    from gratisgis_qgis.offline.reader import (
+        baseline_from_features,
+        portal_edited_stamps,
+        read_local_features,
+    )
+    from gratisgis_qgis.offline.sync_state import plan_local_changes
+    from gratisgis_qgis.ui.clone_dialog import _write_geojson_to_geopackage
+
+    clone_dir = tempfile.mkdtemp()
+    clone_path = os.path.join(clone_dir, "trails.gpkg")
+    portal_body = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "id": f"gid-{n}",
+                "geometry": {"type": "Point", "coordinates": [-79.8 + n / 100, 38.8]},
+                "properties": {"_global_id": f"gid-{n}", "name": f"trail {n}",
+                               "_edited_at": "2026-08-01T00:00:00Z"},
+            }
+            for n in range(3)
+        ],
+    }
+
+    def reopen():
+        """A fresh layer object, as a new QGIS session would build."""
+        return QgsVectorLayer(f"{clone_path}|layername=trails", "trails", "ogr")
+
+    def pending():
+        layer = reopen()
+        return plan_local_changes(read_local_features(layer), read_baseline(clone_path))
+
+    try:
+        from gratisgis_qgis.browser.uris import PortalLayerRef
+
+        _write_geojson_to_geopackage(
+            portal_body,
+            clone_path,
+            source=PortalLayerRef(
+                portal_url="https://example.test", item_id="i1", layer_id="trails"
+            ),
+            portal_stamps=portal_edited_stamps(portal_body),
+        )
+        check(
+            "the clone records a baseline",
+            lambda: _assert(has_baseline(clone_path), "no baseline table was written"),
+        )
+        check(
+            "the baseline covers every cloned feature",
+            lambda: _assert(
+                len(read_baseline(clone_path)) == 3,
+                f"expected 3 baseline rows, got {len(read_baseline(clone_path))}",
+            ),
+        )
+        check(
+            "a fresh clone owes the portal nothing",
+            lambda: _assert(
+                pending() == [], f"unexpected pending changes: {pending()!r}"
+            ),
+        )
+
+        # Edit and SAVE, which is what the old design could not survive.
+        editable = reopen()
+        editable.startEditing()
+        target = next(editable.getFeatures())
+        editable.changeAttributeValue(
+            target.id(), editable.fields().indexOf("name"), "renamed"
+        )
+        _assert(editable.commitChanges(), "could not save the edit")
+        del editable
+
+        after_save = check("pending changes after saving", pending)
+        check(
+            "a saved edit is seen, from a reopened layer",
+            lambda: _assert(
+                [(c.kind, c.portal_id) for c in after_save] == [("update", "gid-0")],
+                f"expected one update, got {after_save!r}",
+            ),
+        )
+        check(
+            "the edited attribute is what gets sent",
+            lambda: _assert(
+                after_save[0].properties.get("name") == "renamed",
+                f"wrong payload: {after_save[0].properties!r}",
+            ),
+        )
+        check(
+            "bookkeeping columns are not sent as user attributes",
+            lambda: _assert(
+                "_portal_id" not in after_save[0].properties
+                and "fid" not in after_save[0].properties,
+                f"internal columns leaked: {after_save[0].properties!r}",
+            ),
+        )
+
+        # QGIS has no editor tracking: it does not touch _edited_at when
+        # you change an attribute. So detection must not depend on it,
+        # and this proves it does not. The stamp in the local file is
+        # still the cloned value while the edit is detected anyway.
+        # (Reading it the other way round would be worse than useless:
+        # the portal restamps _edited_at on every server-side write, so
+        # counting it as user data would report an edit on features
+        # nobody had touched.)
+        stale = reopen()
+        # Compared as text: OGR types this column as DateTime, so it
+        # returns a QDateTime rather than the string the portal sent.
+        # That mismatch is itself a reason the hash excludes the column
+        # instead of trying to compare it across representations.
+        stamps_now = {
+            f["_global_id"]: _as_text(f["_edited_at"]) for f in stale.getFeatures()
+        }
+        del stale
+        check(
+            "the local edit stamp is untouched by QGIS, as expected",
+            lambda: _assert(
+                stamps_now.get("gid-0", "").startswith("2026-08-01"),
+                f"something wrote the tracking column: {stamps_now!r}",
+            ),
+        )
+        check(
+            "and the edit is detected regardless of that stamp",
+            lambda: _assert(
+                [(c.kind, c.portal_id) for c in pending()] == [("update", "gid-0")],
+                "detection is leaning on editor tracking QGIS never updates",
+            ),
+        )
+
+        # A delete, also saved, also read back from a reopened layer.
+        editable = reopen()
+        editable.startEditing()
+        editable.deleteFeature(next(editable.getFeatures()).id())
+        _assert(editable.commitChanges(), "could not save the delete")
+        del editable
+        kinds = sorted(c.kind for c in pending())
+        check(
+            "a saved delete is seen too",
+            lambda: _assert(
+                kinds == ["delete"], f"expected a lone delete, got {kinds}"
+            ),
+        )
+
+        # And once the baseline moves on, the clone is settled again.
+        settled = reopen()
+        write_baseline(
+            clone_path,
+            baseline_from_features(read_local_features(settled), {}),
+        )
+        del settled
+        check(
+            "recording a new baseline clears the pending list",
+            lambda: _assert(
+                pending() == [], f"still pending after resync: {pending()!r}"
+            ),
+        )
+    finally:
+        QgsProject.instance().clear()
+        shutil.rmtree(clone_dir, ignore_errors=True)
+
+    print("\n[11] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
     method = check("find_api_header_method()", find_api_header_method)
@@ -531,6 +699,22 @@ def _assert_decodes(
                 f"{provider_key} decoded {key}={got!r}, expected {want!r} (uri={uri!r})"
             )
     return parts
+
+
+def _as_text(value) -> str:
+    """Render a QGIS attribute as comparable text.
+
+    QDateTime and friends do not compare equal to the ISO strings they
+    were loaded from, so anything date-shaped goes through its own
+    formatter first.
+    """
+    to_string = getattr(value, "toString", None)
+    if callable(to_string):
+        try:
+            return str(to_string("yyyy-MM-ddTHH:mm:ss"))
+        except TypeError:
+            return str(to_string())
+    return str(value)
 
 
 def _assert(condition: bool, message: str) -> bool:

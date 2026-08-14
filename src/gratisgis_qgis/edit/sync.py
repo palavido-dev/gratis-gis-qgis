@@ -147,7 +147,13 @@ def build_sync_plan(edits: Iterable[EditedFeature]) -> SyncPlan:
                 SyncOp(
                     kind="create",
                     qgis_fid=e.qgis_fid,
-                    portal_id=None,
+                    # Carried through, not dropped. An offline clone
+                    # mints the id itself and records it locally before
+                    # sending, which is what lets a create be retried
+                    # safely: the portal dedupes an append on globalId.
+                    # Only the old edit-buffer path leaves this None,
+                    # and there the portal assigns one.
+                    portal_id=e.portal_id,
                     geometry=e.geometry,
                     properties=e.properties,
                 )

@@ -163,6 +163,13 @@ class _FakeVectorLayer:
     def dataProvider(self) -> _FakeProvider:  # QGIS API name
         return self._provider
 
+    def getFeatures(self) -> list[Any]:  # QGIS API name
+        # The write path reads the finished GeoPackage back to record
+        # its baseline. Nothing here writes real features, so an empty
+        # read is the honest answer; the baseline content itself is
+        # covered where a real GeoPackage exists to read.
+        return []
+
 
 class _FakeFeature:
     def __init__(self, fields: Any) -> None:
@@ -254,7 +261,14 @@ class TestCloneSourceTableWrite:
         self, clone_mod: ModuleType, tmp_path: Path
     ) -> None:
         _write(clone_mod, tmp_path / "trails.gpkg", _REF)
-        holder = _FakeVectorLayer.built[-1]
+        # Selected by what it is, not by being last: the write path also
+        # reopens the finished GeoPackage to record its baseline, so the
+        # final layer built is no longer the origin holder.
+        [holder] = [
+            layer
+            for layer in _FakeVectorLayer.built
+            if layer.layer_name == CLONE_SOURCE_TABLE
+        ]
         assert holder.provider == "memory"
         assert holder.layer_name == CLONE_SOURCE_TABLE
         # Geometry-less: an origin row has no location, and a geometry

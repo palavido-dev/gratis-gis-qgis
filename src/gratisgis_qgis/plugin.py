@@ -77,7 +77,7 @@ class GratisGISPlugin(QObject):
         self._actions.append(publish_layer_action)
 
         push_edits_action = QAction(
-            icon, "Push edits to GratisGIS...", self._iface.mainWindow()
+            icon, "Sync layer with GratisGIS...", self._iface.mainWindow()
         )
         push_edits_action.triggered.connect(self._on_push_edits)
         self._iface.addPluginToMenu(self.PLUGIN_NAME, push_edits_action)

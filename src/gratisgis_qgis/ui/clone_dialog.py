@@ -67,6 +67,12 @@ from ..offline.clone import (
     safe_write_path,
     source_targets_file,
     validate_clone_target,
+    write_baseline,
+)
+from ..offline.reader import (
+    baseline_from_features,
+    portal_edited_stamps,
+    read_local_features,
 )
 from ..portal import get_client
 from ..qgis_compat import resolve_enum
@@ -345,7 +351,12 @@ class CloneToGeoPackageDialog(QDialog):
             QgsProject.instance().removeMapLayer(stale.id())
 
         try:
-            _write_geojson_to_geopackage(fc, target.gpkg_path, source=source)
+            _write_geojson_to_geopackage(
+                fc,
+                target.gpkg_path,
+                source=source,
+                portal_stamps=portal_edited_stamps(body),
+            )
         except OSError as e:
             _log.exception("geopackage write failed")
             QMessageBox.critical(
@@ -419,7 +430,11 @@ def _has_unsaved_edits(layer) -> bool:
 
 
 def _write_geojson_to_geopackage(
-    feature_collection: dict, gpkg_path: str, *, source: PortalLayerRef | None = None
+    feature_collection: dict,
+    gpkg_path: str,
+    *,
+    source: PortalLayerRef | None = None,
+    portal_stamps: dict[str, str | None] | None = None,
 ) -> None:
     """Write the normalized FeatureCollection to a GeoPackage.
 
@@ -446,6 +461,11 @@ def _write_geojson_to_geopackage(
 
     from qgis.core import QgsCoordinateTransformContext, QgsVectorFileWriter
 
+    # The GPKG's internal layer name. Needed again after the write, to
+    # reopen the finished file for its baseline, so it is named once
+    # here rather than derived twice.
+    layer_stem = os.path.splitext(os.path.basename(gpkg_path))[0]
+
     # Tempfile to hand to OGR.
     fd, tmp_geojson = tempfile.mkstemp(suffix=".geojson", prefix="gratisgis-clone-")
     os.close(fd)
@@ -466,12 +486,12 @@ def _write_geojson_to_geopackage(
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "GPKG"
         options.fileEncoding = "UTF-8"
-        # The GPKG's internal layer name used to default to the output
-        # file's stem back when the final path was written directly.
-        # The safe-write temp path carries a random name, so the stem
-        # has to be pinned explicitly or the "|layername=" reference
-        # the loader builds afterwards would not resolve.
-        options.layerName = os.path.splitext(os.path.basename(gpkg_path))[0]
+        # Pinned explicitly: the layer name used to default to the
+        # output file's stem back when the final path was written
+        # directly, but the safe-write temp path carries a random
+        # directory name, so without this the "|layername=" reference
+        # built afterwards would not resolve.
+        options.layerName = layer_stem
 
         # QGIS 3 exposed NoError as a class-level shortcut; the scoped
         # WriterError enum is its home on newer builds and the only
@@ -500,6 +520,42 @@ def _write_geojson_to_geopackage(
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp_geojson)
+
+    # Recorded by reading the finished file back, so that both sides of
+    # every later comparison come from the same container through the
+    # same code. Hashing the GeoJSON this came from instead would
+    # compare two encodings of one geometry and report an edit on every
+    # untouched feature.
+    #
+    # After the promote, not inside it, and that is forced rather than
+    # tidy: reading a GeoPackage through QGIS leaves it open (GDAL pools
+    # the dataset, and neither dropping the layer nor a gc pass releases
+    # it), so a read inside the safe-write block makes the rename fail
+    # on Windows. Verified separately that writing this table with
+    # sqlite3 while QGIS holds the file open is fine; only the rename
+    # is not.
+    _write_baseline_table(
+        gpkg_path, layer_name=layer_stem, stamps=portal_stamps or {}
+    )
+
+
+def _write_baseline_table(
+    gpkg_path: str, *, layer_name: str, stamps: dict[str, str | None]
+) -> None:
+    """Record what every feature looks like as written.
+
+    Raises rather than logging: without a baseline the clone cannot be
+    synced, so failing the write is honest. The origin table next door
+    is best-effort because losing it costs only a shortcut, whereas
+    losing this costs the entire point of cloning to edit.
+    """
+    written = QgsVectorLayer(f"{gpkg_path}|layername={layer_name}", "baseline", "ogr")
+    if not written.isValid():
+        raise RuntimeError(
+            "Could not read the GeoPackage back to record what was cloned."
+        )
+    features = read_local_features(written)
+    write_baseline(gpkg_path, baseline_from_features(features, stamps))
 
 
 def _write_clone_source_table(
