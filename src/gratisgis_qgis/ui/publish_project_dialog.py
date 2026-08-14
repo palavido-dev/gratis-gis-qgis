@@ -469,9 +469,9 @@ class PublishProjectDialog(QDialog):
         # Lazy import keeps the vector dialog out of this module's
         # top-level imports so an error in the vector dialog
         # doesn't crash project publish.
-        from .publish_vector_dialog import PublishVectorDialog
+        from .publish_vector_dialog import PublishLayerDialog
 
-        dlg = PublishVectorDialog(
+        dlg = PublishLayerDialog(
             self._iface, parent=self, preselect_layer_id=skipped.local_layer_id
         )
         dlg.exec()

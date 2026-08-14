@@ -12,7 +12,7 @@ Everything here targets the public demo at https://gratisgis.org.
 ## Before you start
 
 1. **Check the version.** `Plugins > Manage and Install Plugins >
-   Installed`, find GratisGIS. It should read **0.3.0**.
+   Installed`, find GratisGIS. It should read **0.4.0**.
 2. **Check you are signed in.** `Plugins > GratisGIS > Manage GratisGIS
    connections...`. The row should show the portal and a signed-in
    state. If anything later fails with "Your session has expired",
@@ -92,8 +92,10 @@ The biggest untested flow. You need a small layer to publish.
 
 ### Publish it
 
-5. `Plugins > GratisGIS > Publish vector layer to GratisGIS...`
-6. **Layer:** pick `qgis_test`. **Portal:** the GratisGIS connection.
+5. `Plugins > GratisGIS > Publish layer to GratisGIS...`  *(or the
+   toolbar, new in 0.4.0)*
+6. **Layer:** pick `qgis_test`. Note the list now holds rasters too.
+   **Portal:** the GratisGIS connection.
 7. **Title** auto-fills from the layer name. Leave or change it.
 8. Leave **Access** as `Private (only you)`.
 9. Look at the **Pre-flight checks** list. For this layer it should say
@@ -222,36 +224,50 @@ still be there in step 5. They live in the file, not in a QGIS buffer.
 
 ---
 
-## Test 6. Publish a raster / tile layer (10 min)
+## Test 6. Publish a raster from your map (10 min)
 
-This one uploads a **file from disk**, not a canvas layer. The layer
-picker is a file picker.
+**Rewritten in 0.4.0.** There is no separate raster menu entry any
+more, and no file hunting: the raster on your canvas is in the list.
 
-1. Find a small GeoTIFF. Anything a few MB is ideal for a first run.
-   If you have nothing handy, export one: right-click any raster in
-   QGIS > `Export > Save As...` > format `GeoTIFF`, and shrink the
-   resolution so the file stays small.
-2. `Plugins > GratisGIS > Publish raster / tile layer to GratisGIS...`
-3. Click **Choose file...**, pick your GeoTIFF.
-4. **Title** auto-fills from the file name. **Portal:** your
-   connection. Leave Access as Private.
-5. Pre-flight will show a **warning** for GeoTIFF:
-   "This format needs server-side conversion to PMTiles..." That is
-   expected and does not block.
+1. Get a small GeoTIFF onto your canvas. If you have nothing handy,
+   make one: right-click any raster in QGIS > `Export > Save As...` >
+   format `GeoTIFF`, shrink the resolution so it stays a few MB, and
+   let QGIS add the result to your project.
+2. `Plugins > GratisGIS > Publish layer to GratisGIS...`
+3. **Layer:** your GeoTIFF should be in the list, alongside the vector
+   layers. Pick it.
+
+**This is the point of the change.** You should not have to know where
+the file is, and you should not have to pick a different menu item
+because it is a raster rather than a vector.
+
+4. **Title** auto-fills. **Portal:** your connection. Leave Access as
+   Private.
+5. Pre-flight will show a **warning** for GeoTIFF: "This format needs
+   server-side conversion to PMTiles..." Expected, does not block.
 6. Click **Publish**.
 
-**Expect:** a progress bar that actually moves during the upload, then
-a **"Published"** box with the item id, plus a note that conversion is
+**Expect:** a progress bar that moves during the upload, then a
+**"Published"** box with the item id and a note that conversion is
 queued.
 
 7. **Wait a few minutes**, then refresh `My Content > Tile layers` in
    the Browser tree and drag the new item to the canvas. It should
-   draw. *(This exercises the whole pyramid pipeline plus the tile
-   routing I just fixed.)*
+   draw.
 
-**Worth trying:** click **Cancel** during a large upload and confirm
-you get "Publish cancelled." and no half-made item is left behind in
-the portal.
+### Worth trying deliberately
+
+- **A layer that cannot be published.** Add a basemap (or any XYZ / WMS
+  layer) and open the dialog. It should be **listed** and marked
+  `(cannot be published)`, and selecting it should explain that it
+  streams from a web service and suggest exporting it first. It should
+  not silently vanish from the list.
+- **The same for a portal layer** you dragged from the Browser tree.
+  It is read straight from the portal, so there is no local file.
+- **"Choose a file instead..."** for a GeoTIFF that is NOT in your
+  project. That is the old flow, kept as the escape hatch.
+- **Cancel** during a large upload: expect "Publish cancelled." and no
+  half-made item left on the portal.
 
 ---
 

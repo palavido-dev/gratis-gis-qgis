@@ -7,6 +7,32 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.4.0] - 2026-08-14
+
+### Changed
+
+- **One "Publish layer..." instead of two menu entries.** You should not
+  have to decide whether the thing you want to publish counts as a
+  vector or a raster before you can find the right menu item. Pick the
+  layer; the plugin works out what it is.
+- **Rasters can be published straight from your map.** If an aerial is
+  already on your canvas, it is in the list, and the plugin finds the
+  file behind it. Publishing used to mean going and finding that file
+  on disk yourself, which was backwards for the commonest case. A
+  "Choose a file instead..." button covers the file you have not added
+  to your map.
+- **A raster that cannot be published says why**, rather than not
+  appearing. A layer streaming from a web service, or one whose file
+  has moved, is listed and marked, with a sentence on what to do about
+  it.
+
+### Added
+
+- **A GratisGIS toolbar.** The same actions as the menu, one click away
+  and grouped: connect and search, then publish, then clone and sync.
+  The menu stays, since that is where people look first and it cannot
+  be accidentally hidden.
+
 ## [0.3.0] - 2026-08-14
 
 ### Changed

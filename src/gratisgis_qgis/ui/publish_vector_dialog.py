@@ -27,6 +27,7 @@ from qgis.core import (  # type: ignore[import-not-found]
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransformContext,
     QgsProject,
+    QgsRasterLayer,
     QgsVectorFileWriter,
     QgsVectorLayer,
     QgsWkbTypes,
@@ -36,6 +37,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QLabel,
     QLineEdit,
@@ -55,6 +57,8 @@ from gratisgis_client.models.item import Item
 
 from ..log import get_logger
 from ..portal import get_client
+from ..publish.raster import validate_raster_upload
+from ..publish.source import PublishChoice, resolve_raster_source
 from ..publish.vector import (
     LayerSummary,
     build_data_layer_envelope,
@@ -64,6 +68,7 @@ from ..publish.vector import (
 from ..qgis_compat import resolve_enum
 from ..settings import ConnectionStore
 from ..tasks import format_error, run_in_task
+from .publish_raster_dialog import run_raster_pipeline
 
 if TYPE_CHECKING:
     from qgis.gui import QgisInterface  # type: ignore[import-not-found]
@@ -76,7 +81,7 @@ _log = get_logger(__name__)
 _POLL_INTERVAL_MS = 1000
 
 
-class PublishVectorDialog(QDialog):
+class PublishLayerDialog(QDialog):
     """Modal dialog driving the vector-publish flow."""
 
     def __init__(
@@ -87,11 +92,18 @@ class PublishVectorDialog(QDialog):
         preselect_layer_id: str | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Publish vector layer to GratisGIS")
+        self.setWindowTitle("Publish layer to GratisGIS")
         self.setMinimumWidth(560)
         self._iface = iface
         self._store = ConnectionStore()
         self._preselect_layer_id = preselect_layer_id
+        # Everything offered in the picker, in combo order. The combo
+        # holds an index into this rather than a layer id, because an
+        # entry can also be a file that is not a layer at all.
+        self._choices: list[PublishChoice] = []
+        # Set while a raster upload is running, so closing the dialog
+        # can stop it rather than leave it running headless.
+        self._task = None
         self._poll_timer: QTimer | None = None
         # True while a poll task is in flight, so a slow poll makes
         # the timer skip ticks instead of stacking requests.
@@ -119,8 +131,12 @@ class PublishVectorDialog(QDialog):
         self._access_combo.addItem("Org (everyone in your org)", "org")
         self._access_combo.addItem("Public (anyone with the link)", "public")
 
+        self._file_button = QPushButton("Choose a file instead...")
+        self._file_button.clicked.connect(self._on_pick_file)
+
         form = QFormLayout()
         form.addRow("Layer:", self._layer_combo)
+        form.addRow("", self._file_button)
         form.addRow("Portal:", self._connection_combo)
         form.addRow("Title:", self._title_input)
         form.addRow("Description:", self._description_input)
@@ -167,27 +183,80 @@ class PublishVectorDialog(QDialog):
     # ----- Setup helpers -----
 
     def _populate_layer_combo(self) -> None:
+        """Offer everything in the project that could be published.
+
+        Vector layers become data layers and raster layers become tile
+        layers, so both belong in one list: a user thinking "I need to
+        publish this" should not first have to work out which of two
+        menu entries their layer counts as.
+
+        Rasters that cannot be published (a web service, a file that
+        has moved) are listed anyway rather than hidden. Being told why
+        the aerial you are looking at is not offered is far better than
+        wondering where it went.
+
+        isinstance rather than a layer-type constant: QGIS 4 retired
+        the QgsMapLayer.VectorLayer integer in favour of
+        Qgis.LayerType.Vector, while the classes are stable on both.
+        """
         self._layer_combo.clear()
+        self._choices = []
         project = QgsProject.instance()
-        # isinstance check works on both QGIS 3 (where layer.type()
-        # is QgsMapLayer.VectorLayer) and QGIS 4 (where the enum
-        # moved to Qgis.LayerType.Vector). The Python identity check
-        # is portable across both.
         preselect_idx = -1
+
         for layer_id, layer in project.mapLayers().items():
-            if not isinstance(layer, QgsVectorLayer):
+            if isinstance(layer, QgsVectorLayer):
+                choice = PublishChoice(
+                    kind="vector", label=layer.name(), layer_id=layer_id
+                )
+            elif isinstance(layer, QgsRasterLayer):
+                choice = _raster_choice(layer, layer_id)
+            else:
                 continue
-            self._layer_combo.addItem(layer.name(), userData=layer_id)
+            self._choices.append(choice)
+            suffix = "" if choice.is_publishable else "  (cannot be published)"
+            self._layer_combo.addItem(
+                f"{choice.label}{suffix}", userData=len(self._choices) - 1
+            )
             if (
                 self._preselect_layer_id is not None
                 and layer_id == self._preselect_layer_id
             ):
                 preselect_idx = self._layer_combo.count() - 1
+
         if self._layer_combo.count() == 0:
-            self._layer_combo.addItem("(no vector layers in project)", None)
+            self._layer_combo.addItem("(no layers in project)", None)
             self._layer_combo.setEnabled(False)
         elif preselect_idx >= 0:
             self._layer_combo.setCurrentIndex(preselect_idx)
+
+    def _on_pick_file(self) -> None:
+        """Publish a file that is not in the project.
+
+        The escape hatch for the raster sitting on disk that the user
+        has not added to their map, which the old file-only dialog
+        made the default and the only way.
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose a file to publish",
+            "",
+            "Raster / tile files (*.tif *.tiff *.geotiff *.cog *.jp2 "
+            "*.pmtiles *.mbtiles);;All files (*)",
+        )
+        if not path:
+            return
+        self._choices.append(
+            PublishChoice(
+                kind="file", label=os.path.basename(path), file_path=path
+            )
+        )
+        self._layer_combo.setEnabled(True)
+        self._layer_combo.addItem(
+            f"{os.path.basename(path)}  (file on disk)",
+            userData=len(self._choices) - 1,
+        )
+        self._layer_combo.setCurrentIndex(self._layer_combo.count() - 1)
 
     def _populate_connection_combo(self) -> None:
         for name in self._store.list_names():
@@ -200,51 +269,103 @@ class PublishVectorDialog(QDialog):
             self._connection_combo.setEnabled(False)
 
     def _on_layer_changed(self) -> None:
-        layer = self._selected_layer()
-        if layer is None:
+        choice = self._selected_choice()
+        if choice is None:
             self._title_input.setText("")
             return
         if not self._title_input.text().strip():
-            self._title_input.setText(layer.name())
+            stem = choice.label
+            if choice.kind == "file":
+                stem = os.path.splitext(choice.label)[0]
+            self._title_input.setText(stem)
+        self._on_validate()
 
     # ----- Validation -----
 
     def _on_validate(self) -> None:
         self._issues_list.clear()
-        layer = self._selected_layer()
-        if layer is None:
-            self._issues_list.addItem(
-                QListWidgetItem("Select a vector layer first.")
-            )
+        choice = self._selected_choice()
+        if choice is None:
+            self._issues_list.addItem(QListWidgetItem("Select a layer first."))
             return
-        summary = _summary_from_layer(layer)
-        issues = validate_layer(summary)
+        if not choice.is_publishable:
+            self._add_issue("[ERROR]", choice.reason)
+            return
+        if choice.kind == "vector":
+            layer = self._selected_vector_layer()
+            if layer is None:
+                self._add_issue("[ERROR]", "That layer is no longer in the project.")
+                return
+            issues = validate_layer(_summary_from_layer(layer))
+        else:
+            path = self._selected_file_path()
+            if not path:
+                self._add_issue("[ERROR]", "That file is no longer available.")
+                return
+            try:
+                size = os.path.getsize(path)
+            except OSError as e:
+                self._add_issue("[ERROR]", f"The file could not be read: {e}")
+                return
+            issues = validate_raster_upload(file_path=path, size_bytes=size)
+
         if not issues:
-            row = QListWidgetItem("All checks passed.")
-            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            self._issues_list.addItem(row)
+            self._add_issue("", "All checks passed.")
             return
         for issue in issues:
-            marker = "[ERROR]" if issue.is_error else "[warn]"
-            row = QListWidgetItem(f"{marker} {issue.message}")
-            row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            self._issues_list.addItem(row)
+            self._add_issue("[ERROR]" if issue.is_error else "[warn]", issue.message)
 
-    def _selected_layer(self) -> QgsVectorLayer | None:
-        layer_id = self._layer_combo.currentData()
-        if not layer_id:
+    def _add_issue(self, marker: str, message: str) -> None:
+        row = QListWidgetItem(f"{marker} {message}".strip())
+        row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self._issues_list.addItem(row)
+
+    def _selected_choice(self) -> PublishChoice | None:
+        index = self._layer_combo.currentData()
+        if index is None or not isinstance(index, int):
             return None
-        layer = QgsProject.instance().mapLayer(layer_id)
-        if isinstance(layer, QgsVectorLayer):
-            return layer
+        if 0 <= index < len(self._choices):
+            return self._choices[index]
         return None
+
+    def _selected_vector_layer(self) -> QgsVectorLayer | None:
+        choice = self._selected_choice()
+        if choice is None or choice.kind != "vector":
+            return None
+        layer = QgsProject.instance().mapLayer(choice.layer_id)
+        return layer if isinstance(layer, QgsVectorLayer) else None
+
+    def _selected_file_path(self) -> str:
+        """The file behind the selection, for either raster route.
+
+        A project raster and a file picked from disk end up in the same
+        place, which is the point of the merge: past this line the two
+        are the same publish.
+        """
+        choice = self._selected_choice()
+        if choice is None or choice.kind == "vector":
+            return ""
+        return choice.file_path if os.path.isfile(choice.file_path) else ""
 
     # ----- Publish flow -----
 
     def _on_publish(self) -> None:
-        layer = self._selected_layer()
+        choice = self._selected_choice()
+        if choice is None:
+            QMessageBox.warning(self, "No layer selected", "Pick a layer to publish.")
+            return
+        if not choice.is_publishable:
+            QMessageBox.critical(self, "Cannot publish this layer", choice.reason)
+            return
+        if choice.kind != "vector":
+            self._publish_raster(choice)
+            return
+
+        layer = self._selected_vector_layer()
         if layer is None:
-            QMessageBox.warning(self, "No layer selected", "Pick a vector layer to publish.")
+            QMessageBox.warning(
+                self, "No layer selected", "That layer is no longer in the project."
+            )
             return
 
         profile_name = self._connection_combo.currentData()
@@ -290,6 +411,107 @@ class PublishVectorDialog(QDialog):
             description=description,
             access=access,
         ))
+
+    def _publish_raster(self, choice: PublishChoice) -> None:
+        """Hand a raster off to the tile-layer upload.
+
+        Both raster routes converge here: a layer already on the canvas
+        and a file chosen from disk differ only in how their path was
+        found. The upload itself is the raster dialog's pipeline, used
+        rather than reimplemented so the two cannot drift.
+        """
+        path = self._selected_file_path()
+        if not path:
+            QMessageBox.critical(
+                self,
+                "File not found",
+                "The file behind that layer is no longer on this computer.",
+            )
+            return
+        profile_name = self._connection_combo.currentData()
+        if not profile_name:
+            QMessageBox.warning(
+                self, "No connection selected", "Pick a signed-in connection."
+            )
+            return
+        profile = self._store.get(profile_name)
+        if profile is None or not profile.is_discovered:
+            QMessageBox.warning(
+                self, "Connection not ready", "Sign in to the connection first."
+            )
+            return
+
+        try:
+            size = os.path.getsize(path)
+        except OSError as e:
+            QMessageBox.critical(self, "File unreadable", str(e))
+            return
+        blocking = [
+            i
+            for i in validate_raster_upload(file_path=path, size_bytes=size)
+            if i.is_error
+        ]
+        if blocking:
+            QMessageBox.critical(
+                self,
+                "Validation failed",
+                "Fix the following before publishing:\n\n"
+                + "\n".join(f"- {i.message}" for i in blocking),
+            )
+            return
+
+        self._set_busy(True)
+        self._progress_bar.setVisible(True)
+        self._progress_label.setText("Uploading to portal...")
+        cleanup_notes: list[str] = []
+        title = self._title_input.text().strip() or choice.label
+
+        def pipeline(handle):
+            return run_raster_pipeline(
+                handle,
+                profile=profile,
+                file_path=path,
+                file_name=os.path.basename(path),
+                size=size,
+                title=title,
+                description=self._description_input.toPlainText().strip() or None,
+                access=self._access_combo.currentData() or "private",
+                needs_server_conversion=not path.lower().endswith(".pmtiles"),
+                cleanup_notes=cleanup_notes,
+            )
+
+        def done(outcome) -> None:
+            self._task = None
+            self._set_busy(False)
+            self._progress_bar.setVisible(False)
+            if self._closed:
+                return
+            QMessageBox.information(
+                self,
+                "Published",
+                f"Layer published successfully.\n\nItem id: {outcome.item_id}\n\n"
+                "Conversion runs on the portal and may take a few minutes.",
+            )
+            self.accept()
+
+        def failed(exc: BaseException) -> None:
+            self._task = None
+            self._set_busy(False)
+            self._progress_bar.setVisible(False)
+            _log.error("raster publish failed", exc_info=exc)
+            if self._closed:
+                return
+            extra = ("\n\n" + "\n".join(cleanup_notes)) if cleanup_notes else ""
+            QMessageBox.critical(
+                self, "Publish failed", f"{format_error(exc)}{extra}"
+            )
+
+        def progress(pct: float) -> None:
+            self._progress_bar.setValue(int(pct))
+
+        self._task = run_in_task(
+            "GratisGIS: publish raster", pipeline, done, failed, on_progress=progress
+        )
 
     def _start_publish(
         self,
@@ -644,6 +866,28 @@ def _delete_item_quietly(client: GratisGISClient, item_id: str) -> bool:
 # -----------------------------------------------------------
 # QGIS-side helpers
 # -----------------------------------------------------------
+
+
+def _raster_choice(layer: QgsRasterLayer, layer_id: str) -> PublishChoice:
+    """Describe a project raster: publishable, or why not.
+
+    The provider name is asked for rather than inferred, because a
+    tiled web service and a file on disk are told apart by which
+    provider is serving them, not by anything in the source string.
+    """
+    provider = ""
+    try:
+        provider = layer.dataProvider().name()
+    except Exception:
+        _log.debug("could not read the raster provider name", exc_info=True)
+    resolved = resolve_raster_source(layer.source(), provider)
+    return PublishChoice(
+        kind="raster",
+        label=layer.name(),
+        layer_id=layer_id,
+        file_path=resolved.file_path,
+        reason=resolved.reason,
+    )
 
 
 def _summary_from_layer(layer: QgsVectorLayer) -> LayerSummary:

@@ -609,7 +609,103 @@ def _run_checks() -> None:
         QgsProject.instance().clear()
         shutil.rmtree(clone_dir, ignore_errors=True)
 
-    print("\n[11] auth: the API Header method private layers depend on")
+    print("\n[11] the publish picker offers what is on the canvas")
+    # The complaint this answers: publishing a raster made you find the
+    # file on disk, when the thing you wanted to publish was already
+    # drawn on your map. Whether a real QgsRasterLayer's source can be
+    # traced back to its file is a question about the real bindings.
+    from qgis.core import QgsRasterFileWriter, QgsRasterPipe
+
+    from gratisgis_qgis.publish.source import resolve_raster_source
+    from gratisgis_qgis.ui.publish_vector_dialog import (
+        PublishLayerDialog,
+        _raster_choice,
+    )
+
+    raster_dir = tempfile.mkdtemp()
+    tif_path = os.path.join(raster_dir, "aerial.tif")
+    try:
+        # A real GeoTIFF on disk, written the way QGIS writes one.
+        seed = QgsRasterLayer(
+            uris.tile_layer_xyz_uri("https://example.test", "seed"), "seed", "wms"
+        )
+        writer = QgsRasterFileWriter(tif_path)
+        pipe = QgsRasterPipe()
+        made = False
+        if seed.isValid() and pipe.set(seed.dataProvider().clone()):
+            writer.writeRaster(
+                pipe, 8, 8, seed.extent(), seed.crs()
+            )
+            made = os.path.isfile(tif_path)
+        if not made:
+            # Writing through the network provider is not the point of
+            # the check; a plain file is enough to trace a path back.
+            with open(tif_path, "wb") as fh:
+                fh.write(b"stand-in raster bytes")
+
+        file_layer = QgsRasterLayer(tif_path, "aerial", "gdal")
+        check(
+            "a file raster's source traces back to its file",
+            lambda: _assert(
+                resolve_raster_source(
+                    file_layer.source(),
+                    file_layer.dataProvider().name() if file_layer.isValid() else "gdal",
+                ).file_path
+                == tif_path,
+                f"did not resolve: {file_layer.source()!r}",
+            ),
+        )
+
+        service_layer = QgsRasterLayer(
+            uris.tile_layer_xyz_uri("https://example.test", "item-1"),
+            "streamed",
+            "wms",
+        )
+        streamed = _raster_choice(service_layer, "L-service")
+        check(
+            "a streamed raster is refused, with a reason",
+            lambda: _assert(
+                not streamed.is_publishable and bool(streamed.reason),
+                f"expected a refusal, got {streamed!r}",
+            ),
+        )
+        check(
+            "and the reason says how to fix it",
+            lambda: _assert(
+                "export" in streamed.reason.lower(),
+                f"unhelpful wording: {streamed.reason!r}",
+            ),
+        )
+
+        QgsProject.instance().addMapLayer(file_layer)
+        QgsProject.instance().addMapLayer(service_layer)
+        combo = _CollectingCombo()
+        state = SimpleNamespace(_layer_combo=combo, _choices=[], _preselect_layer_id=None)
+        PublishLayerDialog._populate_layer_combo(state)
+        labels = [text for text, _ in combo.items]
+        check(
+            "both rasters are listed rather than one silently missing",
+            lambda: _assert(
+                any(t.startswith("aerial") for t in labels)
+                and any(t.startswith("streamed") for t in labels),
+                f"picker offered {labels!r}",
+            ),
+        )
+        check(
+            "the unpublishable one is marked as such",
+            lambda: _assert(
+                any(
+                    t.startswith("streamed") and "cannot be published" in t
+                    for t in labels
+                ),
+                f"no marker on the streamed layer: {labels!r}",
+            ),
+        )
+    finally:
+        QgsProject.instance().clear()
+        shutil.rmtree(raster_dir, ignore_errors=True)
+
+    print("\n[12] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
     method = check("find_api_header_method()", find_api_header_method)
@@ -637,11 +733,17 @@ class _CollectingCombo:
     def addItem(self, text: str, userData: object = None) -> None:  # Qt API name
         self.items.append((text, userData))
 
+    def clear(self) -> None:  # Qt API name
+        self.items.clear()
+
     def count(self) -> int:  # Qt API name
         return len(self.items)
 
     def setEnabled(self, value: bool) -> None:  # Qt API name
         self.enabled = value
+
+    def setCurrentIndex(self, index: int) -> None:  # Qt API name
+        self.current = index
 
 
 def _run_one_task() -> None:

@@ -49,6 +49,7 @@ class GratisGISPlugin(QObject):
         self._actions: list[QAction] = []
         self._browser_provider: QgsDataItemProvider | None = None
         self._search_dock: GratisGISSearchDock | None = None
+        self._toolbar = None
         # Typed as object so the annotation needs no QGIS-only import
         # at plugin-discovery time; see the lazy import in initGui.
         self._extent_applier: object | None = None
@@ -57,52 +58,42 @@ class GratisGISPlugin(QObject):
     # ----- QGIS hooks -----
 
     def initGui(self) -> None:  # QGIS API name
-        """Wire up menu and toolbar actions when the plugin is enabled."""
+        """Wire up the toolbar, menu and browser provider."""
         icon = _load_icon()
-        manage_action = QAction(icon, "Manage GratisGIS connections...", self._iface.mainWindow())
-        manage_action.triggered.connect(self._on_manage_connections)
-        self._iface.addPluginToMenu(self.PLUGIN_NAME, manage_action)
-        self._actions.append(manage_action)
 
-        search_action = QAction(icon, "Open GratisGIS search...", self._iface.mainWindow())
-        search_action.triggered.connect(self._on_open_search)
-        self._iface.addPluginToMenu(self.PLUGIN_NAME, search_action)
-        self._actions.append(search_action)
+        # A toolbar of its own rather than only a menu. Menu entries are
+        # several clicks deep and give no room to group anything; a
+        # toolbar puts the common actions one click away and leaves
+        # somewhere obvious to hang related ones as the plugin grows.
+        #
+        # setObjectName is load bearing, not decoration: QGIS saves and
+        # restores toolbar geometry by object name, and warns on every
+        # start about a toolbar that has none.
+        self._toolbar = self._iface.addToolBar(self.PLUGIN_NAME)
+        self._toolbar.setObjectName("GratisGISToolbar")
+        self._toolbar.setToolTip("GratisGIS")
 
-        publish_layer_action = QAction(
-            icon, "Publish vector layer to GratisGIS...", self._iface.mainWindow()
+        # Order is the order of use: connect, find something, then act
+        # on it. The separators group those three phases.
+        self._add_action(
+            icon, "Manage GratisGIS connections...", self._on_manage_connections
         )
-        publish_layer_action.triggered.connect(self._on_publish_vector)
-        self._iface.addPluginToMenu(self.PLUGIN_NAME, publish_layer_action)
-        self._actions.append(publish_layer_action)
+        self._add_action(icon, "Open GratisGIS search...", self._on_open_search)
+        self._toolbar.addSeparator()
 
-        push_edits_action = QAction(
-            icon, "Sync layer with GratisGIS...", self._iface.mainWindow()
+        self._add_action(
+            icon, "Publish layer to GratisGIS...", self._on_publish_vector
         )
-        push_edits_action.triggered.connect(self._on_push_edits)
-        self._iface.addPluginToMenu(self.PLUGIN_NAME, push_edits_action)
-        self._actions.append(push_edits_action)
+        self._add_action(
+            icon, "Publish current project as GratisGIS map...",
+            self._on_publish_project,
+        )
+        self._toolbar.addSeparator()
 
-        publish_raster_action = QAction(
-            icon, "Publish raster / tile layer to GratisGIS...", self._iface.mainWindow()
+        self._add_action(
+            icon, "Clone layer for offline use...", self._on_clone_offline
         )
-        publish_raster_action.triggered.connect(self._on_publish_raster)
-        self._iface.addPluginToMenu(self.PLUGIN_NAME, publish_raster_action)
-        self._actions.append(publish_raster_action)
-
-        clone_action = QAction(
-            icon, "Clone layer for offline use...", self._iface.mainWindow()
-        )
-        clone_action.triggered.connect(self._on_clone_offline)
-        self._iface.addPluginToMenu(self.PLUGIN_NAME, clone_action)
-        self._actions.append(clone_action)
-
-        publish_action = QAction(
-            icon, "Publish current project as GratisGIS map...", self._iface.mainWindow()
-        )
-        publish_action.triggered.connect(self._on_publish_project)
-        self._iface.addPluginToMenu(self.PLUGIN_NAME, publish_action)
-        self._actions.append(publish_action)
+        self._add_action(icon, "Sync layer with GratisGIS...", self._on_push_edits)
 
         # Phase 1: register the Browser-panel data item provider so
         # configured connections show up as a "GratisGIS" subtree
@@ -126,6 +117,21 @@ class GratisGISPlugin(QObject):
         self._extent_applier.install()
         _log.debug("initGui: menu actions + browser provider registered")
 
+    def _add_action(self, icon, label: str, handler) -> None:
+        """Put one action on both the toolbar and the Plugins menu.
+
+        Both, deliberately. The toolbar is faster once you know the
+        plugin; the menu is where someone looks the first time, and is
+        the only one of the two a user cannot accidentally hide.
+        """
+        action = QAction(icon, label, self._iface.mainWindow())
+        action.triggered.connect(handler)
+        action.setToolTip(label.rstrip("."))
+        self._iface.addPluginToMenu(self.PLUGIN_NAME, action)
+        if self._toolbar is not None:
+            self._toolbar.addAction(action)
+        self._actions.append(action)
+
     def unload(self) -> None:
         """Tear down menu and toolbar actions when the plugin is disabled
         or reloaded.
@@ -133,6 +139,12 @@ class GratisGISPlugin(QObject):
         for action in self._actions:
             self._iface.removePluginMenu(self.PLUGIN_NAME, action)
         self._actions.clear()
+        if self._toolbar is not None:
+            # Deleted, not just emptied: a reload would otherwise leave
+            # the old toolbar behind and add a second one beside it,
+            # which is the classic way a plugin ends up with five.
+            self._toolbar.deleteLater()
+            self._toolbar = None
         if self._browser_provider is not None:
             QgsApplication.dataItemProviderRegistry().removeProvider(self._browser_provider)
             self._browser_provider = None
@@ -190,9 +202,9 @@ class GratisGISPlugin(QObject):
 
     def _on_publish_vector(self) -> None:
         """Open the Publish-vector-layer dialog (Phase 3)."""
-        from .ui.publish_vector_dialog import PublishVectorDialog
+        from .ui.publish_vector_dialog import PublishLayerDialog
 
-        dlg = PublishVectorDialog(self._iface, self._iface.mainWindow())
+        dlg = PublishLayerDialog(self._iface, self._iface.mainWindow())
         dlg.exec()
 
     def _on_push_edits(self) -> None:

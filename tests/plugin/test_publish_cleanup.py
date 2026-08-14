@@ -73,6 +73,7 @@ def vector_dialog_mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
                 "QgsCoordinateReferenceSystem": type("QgsCoordinateReferenceSystem", (), {}),
                 "QgsCoordinateTransformContext": type("QgsCoordinateTransformContext", (), {}),
                 "QgsProject": type("QgsProject", (), {}),
+                    "QgsRasterLayer": type("QgsRasterLayer", (), {}),
                 "QgsVectorFileWriter": type("QgsVectorFileWriter", (), {}),
                 "QgsVectorLayer": type("QgsVectorLayer", (), {}),
                 "QgsWkbTypes": type("QgsWkbTypes", (), {}),
@@ -131,7 +132,7 @@ class TestRasterPipelineCleanup:
         monkeypatch.setattr(mod, "get_client", lambda _profile: client)
         notes: list[str] = []
         with pytest.raises(expect) as excinfo:
-            mod._publish_pipeline(
+            mod.run_raster_pipeline(
                 handle if handle is not None else InlineTaskHandle(),
                 profile=SimpleNamespace(name="demo", verify_tls=True),
                 file_path="/tmp/dem.tif",
@@ -305,7 +306,7 @@ class TestPollErrorReset:
             _progress_label=_FakeLabel(),
             _set_busy=busy_calls.append,
         )
-        vector_dialog_mod.PublishVectorDialog._reset_after_poll_error(fake, "boom")
+        vector_dialog_mod.PublishLayerDialog._reset_after_poll_error(fake, "boom")
 
         assert fake._current_job is None
         assert fake._current_item_id is None
