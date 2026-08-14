@@ -275,7 +275,7 @@ def _run_checks() -> None:
     import shutil
     import tempfile
 
-    from qgis.core import QgsCoordinateTransformContext, QgsVectorFileWriter
+    from qgis.core import QgsCoordinateTransformContext
 
     from gratisgis_qgis.offline.clone import safe_write_path, source_targets_file
     from gratisgis_qgis.ui.clone_dialog import _project_layers_using
