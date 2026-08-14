@@ -13,6 +13,7 @@ Two layers of coverage:
 """
 from __future__ import annotations
 
+import enum
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -362,6 +363,58 @@ class TestQgsTaskPath:
 
         run_in_task("t", lambda h: 1, bad_done, lambda exc: None)
         assert not tasks._active_tasks
+
+
+class TestCancelFlags:
+    """Regression cover for the crash that reached a user.
+
+    QGIS 4 / PyQt6 type-checks the QgsTask flags argument and rejects a
+    plain ``int`` with "argument 2 has unexpected type 'int'". The
+    original code returned a bare ``0`` whenever the flag value was an
+    ``int`` instance, on the theory that only PyQt5 exposed ints. Qt6
+    flag enums subclass ``int`` too, so that branch fired on exactly the
+    binding it was supposed to protect, and every sign-in crashed.
+
+    The stub suite could not catch it (a fabricating stub accepts any
+    type), so these tests model both real binding shapes directly. The
+    complementary check against a real QGIS lives in
+    ``scripts/qgis_smoke.py``.
+    """
+
+    class _Pyqt6Task:
+        """PyQt6 shape: scoped Flag enum whose members subclass int."""
+
+        class Flag(enum.IntFlag):
+            CanCancel = 2
+            Hidden = 4
+
+        Flags = Flag
+
+    class _Pyqt5Task:
+        """PyQt5 shape: class-level int constants, no scoped holder."""
+
+        CanCancel = 2
+
+    def test_pyqt6_non_cancelable_is_not_a_bare_int(self) -> None:
+        flags = tasks._cancel_flags(self._Pyqt6Task, False)
+        # The exact assertion the shipped bug violated. `type(...) is
+        # not int` rather than `not isinstance(...)`: an IntFlag member
+        # IS an int instance, and that is precisely the value PyQt6
+        # accepts, so isinstance would reject the correct answer.
+        assert type(flags) is not int
+        assert isinstance(flags, self._Pyqt6Task.Flag)
+        assert not flags  # no flags set
+
+    def test_pyqt6_cancelable_carries_the_flag(self) -> None:
+        flags = tasks._cancel_flags(self._Pyqt6Task, True)
+        assert type(flags) is not int
+        assert flags & self._Pyqt6Task.Flag.CanCancel
+
+    def test_pyqt5_shape_still_resolves(self) -> None:
+        assert tasks._cancel_flags(self._Pyqt5Task, True) == 2
+        # No scoped Flags holder and int constants: falling back to a
+        # plain zero is correct here, because that binding wants one.
+        assert tasks._cancel_flags(self._Pyqt5Task, False) == 0
 
 
 class TestFormatError:

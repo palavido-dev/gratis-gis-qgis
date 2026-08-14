@@ -236,18 +236,36 @@ class _QgsTaskHandle:
 def _cancel_flags(qgs_task_cls: Any, cancelable: bool) -> Any:
     """Flags value for the QgsTask constructor across QGIS 3 and 4.
 
-    QGIS 3 exposes ``QgsTask.CanCancel`` as a class attribute; QGIS 4
-    under strict PyQt6 only has the scoped ``QgsTask.Flag.CanCancel``.
-    The zero value ("no flags") also differs: PyQt6 needs a Flag
-    instance while PyQt5 accepts a plain int.
+    Never return a bare ``int``. PyQt6 type-checks this argument
+    strictly and rejects ``0`` with "argument 2 has unexpected type
+    'int'", which is a plugin-load-visible crash on the first task.
+    An earlier version guarded that with ``isinstance(can_cancel, int)``
+    on the theory that only PyQt5 exposed ints, but Qt6 flag enums
+    subclass ``int`` too, so the guard fired on exactly the build it was
+    meant to protect. Probed against QGIS 4.0.2 / PyQt6: ``Flags()``,
+    ``Flags(0)`` and ``type(CanCancel)(0)`` are all accepted, a raw
+    ``CanCancel`` is accepted, and both ``0`` and ``CanCancel &
+    ~CanCancel`` (which also collapses to a plain int) are rejected.
     """
     holder = getattr(qgs_task_cls, "Flag", qgs_task_cls)
     can_cancel = holder.CanCancel
     if cancelable:
         return can_cancel
-    if isinstance(can_cancel, int):
-        return 0
-    return type(can_cancel)(0)
+    # Prefer the QFlags wrapper: it is the declared parameter type on
+    # both bindings. Fall back to the flag enum's own zero, then to a
+    # plain int for any binding old enough to want one.
+    flags_cls = getattr(qgs_task_cls, "Flags", None)
+    for build in (
+        (lambda: flags_cls()) if flags_cls is not None else None,
+        lambda: type(can_cancel)(0),
+    ):
+        if build is None:
+            continue
+        try:
+            return build()
+        except Exception:  # pragma: no cover - binding-specific
+            continue
+    return 0  # pragma: no cover - no known binding reaches this
 
 
 def _build_fn_task_cls() -> type:
