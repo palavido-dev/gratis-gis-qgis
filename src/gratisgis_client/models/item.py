@@ -116,7 +116,11 @@ class ItemSummary:
     tags: list[str] = field(default_factory=list)
     access: ItemSharingScope
     owner_id: str
+    #: Human-readable owner, lifted out of the portal's nested `owner`
+    #: object. The portal has never sent a flat `ownerUsername`, so
+    #: anything reading that alone fell back to showing a raw UUID.
     owner_username: str | None = None
+    owner_full_name: str | None = None
     org_id: str
     folder_id: str | None = None
     thumbnail_url: str | None = None
@@ -142,13 +146,37 @@ class ItemSummary:
             "tags": list(self.tags),
             "access": self.access,
             "ownerId": self.owner_id,
-            "ownerUsername": self.owner_username,
+            # Emit the nested shape the portal itself uses so a
+            # round-tripped payload still parses through from_api.
+            "owner": {
+                "id": self.owner_id,
+                "username": self.owner_username,
+                "fullName": self.owner_full_name,
+            },
             "orgId": self.org_id,
             "folderId": self.folder_id,
             "thumbnailUrl": self.thumbnail_url,
             "createdAt": self.created_at.isoformat(),
             "updatedAt": self.updated_at.isoformat(),
         }
+
+
+def _owner_field(data: dict[str, Any], key: str) -> str | None:
+    """Read one field out of the portal's nested ``owner`` object.
+
+    The portal ships ``owner: {id, username, fullName, avatarUrl}`` on
+    both the list and the single-item read. It has never emitted a flat
+    ``ownerUsername``, so the flat lookup this replaced always missed
+    and every owner rendered as a bare UUID. The flat spelling is still
+    accepted as a fallback in case a future payload adds it.
+    """
+    owner = data.get("owner")
+    if isinstance(owner, dict):
+        value = owner.get(key)
+        if isinstance(value, str) and value:
+            return value
+    flat = data.get(f"owner{key[0].upper()}{key[1:]}")
+    return flat if isinstance(flat, str) and flat else None
 
 
 def _summary_kwargs(data: dict[str, Any]) -> dict[str, Any]:
@@ -166,7 +194,8 @@ def _summary_kwargs(data: dict[str, Any]) -> dict[str, Any]:
         "tags": str_list(data, "tags"),
         "access": _sharing_scope(data),
         "owner_id": req_str(data, "ownerId"),
-        "owner_username": opt_str(data, "ownerUsername"),
+        "owner_username": _owner_field(data, "username"),
+        "owner_full_name": _owner_field(data, "fullName"),
         "org_id": req_str(data, "orgId"),
         "folder_id": opt_str(data, "folderId"),
         "thumbnail_url": opt_str(data, "thumbnailUrl"),

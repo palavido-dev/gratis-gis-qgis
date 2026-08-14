@@ -134,6 +134,26 @@ class ItemPropertiesDialog(QDialog):
         )
 
 
+def _owner_label(payload: dict[str, Any]) -> str:
+    """Render the owner as a person, not a UUID.
+
+    The portal ships ``owner: {id, username, fullName, avatarUrl}``.
+    This used to read a flat ``ownerUsername`` that the portal has
+    never sent, so it always fell through to the raw UUID. Prefers the
+    full name with the username in brackets, since the username is what
+    someone would search the portal by, and keeps the id as the last
+    resort for an owner whose account is gone.
+    """
+    owner = payload.get("owner")
+    username = full_name = ""
+    if isinstance(owner, dict):
+        username = str(owner.get("username") or "")
+        full_name = str(owner.get("fullName") or "")
+    if full_name and username:
+        return f"{full_name} ({username})"
+    return full_name or username or str(payload.get("ownerId") or "")
+
+
 def _render_item(payload: dict[str, Any], dlg: ItemPropertiesDialog) -> None:
     """Fill the dialog widgets from the fetched item envelope.
 
@@ -150,7 +170,7 @@ def _render_item(payload: dict[str, Any], dlg: ItemPropertiesDialog) -> None:
     tags = payload.get("tags") or []
     created = payload.get("createdAt") or ""
     updated = payload.get("updatedAt") or ""
-    owner = payload.get("ownerUsername") or payload.get("ownerId") or ""
+    owner = _owner_label(payload)
 
     dlg._title.setText(title)
     dlg._type_row.setText(f"Type: {type_}")
