@@ -397,6 +397,91 @@ class _SignInOutcome:
     """User-presentable reason when minting failed; empty otherwise."""
 
 
+@dataclass(frozen=True)
+class SignInFailure:
+    """What the GUI should do about a sign-in that did not complete.
+
+    Split out of the failure callback so the decisions can be tested
+    without a Qt event loop, a browser round trip, or a message box.
+    What gets persisted after a failed sign-in is the part that carries
+    risk: leaving a reserved authcfg behind shows a connection as
+    "[signed in]" when it is not, and clearing one that was already
+    valid signs the user out for choosing Cancel.
+
+    ``level`` is "none", "warning" or "critical". "none" is the
+    cancelled case: the user asked for it, so telling them it failed
+    would be reporting their own click back at them as an error.
+    """
+
+    level: str
+    title: str
+    text: str
+    clear_authcfg: bool
+    log_unexpected: bool
+
+
+def plan_sign_in_failure(
+    exc: BaseException, *, clear_authcfg_on_failure: bool
+) -> SignInFailure:
+    """Decide how a failed sign-in should be reported and cleaned up.
+
+    The authcfg is cleared on every failure including cancellation,
+    which is deliberate and easy to get backwards. The flag is set only
+    when the id was reserved for THIS attempt, on a connection that has
+    never signed in; a cancelled first attempt must not leave a
+    connection looking signed in. It is not set when re-signing in to a
+    connection that already has a session, where clearing would turn a
+    cancelled refresh into an unwanted sign-out.
+    """
+    if isinstance(exc, TaskCancelledError):
+        return SignInFailure(
+            level="none",
+            title="",
+            text="",
+            clear_authcfg=clear_authcfg_on_failure,
+            log_unexpected=False,
+        )
+    if isinstance(exc, AuthError):
+        return SignInFailure(
+            level="warning",
+            title="Sign-in failed",
+            text=str(exc),
+            clear_authcfg=clear_authcfg_on_failure,
+            log_unexpected=False,
+        )
+    return SignInFailure(
+        level="critical",
+        title="Sign-in error",
+        text=str(exc),
+        clear_authcfg=clear_authcfg_on_failure,
+        log_unexpected=True,
+    )
+
+
+def resolve_sign_in(
+    profile: ConnectionProfile,
+    outcome: _SignInOutcome,
+    method_key: str | None,
+) -> tuple[ConnectionProfile, str | None]:
+    """The profile to save after a successful sign-in, and any warning.
+
+    Composes the two steps the success callback used to run inline:
+    stamping the token's ``sub`` claim onto the profile, then storing
+    the minted layer key. Extracted so the composition is testable at
+    all; as a closure inside ``_run_pkce_sign_in`` nothing could reach
+    it without a browser round trip.
+
+    The order of the two is not load bearing, which is worth saying
+    because it looks as though it should be. Both steps copy the
+    profile with ``replace``, so each preserves what the other set.
+    That holds only as long as neither starts building a
+    ``ConnectionProfile`` from scratch, which is the property
+    ``test_the_user_id_survives_the_layer_key_step`` guards.
+    """
+    updated = _with_user_id(profile, outcome.tokens)
+    return _apply_layer_key(updated, outcome, method_key)
+
+
 def _revoke_layer_key_then(
     profile: ConnectionProfile, continuation: Callable[[], None]
 ) -> None:
@@ -625,8 +710,7 @@ def _run_pkce_sign_in(
         return _SignInOutcome(tokens=tokens, minted=minted, mint_error=mint_error)
 
     def done(outcome: _SignInOutcome) -> None:
-        updated = _with_user_id(profile, outcome.tokens)
-        updated, warn_line = _apply_layer_key(updated, outcome, api_header_method)
+        updated, warn_line = resolve_sign_in(profile, outcome, api_header_method)
         store.save(updated)
         progress.finish()
         if warn_line:
@@ -634,15 +718,19 @@ def _run_pkce_sign_in(
         on_finished(True)
 
     def failed(exc: BaseException) -> None:
+        # Every decision here is made by plan_sign_in_failure, which is
+        # testable; this half only carries them out.
+        plan = plan_sign_in_failure(
+            exc, clear_authcfg_on_failure=clear_authcfg_on_failure
+        )
         progress.finish()
-        if isinstance(exc, TaskCancelledError):
-            pass  # The user asked for it; no error surface.
-        elif isinstance(exc, AuthError):
-            QMessageBox.warning(parent, "Sign-in failed", str(exc))
-        else:
+        if plan.log_unexpected:
             _log.error("Unexpected sign-in error", exc_info=exc)
-            QMessageBox.critical(parent, "Sign-in error", str(exc))
-        if clear_authcfg_on_failure:
+        if plan.level == "warning":
+            QMessageBox.warning(parent, plan.title, plan.text)
+        elif plan.level == "critical":
+            QMessageBox.critical(parent, plan.title, plan.text)
+        if plan.clear_authcfg:
             store.save(_clear_authcfg(profile))
         on_finished(False)
 
