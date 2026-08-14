@@ -39,6 +39,15 @@ jobs:
       - name: Pytest
         run: python -m pytest tests/ -q
 
+      # Line coverage says how much code ran; this asks whether
+      # anything builds a surface at all. ConnectionItem sat at 68%
+      # coverage having never once been constructed, and shipped a bug
+      # that served private layers to a signed-out user. Ratchets
+      # against scripts/untested_baseline.txt: new gaps fail, and so
+      # does a baseline entry that has since been covered.
+      - name: Untested surfaces
+        run: python scripts/untested_audit.py
+
       - name: Build plugin zip
         run: python scripts/make_zip.py
 

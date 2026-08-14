@@ -1,0 +1,20 @@
+# Public classes with nothing in tests/ or scripts/ naming them.
+#
+# This list may only shrink. scripts/untested_audit.py fails the
+# build when something new appears here, and also when an entry
+# here has since been covered, so that the debt stays honest
+# rather than quietly becoming permanent.
+#
+# Regenerate with: python scripts/untested_audit.py --update-baseline
+src/gratisgis_qgis/auth_bridge.py::QgisAuthManagerTokenStorage
+src/gratisgis_qgis/browser/items.py::GenericItem
+src/gratisgis_qgis/browser/items.py::RootItem
+src/gratisgis_qgis/browser/items.py::ServiceItem
+src/gratisgis_qgis/plugin.py::GratisGISPlugin
+src/gratisgis_qgis/publish/source.py::PublishChoice
+src/gratisgis_qgis/publish/source.py::RasterSource
+src/gratisgis_qgis/tasks.py::TaskController
+src/gratisgis_qgis/ui/connection_dialog.py::ConnectionManagerDialog
+src/gratisgis_qgis/ui/item_properties_dialog.py::ItemPropertiesDialog
+src/gratisgis_qgis/ui/publish_project_dialog.py::PublishProjectDialog
+src/gratisgis_qgis/ui/search_dock.py::GratisGISSearchDock
