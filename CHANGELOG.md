@@ -7,6 +7,30 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.8] - 2026-08-14
+
+### Fixed
+
+- **Cloning a layer for offline use produced an empty file, and the
+  dialog could not see most layers anyway.** Two separate faults. The
+  layer list only recognised the plain-table shape, so ordinary spatial
+  layers (which arrive as vector tiles) were never offered at all and
+  the dropdown read "no portal-backed layers in project". And the write
+  itself staged into a placeholder file that the GeoPackage writer
+  could not create over, so even a recognised layer wrote nothing. Both
+  are fixed, and the write is still safe: a failed clone cannot damage
+  an existing copy.
+
+### Added
+
+- **Offline clones can now be pushed back to the portal.** A clone
+  records which portal layer it came from, inside the GeoPackage
+  itself, so it still knows where it belongs after being moved or
+  emailed. Edit the offline copy, then Push edits sends the changes to
+  the original. Layers added from the browser tree draw as vector
+  tiles, which QGIS cannot edit, so cloning is now the supported way to
+  edit portal data and the push dialog says so.
+
 ## [0.2.7] - 2026-08-14
 
 ### Fixed

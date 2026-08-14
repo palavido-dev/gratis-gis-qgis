@@ -12,7 +12,7 @@ Everything here targets the public demo at https://gratisgis.org.
 ## Before you start
 
 1. **Check the version.** `Plugins > Manage and Install Plugins >
-   Installed`, find GratisGIS. It should read **0.2.5**.
+   Installed`, find GratisGIS. It should read **0.2.8**.
 2. **Check you are signed in.** `Plugins > GratisGIS > Manage GratisGIS
    connections...`. The row should show the portal and a signed-in
    state. If anything later fails with "Your session has expired",
@@ -119,11 +119,18 @@ confirm pre-flight blocks it with "Layer has no CRS defined."
 
 ## Test 4. Clone a layer for offline use (5 min)
 
+Test 5 builds directly on this one, so do them together if you can.
+
 1. First put a portal data layer on the canvas: Browser tree >
    `Org Content > Data layers`, expand **Trails**, drag its sublayer to
    the canvas. *(Trails is small, 43 features.)*
 2. `Plugins > GratisGIS > Clone layer for offline use...`
 3. **Layer:** pick the Trails layer. **Portal:** your connection.
+   *(Any layer from the tree qualifies now. This is the fix worth
+   confirming: the dropdown used to say `(no portal-backed layers in
+   project)` for anything spatial, because spatial sublayers arrive as
+   vector tiles and the dialog only recognised the plain-table
+   shape.)*
 4. Click **Choose directory...**, pick anywhere writable.
 5. **File name** auto-fills. Leave it. Do not type `.gpkg`, it is added
    for you.
@@ -139,23 +146,32 @@ called **"Trails (offline)"** that draws.
    it now writes to a temp file and swaps, so a failure cannot destroy
    the old copy.)*
 
+**Keep the "Trails (offline)" layer in your project.** Test 5 edits it.
+
 ---
 
-## Test 5. Push edits (10 min, trickiest)
+## Test 5. Push edits from an offline clone (10 min, trickiest)
 
 Read the setup carefully. The dialog only accepts a specific kind of
 layer, and only while edits are **unsaved**.
 
+The round trip is: clone a portal layer (Test 4), edit the clone, push
+the clone's edits back to the portal item it came from. The clone knows
+where it came from because the plugin records the portal, item and
+layer inside the GeoPackage itself, so a clone you moved or emailed
+still pushes to the right place.
+
 ### Setup that actually qualifies
 
-1. Add a data layer **from the Browser tree or Search panel** (not from
-   QGIS's own OGC API dialog). Use your `qgis_test` item from Test 3,
-   or Trails.
-   - It must be the **OAPIF** sublayer, the one QGIS lists as a plain
-     vector layer. If you dragged a spatial sublayer you may have got a
-     vector-tile layer instead, which cannot be edited. If the push
-     dialog does not list your layer, this is why.
-2. Click the **pencil** to toggle editing on that layer.
+1. Do **Test 4** first. Edit the **"Trails (offline)"** layer it
+   produced, not the layer you cloned FROM.
+   - The layer you dragged out of the Browser tree draws as vector
+     tiles, which QGIS cannot edit at all. It will not appear in this
+     dialog's dropdown, and the dialog says so.
+   - A **non-spatial** table added from the tree (a plain vector layer,
+     not vector tiles) is the other thing that qualifies. Editing that
+     one live is the alternative to cloning.
+2. Click the **pencil** to toggle editing on the offline layer.
 3. Make a few edits: move a vertex, change an attribute, add a feature,
    delete one.
 4. **Do NOT click Save Edits.** The dialog reads QGIS's pending edit
@@ -164,7 +180,7 @@ layer, and only while edits are **unsaved**.
 ### Push
 
 5. `Plugins > GratisGIS > Push edits to GratisGIS...`
-6. **Layer:** your edited layer. **Portal:** your connection.
+6. **Layer:** `Trails (offline)`. **Portal:** your connection.
 7. Read the summary line: `N create(s), N update(s), N delete(s);
    N skipped.` and the operations list.
 8. Click **Push**.
@@ -175,11 +191,10 @@ layer, and only while edits are **unsaved**.
 9. **Verify:** open the item in the portal (or refresh the Browser tree
    and re-add the layer) and confirm your edits are there.
 
-**Known gap, do not report as a bug:** you cannot push edits from the
-**offline clone** made in Test 4. The clone is a GeoPackage on disk, and
-this dialog only accepts live portal layers, so the clone will not
-appear in the Layer dropdown. Round-tripping an offline edit is a real
-missing feature, not a defect.
+**Worth trying deliberately:** open the dialog with only a vector-tile
+layer in the project. The dropdown should read `(no editable portal
+layers in project)` and the dialog should explain that tree layers are
+read only and point you at the clone flow.
 
 ---
 
@@ -270,7 +285,9 @@ That is enough for me to reproduce almost anything without guessing.
 
 ## Known gaps (expected, not bugs)
 
-- **Offline clones cannot be pushed back.** See Test 5.
+- **Layers added from the Browser tree cannot be edited in place.**
+  Spatial data draws as vector tiles, which QGIS treats as a read-only
+  rendering format. Clone it (Test 4) and edit the clone (Test 5).
 - **Private non-spatial tables do not draw.** Tables with no geometry
   render through a public-only surface, so a private one lists but
   stays empty. Clone it to work with it.
