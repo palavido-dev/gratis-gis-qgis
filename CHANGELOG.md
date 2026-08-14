@@ -7,6 +7,16 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.5.1] - 2026-08-14
+
+### Fixed
+
+- **A message described a checkbox that is not there yet.** The reason
+  shown for a layer that is not on the portal told you to tick
+  "Publish it too", while the row carries a button and no checkbox.
+  The wording now describes the button that exists. The checkbox is
+  coming, and the text will change when it does, not before.
+
 ## [0.5.0] - 2026-08-14
 
 ### Fixed

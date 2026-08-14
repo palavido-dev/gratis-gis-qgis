@@ -630,14 +630,13 @@ def _skip_reason(layer: CanvasLayer) -> str:
     if p in ("wms", "wmts", "wfs", "arcgisfeatureserver", "arcgismapserver"):
         return (
             "This layer comes from an outside service that the portal "
-            "does not know about yet. Tick 'Publish it too' to add it, "
-            "or add it to the portal first."
+            "does not know about yet. Use the button to add it, then "
+            "publish this map again."
         )
     if p in ("ogr", "memory", "delimitedtext", "gpx", "spatialite", "gdal"):
         return (
-            "This layer is only on your computer. Tick 'Publish it too' "
-            "and it will be added to the portal as part of publishing "
-            "this map."
+            "This layer is only on your computer. Use the button to add "
+            "it to the portal, then publish this map again."
         )
     return (
         "The plugin does not know how to put this kind of layer on a "

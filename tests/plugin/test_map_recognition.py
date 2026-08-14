@@ -164,6 +164,23 @@ class TestLayersKnownByOrigin:
         assert result.skipped[0].is_local_vector
         assert "only on your computer" in result.skipped[0].reason
 
+    def test_the_reason_describes_a_control_that_exists(self) -> None:
+        # Copy written ahead of the UI is its own bug: this text said
+        # to tick "Publish it too" while the row carried a button and
+        # no checkbox. Whatever it names has to be on screen.
+        snap = _snapshot(
+            CanvasLayer(
+                name="roads",
+                source_uri="C:/work/roads.shp",
+                provider="ogr",
+                visible=True,
+            ),
+            CanvasLayer(name="wms", source_uri="x", provider="wms", visible=True),
+        )
+        for skipped in translate(snap).skipped:
+            assert "tick" not in skipped.reason.lower()
+            assert "checkbox" not in skipped.reason.lower()
+
 
 class TestSkipReasonsAvoidJargon:
     """These are read by someone publishing a map, not debugging QGIS."""
