@@ -10,8 +10,11 @@ a file against the baseline it was cloned with.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
+from gratisgis_qgis.edit.sync import EditedFeature, SyncOpKind
 from gratisgis_qgis.offline.sync_state import (
     BaselineEntry,
     LocalFeature,
@@ -30,7 +33,7 @@ def _local(
     attr: str = "a",
     geom: str = "g",
     fid: int | None = 1,
-    properties: dict | None = None,
+    properties: dict[str, Any] | None = None,
 ) -> LocalFeature:
     return LocalFeature(
         qgis_fid=fid,
@@ -122,9 +125,7 @@ class TestPlanLocalChanges:
 
 
 class TestConflicts:
-    def _changes(self, kind: str, portal_id: str):
-        from gratisgis_qgis.edit.sync import EditedFeature
-
+    def _changes(self, kind: SyncOpKind, portal_id: str) -> list[EditedFeature]:
         return [EditedFeature(kind=kind, portal_id=portal_id, qgis_fid=1)]
 
     def test_no_conflict_when_the_portal_has_not_moved(self) -> None:
