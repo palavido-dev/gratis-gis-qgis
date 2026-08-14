@@ -43,6 +43,7 @@ from gratisgis_client.models.item import ItemSummary
 from ..log import get_logger
 from ..portal import get_item, list_items
 from ..qgis_compat import resolve_enum
+from ..raster_auth import configure_gdal_auth
 from ..settings import ConnectionProfile, ConnectionStore
 from .buckets import (
     BucketKind,
@@ -50,7 +51,12 @@ from .buckets import (
     filter_for_bucket,
     is_qgis_consumable,
 )
-from .uris import authed_vector_tile_uri, oapif_uri, vector_tile_uri
+from .uris import (
+    authed_vector_tile_uri,
+    oapif_uri,
+    tile_layer_cog_uri,
+    vector_tile_uri,
+)
 
 _log = get_logger(__name__)
 
@@ -357,7 +363,10 @@ class _TypeGroupItem(QgsDataCollectionItem):
         # data envelope fetched (see _make_item), so basemap groups
         # keep the Browser worker thread by not claiming Fast.
         caps = _BROWSER_CAP_FERTILE
-        if type_key != "basemap":
+        # Basemaps and tile layers each need the item's data
+        # envelope fetched per child, so they must not claim Fast
+        # (which would run createChildren on the GUI thread).
+        if type_key not in ("basemap", "tile_layer"):
             caps = caps | _BROWSER_CAP_FAST
         self.setCapabilitiesV2(caps)
 
@@ -624,10 +633,19 @@ class _DataLayerSublayerItem(QgsLayerItem):
 
 
 class TileLayerItem(QgsLayerItem):
-    """A v3 data_layer rendered as MVT through the portal's public
-    Tiles endpoint. Used for layers explicitly published as tiles
-    OR as a future opt-in when a layer is too big for GeoJSON.
-    Phase 1 emits it only on `tile_layer` typed items.
+    """A ``tile_layer`` item: a RASTER published as a tile pyramid.
+
+    This used to build the portal's public vector-tile URI, which was
+    simply the wrong surface: a tile_layer is imagery or a derived
+    elevation product (a COG or a PMTiles archive, always
+    ``kind: raster``), and the vector-tile collection it pointed at
+    does not exist for these items. Every tile_layer therefore added a
+    layer that drew nothing, with no error to explain it.
+
+    COG-backed items open through GDAL's ``/vsicurl`` (range requests
+    are supported end to end, so only the needed overview tiles are
+    fetched). PMTiles-backed items are NOT constructed as layers at
+    all; see ``UnsupportedTileLayerItem`` for why.
     """
 
     def __init__(
@@ -635,19 +653,24 @@ class TileLayerItem(QgsLayerItem):
         parent: QgsDataItem,
         profile: ConnectionProfile,
         item: ItemSummary,
+        *,
+        data: dict[str, object] | None = None,
     ) -> None:
-        # Vector-tile URI lives in browser/uris.py; QGIS's
-        # vector-tile provider reads the {z}/{y}/{x} template.
-        uri = vector_tile_uri(profile.portal_url, item.id)
+        uri = tile_layer_cog_uri(profile.portal_url, item.id)
         super().__init__(
             parent,
             item.title,
             f"gratisgis-tile-layer:/{profile.name}/{item.id}",
             uri,
-            _LAYER_TYPE_VECTOR_TILE,
-            "vectortile",
+            _LAYER_TYPE_RASTER,
+            "gdal",
         )
         self._item = item
+        self._data = data or {}
+        # The credential has to reach GDAL before QGIS opens the
+        # dataset, and the drop happens outside our code, so register
+        # it as the node is built rather than at drop time.
+        configure_gdal_auth(profile)
 
     @property
     def item(self) -> ItemSummary:
@@ -655,17 +678,45 @@ class TileLayerItem(QgsLayerItem):
 
     def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
         u = QgsMimeDataUtils.Uri()
-        u.layerType = "vector-tile"
-        u.providerKey = "vectortile"
+        u.layerType = "raster"
+        u.providerKey = "gdal"
         u.name = self._item.title
-        # Must be self.uri() (the real XYZ data-source URI passed to
-        # the QgsLayerItem ctor), NOT self.path() (the Browser-tree
-        # node identifier). Its siblings learned the hard way that
-        # the default mime payload can carry path() and the drop
-        # fails with "not a valid or recognized data source"; see
-        # BasemapItem.mimeUris.
+        # self.uri(), never self.path(): the default payload can carry
+        # the tree-node identifier and the drop then fails with "not a
+        # valid or recognized data source". Same trap BasemapItem hit.
         u.uri = self.uri()
         return [u]
+
+
+class UnsupportedTileLayerItem(QgsDataItem):
+    """A tile_layer QGIS cannot open, shown but not draggable.
+
+    PMTiles-backed tile_layers hold PNG raster tiles. GDAL's PMTiles
+    driver reads vector archives only and rejects these with "Tile type
+    PNG not handled by the driver", and the portal has no server-side
+    XYZ route to fall back on, so there is no URI that would work.
+
+    Surfacing the item as a plain row with an explanation is the honest
+    option: the previous behaviour handed QGIS a layer that failed
+    silently, which reads as a broken plugin rather than an unsupported
+    format.
+    """
+
+    def __init__(
+        self,
+        parent: QgsDataItem,
+        item: ItemSummary,
+        *,
+        reason: str,
+    ) -> None:
+        super().__init__(
+            _BROWSER_TYPE_NO_TYPE,
+            parent,
+            item.title,
+            f"gratisgis-tile-layer-unsupported:/{item.id}",
+        )
+        self.setToolTip(reason)
+        self.setState(_POPULATED_STATE)
 
 
 class BasemapItem(QgsLayerItem):
@@ -1003,7 +1054,36 @@ def _make_item(
     if t == "data_layer":
         return DataLayerItem(parent, profile, item)
     if t == "tile_layer":
-        return TileLayerItem(parent, profile, item)
+        # Like basemaps, the format lives in the data envelope the list
+        # payload omits, and the choice of provider depends on it, so
+        # fetch here (parent's createChildren, Browser worker thread)
+        # rather than in the leaf constructor.
+        full = get_item(profile, item.id) or {}
+        raw = full.get("data") if isinstance(full, dict) else None
+        data = raw if isinstance(raw, dict) else {}
+        fmt = str(data.get("format") or "").lower()
+        state = str(data.get("processingState") or "").lower()
+        if state and state not in ("ready", ""):
+            return UnsupportedTileLayerItem(
+                parent,
+                item,
+                reason=(
+                    f"This layer is still being prepared on the portal "
+                    f"(status: {state}). Refresh once it is ready."
+                ),
+            )
+        if fmt == "cog":
+            return TileLayerItem(parent, profile, item, data=data)
+        return UnsupportedTileLayerItem(
+            parent,
+            item,
+            reason=(
+                "QGIS cannot open this layer's tile format"
+                + (f" ({fmt})" if fmt else "")
+                + ". Open it in the portal, or use Download on the item "
+                "page to get a file you can add here."
+            ),
+        )
     if t == "basemap":
         # The tile URL lives in the item's data envelope, which the
         # list payload does not carry. Fetch it HERE: _make_item runs

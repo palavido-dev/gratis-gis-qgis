@@ -394,13 +394,33 @@ class TestMimeUris:
             None, profile_factory(), _summary(type="tile_layer", title="Tiles")
         )
         [mime] = node.mimeUris()
-        assert mime.layerType == "vector-tile"
-        assert mime.providerKey == "vectortile"
+        # A tile_layer is a RASTER pyramid (COG), not vector tiles.
+        # This asserted vector-tile until 0.2.3, which is exactly why
+        # every tile_layer added a layer that drew nothing: the
+        # vector-tile collection it named does not exist for these
+        # items.
+        assert mime.layerType == "raster"
+        assert mime.providerKey == "gdal"
         assert mime.name == "Tiles"
         # The historical drop bug: path() in the mime payload reads
         # as "not a valid or recognized data source" in QGIS.
         assert mime.uri == node.uri()
         assert mime.uri != node.path()
+
+    def test_tile_layer_uri_is_a_vsicurl_cog(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+    ) -> None:
+        profile = profile_factory(portal_url="https://portal.test")
+        node = items_mod.TileLayerItem(
+            None, profile, _summary(type="tile_layer", title="Tiles")
+        )
+        assert node.uri().startswith("/vsicurl/https://portal.test/api/tile-layer/")
+        assert node.uri().endswith("/file.cog")
+        # The portal's own cog:// protocol is a browser-side handler;
+        # letting it reach QGIS is what produced the silent empty layer.
+        assert "cog://" not in node.uri()
 
 
 class TestProviderCapabilities:
@@ -413,3 +433,77 @@ class TestProviderCapabilities:
         import gratisgis_qgis.browser.provider as provider_mod
 
         assert _StubQgsDataProvider.Net == provider_mod._NET_CAPABILITY
+
+
+class TestTileLayerRouting:
+    """tile_layer items are rasters, and only some formats can open.
+
+    Before 0.2.3 every tile_layer was built as a vector-tile layer
+    pointed at the portal's public OGC collections, which do not exist
+    for these items, so each one added a layer that drew nothing and
+    reported no error. These tests pin the format-driven routing.
+    """
+
+    def _item(self) -> ItemSummary:
+        return _summary(type="tile_layer", title="Hillshade", id="tl-1")
+
+    def test_cog_becomes_a_gdal_raster_layer(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {"data": {"format": "cog", "processingState": "ready"}},
+        )
+        child = items_mod._make_item(None, profile_factory(), self._item())
+        assert isinstance(child, items_mod.TileLayerItem)
+        assert child.uri().endswith("/file.cog")
+
+    def test_pmtiles_is_surfaced_but_not_draggable(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {"data": {"format": "pmtiles", "processingState": "ready"}},
+        )
+        child = items_mod._make_item(None, profile_factory(), self._item())
+        # Not a QgsLayerItem: GDAL's PMTiles driver rejects raster PNG
+        # archives and the portal has no XYZ route, so there is no URI
+        # that would work. Showing the row with an explanation beats
+        # handing QGIS something that fails silently.
+        assert isinstance(child, items_mod.UnsupportedTileLayerItem)
+        assert not isinstance(child, items_mod.TileLayerItem)
+
+    def test_still_processing_says_so(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {"data": {"format": "cog", "processingState": "building"}},
+        )
+        child = items_mod._make_item(None, profile_factory(), self._item())
+        assert isinstance(child, items_mod.UnsupportedTileLayerItem)
+
+    def test_tile_layer_group_does_not_claim_fast(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+    ) -> None:
+        # Each child needs its data envelope fetched, so the group must
+        # stay on the Browser worker thread rather than the GUI thread.
+        parent = _StubQgsDataCollectionItem(None, "bucket", "gratisgis:/demo/mine")
+        group = items_mod._TypeGroupItem(
+            parent, profile_factory(), type_key="tile_layer", items=[]
+        )
+        assert not group.capabilities_v2 & items_mod._BROWSER_CAP_FAST

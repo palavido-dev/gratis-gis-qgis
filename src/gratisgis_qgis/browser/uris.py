@@ -22,6 +22,36 @@ def public_ogc_root(portal_url: str) -> str:
     return f"{portal_url.rstrip('/')}/api/public/ogc"
 
 
+def tile_layer_file_root(portal_url: str) -> str:
+    """Return the root the portal serves tile_layer files from.
+
+    Also used as the GDAL path prefix that scopes the credential to
+    this portal, so a header is never sent anywhere else.
+    """
+    return f"{portal_url.rstrip('/')}/api/tile-layer"
+
+
+def tile_layer_cog_uri(portal_url: str, item_id: str) -> str:
+    """Build a GDAL raster URI for a COG-backed tile_layer item.
+
+    tile_layer items are RASTERS (a Cloud Optimized GeoTIFF or a
+    PMTiles archive), not the portal's vector tiles. The portal's own
+    web map reads them through a ``cog://`` MapLibre protocol handler,
+    which is a browser-side invention QGIS knows nothing about; handing
+    QGIS that string produces a layer that silently draws nothing.
+
+    The portable equivalent is GDAL's ``/vsicurl/``: the endpoint
+    supports range requests (verified: HTTP 206 with Content-Range), so
+    GDAL reads a COG's overviews and only the tiles it needs rather
+    than the whole file. Private and org items additionally need an
+    Authorization header, which does NOT travel through QGIS's authcfg
+    for GDAL sources (authcfg is applied by QNetworkRequest-based
+    providers; /vsicurl uses libcurl directly). ``raster_auth`` handles
+    that with a path-scoped GDAL option.
+    """
+    return f"/vsicurl/{tile_layer_file_root(portal_url)}/{item_id}/file.cog"
+
+
 def oapif_uri(portal_url: str, item_id: str) -> str:
     """Build the OGC API Features URI for a portal data_layer item.
 

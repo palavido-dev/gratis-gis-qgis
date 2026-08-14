@@ -56,6 +56,8 @@ from ..auth_bridge import (
 from ..layer_auth import mint_layer_key, revoke_layer_key
 from ..log import get_logger
 from ..portal import get_client, invalidate
+from ..raster_auth import configure_gdal_auth
+from ..raster_auth import forget as raster_forget
 from ..settings import ConnectionProfile, ConnectionStore
 from ..tasks import TaskCancelledError, format_error, run_in_task
 
@@ -425,6 +427,10 @@ def _clear_layer_key(profile: ConnectionProfile) -> ConnectionProfile:
     on disk after the profile forgot it exists.
     """
     remove_authcfg(profile.layer_authcfg_id)
+    # Raster tile_layers read their credential from a GDAL option, not
+    # the authcfg, and that lives in this process. Clearing it here
+    # keeps a re-sign-in from serving the revoked key out of the cache.
+    raster_forget(profile)
     return replace(profile, api_key_id="", layer_authcfg_id="")
 
 
@@ -475,10 +481,13 @@ def _apply_layer_key(
             "Could not store the layer-rendering key in the QGIS auth "
             "database. Private layers will not render."
         )
-    return (
-        replace(profile, api_key_id=outcome.minted.id, layer_authcfg_id=authcfg_id),
-        None,
+    updated = replace(
+        profile, api_key_id=outcome.minted.id, layer_authcfg_id=authcfg_id
     )
+    # force=True: the key just changed, so the cached header for this
+    # portal is stale by definition.
+    configure_gdal_auth(updated, force=True)
+    return (updated, None)
 
 
 def _revoke_key_in_background(profile: ConnectionProfile, key_id: str) -> None:
