@@ -312,12 +312,50 @@ log.
 
 ---
 
+## Test 9. Reproduce the freeze on purpose (10 min)
+
+**This one is meant to fail.** It is the hang that needs Task Manager,
+issue #24, and the goal of this run is not a working plugin, it is a
+stack trace. Save any work in other QGIS windows first.
+
+Setup, and every step matters:
+
+1. **Set a master password** on the QGIS auth database if you have not:
+   *Settings > Options > Authentication*. Do **not** tick the option to
+   store it in your password manager, or the prompt this test needs
+   never appears.
+2. Sign in, add **three or four private or org-shared portal layers**
+   to a project, and save it.
+3. **Sign out** of the connection.
+4. **Fully quit and restart QGIS.** Easy to skip and it invalidates the
+   run: entering the master password once unlocks the database for the
+   rest of that session.
+
+Then open that project from *Project > Recent Projects*.
+
+What to record either way:
+
+- **If it freezes:** wait at least 15 seconds before killing it. The
+  watchdog writes its dump at 10. Then, while it is still hung, follow
+  the native-stack steps in `docs/diagnosing-a-freeze.md` if you can.
+  Send me the `freeze-*.txt` file and `plugin.log`.
+- **If it does not freeze:** that is a real result too, and worth as
+  much. Send `plugin.log`. The line `project read starting; auth
+  database is ...` tells me whether the conditions were actually met,
+  which is the thing I cannot tell from "it worked".
+
+Either way I want to know whether a master-password prompt appeared,
+how many times, and whether the layers drew.
+
+---
+
 ## What to send me if something fails
 
 1. A screenshot of the error box (the exact wording matters).
 2. The last ~40 lines of:
    `C:\Users\matt\AppData\Roaming\QGIS\QGIS4\gratisgis\logs\plugin.log`
-3. Which test number and step.
+3. Any `freeze-*.txt` in that same folder, if QGIS locked up.
+4. Which test number and step.
 
 That is enough for me to reproduce almost anything without guessing.
 

@@ -53,6 +53,8 @@ class GratisGISPlugin(QObject):
         # Typed as object so the annotation needs no QGIS-only import
         # at plugin-discovery time; see the lazy import in initGui.
         self._extent_applier: object | None = None
+        self._load_tracer: object | None = None
+        self._freeze_watchdog: object | None = None
         _log.info("GratisGIS plugin instantiated")
 
     # ----- QGIS hooks -----
@@ -120,6 +122,26 @@ class GratisGISPlugin(QObject):
 
         self._extent_applier = ExtentApplier()
         self._extent_applier.install()
+
+        # Diagnostics for the project-load freeze. Installed last, so a
+        # failure in either costs only the diagnostic and never the
+        # plugin, and installed at all because the freeze's defining
+        # feature is that the log had nothing to say about it.
+        #
+        # The tracer names the layers as they arrive; the watchdog
+        # notices the GUI thread has stopped and dumps every Python
+        # stack. Together they turn a Task Manager kill into a report.
+        from .load_trace import LoadTracer
+
+        self._load_tracer = LoadTracer()
+        self._load_tracer.install()
+
+        from .freeze_watch import FreezeWatchdog
+        from .log import log_directory
+
+        self._freeze_watchdog = FreezeWatchdog(log_directory())
+        self._freeze_watchdog.start()
+
         _log.debug("initGui: menu actions + browser provider registered")
 
     def _add_action(self, icon, label: str, handler) -> None:
@@ -158,6 +180,15 @@ class GratisGISPlugin(QObject):
             # instance's slot bound to a module the reload replaced.
             self._extent_applier.remove()  # type: ignore[attr-defined]
             self._extent_applier = None
+        if self._load_tracer is not None:
+            self._load_tracer.remove()  # type: ignore[attr-defined]
+            self._load_tracer = None
+        if self._freeze_watchdog is not None:
+            # Before teardown_logging below: the watcher thread logs,
+            # and stopping it first means it cannot be mid-log while
+            # the handlers it is writing to are being closed.
+            self._freeze_watchdog.stop()  # type: ignore[attr-defined]
+            self._freeze_watchdog = None
         if self._search_dock is not None:
             self._iface.removeDockWidget(self._search_dock)
             self._search_dock.deleteLater()

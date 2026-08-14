@@ -38,6 +38,18 @@ def _default_log_dir() -> Path:
     return base / "gratisgis" / "logs"
 
 
+def log_directory() -> Path:
+    """The directory the plugin writes logs into.
+
+    Public because the log file is no longer the only thing written
+    there: a freeze dump is a separate file (it has to be written
+    without going through the logging stack, see
+    ``freeze_watch.write_dump``) and belongs beside the log so a user
+    attaching diagnostics to an issue finds both in one place.
+    """
+    return _default_log_dir()
+
+
 def _init_root_logger() -> None:
     global _INITIALIZED
     if _INITIALIZED:

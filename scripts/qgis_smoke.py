@@ -22,6 +22,7 @@ network: nothing here signs in or fetches data.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import traceback
@@ -753,6 +754,184 @@ def _run_checks() -> None:
             "silently fall back to public-only rendering",
         ),
     )
+
+    print("\n[14] freeze diagnostics (the project-load hang)")
+    _check_freeze_diagnostics()
+
+
+def _check_freeze_diagnostics() -> None:
+    """The freeze instrumentation, against the bindings it depends on.
+
+    Everything here is a question only a real QGIS can answer, and each
+    one is load bearing: if the heartbeat does not tick, or the signal
+    does not exist, the diagnostic reports nothing and does so silently,
+    which is the exact failure mode it was built to end.
+    """
+    import time
+
+    from qgis.core import QgsApplication, QgsProject
+    from qgis.PyQt.QtCore import QCoreApplication, QTimer
+
+    from gratisgis_qgis.freeze_watch import (
+        FreezeWatchdog,
+        thread_roster,
+        write_dump,
+    )
+    from gratisgis_qgis.load_trace import LoadTracer, auth_db_state, describe_layer
+    from gratisgis_qgis.log import log_directory
+
+    # The state read at project-load time. It must not prompt, must not
+    # raise, and must not need the auth database unlocked: asking a
+    # question that could raise the very modal prompt under
+    # investigation would be its own bug.
+    state = check("auth_db_state() answers without prompting", auth_db_state)
+    check(
+        "auth_db_state() is one of the known answers",
+        lambda: _assert(
+            state in ("unlocked", "locked (QGIS will prompt if a layer needs it)"),
+            f"unexpected auth database state {state!r}",
+        ),
+    )
+    check(
+        "masterPasswordIsSet exists on this build",
+        lambda: _assert(
+            hasattr(QgsApplication.authManager(), "masterPasswordIsSet"),
+            "no masterPasswordIsSet(); the load trace cannot report the "
+            "one piece of state the freeze theory turns on",
+        ),
+    )
+
+    # The signals the tracer hangs off. A rename would leave install()
+    # silently connecting nothing, since it suppresses exceptions on
+    # purpose so one missing signal cannot cost the whole trail.
+    project = QgsProject.instance()
+    check(
+        "QgsProject has a readProject signal",
+        lambda: _assert(
+            hasattr(project, "readProject"),
+            "no readProject signal; project loads would not be logged",
+        ),
+    )
+    check(
+        "QgsProject has a layerWasAdded signal",
+        lambda: _assert(
+            hasattr(project, "layerWasAdded"),
+            "no layerWasAdded signal; layers would not be logged",
+        ),
+    )
+
+    tracer = LoadTracer()
+    check("LoadTracer.install() against a real project", tracer.install)
+    check(
+        "LoadTracer.install() is idempotent",
+        lambda: tracer.install(),
+    )
+    check("LoadTracer.remove() disconnects cleanly", tracer.remove)
+    check("LoadTracer.remove() is safe twice", tracer.remove)
+
+    # A real portal layer source, through the real builders, must be
+    # recognised as ours and reported as carrying its authcfg. A trail
+    # that labels portal layers "other" points the next investigation at
+    # the wrong half of the project.
+    from gratisgis_qgis.browser.uris import authed_vector_tile_uri
+
+    described = check(
+        "describe_layer() on a real authed portal source",
+        lambda: describe_layer(
+            "Parcels",
+            authed_vector_tile_uri(
+                "https://portal.example", "item-1", "layer-1", authcfg_id="ab12cd3"
+            ),
+        ),
+    )
+    check(
+        "an authed portal layer is reported as portal + authcfg",
+        lambda: _assert(
+            "portal" in str(described) and "authcfg=ab12cd3" in str(described),
+            f"portal layer not recognised in the trail: {described!r}",
+        ),
+    )
+
+    # The dump itself, written by the same code path a freeze uses.
+    dump_dir = log_directory() / "smoke"
+    dump_file = dump_dir / "freeze-smoke.txt"
+    check("write_dump() writes a dump", lambda: _assert(
+        write_dump(dump_file, 12.5), f"could not write a dump to {dump_file}"
+    ))
+    dump_text = check(
+        "the dump is readable",
+        lambda: dump_file.read_text(encoding="utf-8"),
+    )
+    check(
+        "the dump carries a thread roster and stacks",
+        lambda: _assert(
+            "Threads by id" in str(dump_text)
+            and "<- GUI thread" in str(dump_text)
+            and "Current thread 0x" in str(dump_text),
+            "the dump is missing the roster or the stacks",
+        ),
+    )
+    # The roster's hex spelling must match what faulthandler printed in
+    # the same file, or the table joins to nothing. The widths differ
+    # between Windows and Linux, so this is asserted where it runs.
+    check(
+        "roster ids match the faulthandler spelling",
+        lambda: _assert(
+            _roster_ids_join(str(dump_text)),
+            "the roster's hex ids do not appear in the stacks below them",
+        ),
+    )
+    check("thread_roster() names the GUI thread", lambda: _assert(
+        "<- GUI thread" in thread_roster(), "the main thread is not marked"
+    ))
+    with contextlib.suppress(Exception):
+        dump_file.unlink()
+        dump_dir.rmdir()
+
+    # The heartbeat, under a real Qt event loop. If QTimer does not fire
+    # the detector never ticks, and a watchdog that never ticks reports
+    # a permanent stall instead of a real one.
+    app = QCoreApplication.instance()
+    ticks = []
+    timer = QTimer()
+    timer.setInterval(10)
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start()
+    deadline = time.monotonic() + 3.0
+    while len(ticks) < 3 and time.monotonic() < deadline:
+        if app is not None:
+            app.processEvents()
+        time.sleep(0.01)
+    timer.stop()
+    check(
+        "a QTimer heartbeat fires under a real event loop",
+        lambda: _assert(
+            len(ticks) >= 3,
+            f"QTimer fired {len(ticks)} times in 3s; the watchdog would "
+            "read a live GUI thread as permanently frozen",
+        ),
+    )
+
+    # start() must never raise inside initGui, whatever the environment.
+    watchdog = FreezeWatchdog(log_directory())
+    check("FreezeWatchdog.start() does not raise", watchdog.start)
+    check("FreezeWatchdog.stop() does not raise", watchdog.stop)
+    check("FreezeWatchdog.stop() is safe twice", watchdog.stop)
+
+
+def _roster_ids_join(dump_text: str) -> bool:
+    """Every id in the roster must appear again in the stacks below.
+
+    The roster is only useful if a reader can take an id from the table
+    and find it heading a stack. Different padding on the two sides
+    still looks like a working table and joins to nothing.
+    """
+    import re as _re
+
+    head, _, tail = dump_text.partition("Python stacks for every thread")
+    roster_ids = set(_re.findall(r"(0x[0-9a-f]+)", head))
+    stack_ids = set(_re.findall(r"[Tt]hread (0x[0-9a-f]+)", tail))
+    return bool(roster_ids) and roster_ids.issubset(stack_ids)
 
 
 class _CollectingCombo:

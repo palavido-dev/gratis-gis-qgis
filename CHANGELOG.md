@@ -7,6 +7,36 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.7.0] - 2026-08-14
+
+### Added
+
+- **If QGIS ever freezes, the plugin now writes down what happened.**
+  Opening a project that holds GratisGIS layers has been seen to lock
+  QGIS up hard enough to need Task Manager, and the plugin's log had
+  nothing at all to say about it. It does now.
+
+  The plugin watches whether the QGIS window is still responding. If it
+  stops for more than ten seconds, a stack for every running thread is
+  written to a `freeze-<date>.txt` file next to `plugin.log`, while the
+  window is still stuck. The log also records each layer as it loads and
+  whether the QGIS password store was locked at the time, so the last
+  line before a freeze narrows down which layer caused it.
+
+  Nothing here changes how layers load; it only reports. If you hit the
+  freeze, `docs/diagnosing-a-freeze.md` says which files to send and how
+  to reproduce it on purpose.
+
+  Set `GRATISGIS_NO_FREEZE_WATCHDOG=1` before launching QGIS to turn the
+  watchdog off.
+
+### Fixed
+
+- **The repository no longer rewrites its own line endings on Windows.**
+  A checkout could show eleven files as modified with no actual change
+  in them, which made it easy to commit noise or lose real work while
+  trying to clear it.
+
 ## [0.6.0] - 2026-08-14
 
 ### Added
