@@ -7,6 +7,26 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.5] - 2026-08-14
+
+### Fixed
+
+- **Tile layers stored as PMTiles still would not draw.** The plugin
+  treated a layer as unfinished unless the portal reported its status
+  as exactly "ready", but a finished tile pyramid reports
+  "pmtiles-ready", so all of them were shown as still being prepared
+  when the tiles were in fact ready to serve. Status is no longer
+  treated as a readiness gate at all: the portal keeps serving a
+  usable file through every intermediate state, so what a layer is
+  stored as now decides how it is opened.
+- **The search panel could not add most items.** Double-clicking a
+  basemap, a connected service, or anything other than two item types
+  reported that the plugin "doesn't yet open this type", even though
+  the browser tree adds them. It also sent data layers and tile layers
+  to the wrong addresses, so a private layer added from search drew
+  nothing. The search panel now opens items exactly the way the
+  browser tree does, so the two can no longer disagree.
+
 ## [0.2.4] - 2026-08-14
 
 Requires GratisGIS portal v0.9.26 or newer for the layers below.
