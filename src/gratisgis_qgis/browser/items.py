@@ -55,6 +55,7 @@ from .uris import (
     authed_vector_tile_uri,
     oapif_uri,
     tile_layer_cog_uri,
+    tile_layer_xyz_uri,
     vector_tile_uri,
 )
 
@@ -688,6 +689,79 @@ class TileLayerItem(QgsLayerItem):
         return [u]
 
 
+class PmtilesTileLayerItem(QgsLayerItem):
+    """A PMTiles-backed tile_layer, drawn through the portal's XYZ route.
+
+    The archive itself is unopenable by GDAL when it holds raster tiles
+    (its PMTiles driver is vector only), so the portal unpacks tiles
+    server-side and this points at that route instead of the file.
+
+    Unlike its COG sibling this needs no GDAL header plumbing: XYZ
+    requests go through QNetworkRequest, so a plain ``authcfg`` on the
+    URI is applied by QGIS and private and org layers authenticate on
+    their own.
+    """
+
+    def __init__(
+        self,
+        parent: QgsDataItem,
+        profile: ConnectionProfile,
+        item: ItemSummary,
+        *,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        envelope = data or {}
+        # Public items deliberately carry no authcfg so a saved project
+        # keeps rendering for viewers who never signed in, matching the
+        # rule the vector sublayers follow.
+        authcfg = "" if item.access == "public" else profile.layer_authcfg_id
+        uri = tile_layer_xyz_uri(
+            profile.portal_url,
+            item.id,
+            authcfg_id=authcfg,
+            min_zoom=_int_or(envelope.get("minZoom"), 0),
+            max_zoom=_int_or(envelope.get("maxZoom"), 18),
+        )
+        super().__init__(
+            parent,
+            item.title,
+            f"gratisgis-tile-layer:/{profile.name}/{item.id}",
+            uri,
+            _LAYER_TYPE_RASTER,
+            "wms",
+        )
+        self._item = item
+
+    @property
+    def item(self) -> ItemSummary:
+        return self._item
+
+    def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
+        u = QgsMimeDataUtils.Uri()
+        u.layerType = "raster"
+        # XYZ rasters are served by the wms provider in QGIS.
+        u.providerKey = "wms"
+        u.name = self._item.title
+        u.uri = self.uri()
+        return [u]
+
+
+def _int_or(value: object, fallback: int) -> int:
+    """Coerce a JSON number to int, falling back on anything odd."""
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return fallback
+    return fallback
+
+
 class UnsupportedTileLayerItem(QgsDataItem):
     """A tile_layer QGIS cannot open, shown but not draggable.
 
@@ -1074,6 +1148,8 @@ def _make_item(
             )
         if fmt == "cog":
             return TileLayerItem(parent, profile, item, data=data)
+        if fmt == "pmtiles":
+            return PmtilesTileLayerItem(parent, profile, item, data=data)
         return UnsupportedTileLayerItem(
             parent,
             item,

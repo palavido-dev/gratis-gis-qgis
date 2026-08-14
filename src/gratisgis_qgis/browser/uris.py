@@ -16,6 +16,8 @@ and the Search dock's add-to-canvas action (ui/search_dock.py).
 """
 from __future__ import annotations
 
+from urllib.parse import quote
+
 
 def public_ogc_root(portal_url: str) -> str:
     """Return the portal's public OGC API root, no trailing slash."""
@@ -29,6 +31,37 @@ def tile_layer_file_root(portal_url: str) -> str:
     this portal, so a header is never sent anywhere else.
     """
     return f"{portal_url.rstrip('/')}/api/tile-layer"
+
+
+def tile_layer_xyz_uri(
+    portal_url: str,
+    item_id: str,
+    *,
+    authcfg_id: str = "",
+    min_zoom: int = 0,
+    max_zoom: int = 18,
+) -> str:
+    """Build the XYZ raster URI for a PMTiles-backed tile_layer item.
+
+    PMTiles archives cannot be opened by GDAL when they hold raster
+    tiles (its PMTiles driver is vector only), so the portal unpacks
+    them server-side and serves individual tiles at
+    ``/api/tile-layer/:id/tiles/{z}/{x}/{y}.png``.
+
+    XYZ is deliberately the right shape here rather than a GDAL source:
+    QGIS's XYZ tiles go through QNetworkRequest, which is exactly where
+    an ``authcfg`` is applied, so private and org layers authenticate
+    with no special handling. A GDAL source ignores authcfg entirely,
+    which is why COG layers need the separate header plumbing in
+    ``raster_auth``.
+    """
+    template = (
+        f"{tile_layer_file_root(portal_url)}/{item_id}/tiles/{{z}}/{{x}}/{{y}}.png"
+    )
+    uri = f"type=xyz&url={quote(template, safe='')}&zmin={min_zoom}&zmax={max_zoom}"
+    if authcfg_id:
+        uri = f"{uri}&authcfg={authcfg_id}"
+    return uri
 
 
 def tile_layer_cog_uri(portal_url: str, item_id: str) -> str:

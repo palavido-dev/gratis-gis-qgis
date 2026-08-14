@@ -462,7 +462,61 @@ class TestTileLayerRouting:
         assert isinstance(child, items_mod.TileLayerItem)
         assert child.uri().endswith("/file.cog")
 
-    def test_pmtiles_is_surfaced_but_not_draggable(
+    def test_pmtiles_uses_the_portal_xyz_route(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # GDAL cannot open a raster PMTiles archive, so the portal
+        # unpacks tiles server-side (v0.9.26) and the plugin points at
+        # that route. XYZ is the right shape because QGIS applies an
+        # authcfg to XYZ requests, unlike a GDAL source.
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {
+                "data": {
+                    "format": "pmtiles",
+                    "processingState": "ready",
+                    "minZoom": 3,
+                    "maxZoom": 17,
+                }
+            },
+        )
+        profile = profile_factory(
+            portal_url="https://portal.test", layer_authcfg_id="lyr1234"
+        )
+        child = items_mod._make_item(None, profile, self._item())
+        assert isinstance(child, items_mod.PmtilesTileLayerItem)
+        uri = child.uri()
+        assert uri.startswith("type=xyz&url=")
+        assert quote("/api/tile-layer/tl-1/tiles/{z}/{x}/{y}.png", safe="") in uri
+        assert "zmin=3" in uri and "zmax=17" in uri
+        assert "authcfg=lyr1234" in uri
+
+    def test_public_pmtiles_carries_no_authcfg(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Same rule the vector sublayers follow: a project saved with a
+        # public layer must keep rendering for viewers who never
+        # signed in.
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {"data": {"format": "pmtiles", "processingState": "ready"}},
+        )
+        child = items_mod._make_item(
+            None,
+            profile_factory(layer_authcfg_id="lyr1234"),
+            _summary(type="tile_layer", id="tl-1", access="public"),
+        )
+        assert "authcfg" not in child.uri()
+
+    def test_unknown_format_is_surfaced_but_not_draggable(
         self,
         items_mod: ModuleType,
         profile_factory: ProfileFactory,
@@ -471,15 +525,10 @@ class TestTileLayerRouting:
         monkeypatch.setattr(
             items_mod,
             "get_item",
-            lambda _p, _i: {"data": {"format": "pmtiles", "processingState": "ready"}},
+            lambda _p, _i: {"data": {"format": "mbtiles", "processingState": "ready"}},
         )
         child = items_mod._make_item(None, profile_factory(), self._item())
-        # Not a QgsLayerItem: GDAL's PMTiles driver rejects raster PNG
-        # archives and the portal has no XYZ route, so there is no URI
-        # that would work. Showing the row with an explanation beats
-        # handing QGIS something that fails silently.
         assert isinstance(child, items_mod.UnsupportedTileLayerItem)
-        assert not isinstance(child, items_mod.TileLayerItem)
 
     def test_still_processing_says_so(
         self,
