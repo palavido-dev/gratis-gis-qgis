@@ -1,0 +1,18 @@
+# Keep the working tree in LF on every platform.
+#
+# Without this, a Windows clone with core.autocrlf=true rewrites every
+# checked-out file to CRLF while the stored blobs stay LF. That shows up
+# as eleven files "modified" with a diff of nothing but line endings, and
+# it costs time every session. eol=lf overrides autocrlf, so the working
+# tree, the blobs, and Linux CI all agree.
+* text=auto eol=lf
+
+# Binary, never touch.
+*.png binary
+*.jpg binary
+*.gpkg binary
+*.tif binary
+*.tiff binary
+*.pmtiles binary
+*.mbtiles binary
+*.zip binary
