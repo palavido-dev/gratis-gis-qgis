@@ -7,6 +7,22 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.2] - 2026-08-13
+
+### Fixed
+
+- **The plugin failed to load with `KeyError: 'gratisgis_qgis._vendor'`
+  when QGIS reloaded it**, which is what happens when you install over
+  an existing copy or toggle the plugin off and on. The first load in a
+  fresh QGIS session worked, so this only appeared on the second.
+  QGIS clears only the modules its own import hook recorded, and the
+  bundled client library is registered by the plugin directly, so a
+  stale entry survived the unload and sent the next load down a path
+  that skipped part of the setup. The plugin now clears both halves of
+  its own state on every load and no longer assumes the surviving
+  entry is present. The packaging test now performs a second load the
+  same way QGIS does, so this cannot regress unnoticed.
+
 ## [0.2.1] - 2026-08-13
 
 ### Fixed
