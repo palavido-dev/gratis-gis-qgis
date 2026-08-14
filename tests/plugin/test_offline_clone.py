@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from gratisgis_qgis.browser.uris import PortalLayerRef
 from gratisgis_qgis.offline.clone import (
+    CLONE_SOURCE_FIELDS,
+    CLONE_SOURCE_TABLE,
     CloneTarget,
     CloneValidationIssue,
+    clone_timestamp,
     make_target,
     normalize_feature_collection,
+    read_clone_source,
     safe_write_path,
     validate_clone_target,
 )
@@ -27,12 +33,20 @@ class TestSafeWritePath:
         assert list(tmp_path.glob("*.part")) == []
 
     def test_temp_lives_beside_the_target(self, tmp_path: Path) -> None:
-        # Same directory is what makes the final os.replace an atomic
-        # same-filesystem rename instead of a copy window.
+        # Staging inside a temp DIRECTORY in the target's folder, not a
+        # temp FILE beside it: same filesystem either way (so the final
+        # replace is an atomic rename), but the yielded path does not
+        # exist yet and keeps the real extension, both of which OGR
+        # needs to create a GeoPackage there at all.
         final = tmp_path / "clone.gpkg"
         with safe_write_path(str(final)) as tmp:
-            assert Path(tmp).parent == tmp_path
+            assert Path(tmp).name == "clone.gpkg"
+            assert not Path(tmp).exists()
+            assert Path(tmp).parent.parent == tmp_path
             Path(tmp).write_bytes(b"x")
+        assert final.read_bytes() == b"x"
+        # No staging directory left behind.
+        assert list(tmp_path.iterdir()) == [final]
 
     def test_failure_preserves_existing_target(self, tmp_path: Path) -> None:
         # The defect this exists for: the old flow unlinked the
@@ -246,6 +260,90 @@ class TestValidateCloneTarget:
         warns = [i for i in issues if i.code == "target-exists"]
         assert len(warns) == 1
         assert warns[0].severity == "warning"
+
+
+def _write_source_row(path: Path, values: tuple[str, str, str, str]) -> None:
+    """Put a clone-origin row into a GeoPackage-shaped SQLite file.
+
+    A GeoPackage is a SQLite database and the origin table is a plain
+    attribute table, so this is the same storage the QGIS writer
+    produces. Column names come from the shared constant, so a rename
+    on the writing side cannot leave this passing against a stale one.
+    """
+    conn = sqlite3.connect(str(path))
+    try:
+        columns = ", ".join(f'"{name}" TEXT' for name in CLONE_SOURCE_FIELDS)
+        placeholders = ", ".join("?" for _ in CLONE_SOURCE_FIELDS)
+        conn.execute(f'CREATE TABLE "{CLONE_SOURCE_TABLE}" ({columns})')
+        conn.execute(
+            f'INSERT INTO "{CLONE_SOURCE_TABLE}" VALUES ({placeholders})', values
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestReadCloneSource:
+    """Recovering which portal layer a clone came from.
+
+    Without this the push-edits dialog can never offer an offline
+    clone back to its origin, which is the whole point of writing the
+    origin into the container in the first place.
+    """
+
+    def test_round_trips_the_recorded_origin(self, tmp_path: Path) -> None:
+        gpkg = tmp_path / "trails.gpkg"
+        _write_source_row(
+            gpkg,
+            ("https://portal.example", "item-1", "trails", clone_timestamp()),
+        )
+        assert read_clone_source(str(gpkg)) == PortalLayerRef(
+            portal_url="https://portal.example", item_id="item-1", layer_id="trails"
+        )
+
+    def test_geopackage_without_the_table_is_not_a_clone(
+        self, tmp_path: Path
+    ) -> None:
+        # The common case: an unrelated GeoPackage in the user's
+        # project. Quiet and negative, never an exception.
+        gpkg = tmp_path / "survey.gpkg"
+        sqlite3.connect(str(gpkg)).close()
+        assert read_clone_source(str(gpkg)) is None
+
+    def test_missing_file_returns_none_and_creates_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        # Read-only open matters here: a probe must never leave an
+        # empty database behind at a path the user never had.
+        missing = tmp_path / "nope.gpkg"
+        assert read_clone_source(str(missing)) is None
+        assert not missing.exists()
+
+    def test_non_sqlite_file_returns_none(self, tmp_path: Path) -> None:
+        junk = tmp_path / "notes.gpkg"
+        junk.write_text("this is not a database")
+        assert read_clone_source(str(junk)) is None
+
+    def test_empty_path_returns_none(self) -> None:
+        assert read_clone_source("") is None
+
+    def test_blank_ids_are_not_a_usable_origin(self, tmp_path: Path) -> None:
+        # A half-written row would otherwise resolve to a push aimed at
+        # an empty item id, which the portal answers with a 404 the
+        # user cannot interpret.
+        gpkg = tmp_path / "broken.gpkg"
+        _write_source_row(gpkg, ("https://portal.example", "item-1", "", "now"))
+        assert read_clone_source(str(gpkg)) is None
+
+
+class TestCloneTimestamp:
+    def test_is_iso_8601_utc(self) -> None:
+        from datetime import datetime, timezone
+
+        stamp = clone_timestamp()
+        parsed = datetime.fromisoformat(stamp)
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == timezone.utc.utcoffset(None)
 
 
 class TestCloneValidationIssue:

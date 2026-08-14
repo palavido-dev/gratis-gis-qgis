@@ -5,8 +5,11 @@ from __future__ import annotations
 import pytest
 
 from gratisgis_qgis.browser.uris import (
+    PortalLayerRef,
     authed_vector_tile_uri,
     oapif_uri,
+    parse_oapif_layer_source,
+    parse_portal_layer_source,
     parse_vector_tile_uri,
     public_ogc_root,
     vector_tile_uri,
@@ -137,6 +140,109 @@ class TestParseVectorTileUri:
     )
     def test_rejects_non_portal_shapes(self, uri: str) -> None:
         assert parse_vector_tile_uri(uri) is None
+
+
+class TestParsePortalLayerSource:
+    """Every shape the Browser tree emits must resolve.
+
+    These build their input by CALLING the builders rather than
+    hand-typing a URI, which is the whole point: the previous version
+    of the dialogs was tested against hand-written OAPIF strings only,
+    so nothing noticed that ordinary spatial layers are emitted as
+    vector tiles and could never be recognized. A change to any
+    builder now breaks these instead of shipping a dead dialog.
+    """
+
+    def test_resolves_oapif_shape(self) -> None:
+        ref = parse_portal_layer_source(
+            oapif_uri("https://portal.example", "item-1__roads")
+        )
+        assert ref == PortalLayerRef(
+            portal_url="https://portal.example", item_id="item-1", layer_id="roads"
+        )
+
+    def test_resolves_public_vector_tile_shape(self) -> None:
+        # The reported bug: a public spatial sublayer dragged from the
+        # tree is a vector-tile layer, and the clone dialog said
+        # "(no portal-backed layers in project)".
+        ref = parse_portal_layer_source(
+            vector_tile_uri("https://portal.example", "item-1__roads")
+        )
+        assert ref == PortalLayerRef(
+            portal_url="https://portal.example", item_id="item-1", layer_id="roads"
+        )
+
+    def test_resolves_authed_vector_tile_shape(self) -> None:
+        ref = parse_portal_layer_source(
+            authed_vector_tile_uri(
+                "https://portal.example", "item-1", "roads", authcfg_id="abc1234"
+            )
+        )
+        assert ref == PortalLayerRef(
+            portal_url="https://portal.example", item_id="item-1", layer_id="roads"
+        )
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            oapif_uri("https://portal.example", "item-1"),
+            vector_tile_uri("https://portal.example", "item-1"),
+        ],
+    )
+    def test_bare_item_id_resolves_to_the_default_layer(self, source: str) -> None:
+        # The portal's v1 alias addresses an item's first layer with a
+        # bare UUID; "default" is the spelling the features endpoints
+        # take, and what the clone dialog has always sent.
+        ref = parse_portal_layer_source(source)
+        assert ref == PortalLayerRef(
+            portal_url="https://portal.example", item_id="item-1", layer_id="default"
+        )
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "",
+            "not-a-uri",
+            "/home/matt/parcels.gpkg|layername=parcels",
+            "type=xyz&url=https://elsewhere.example/tiles/{z}/{x}/{y}.png",
+        ],
+    )
+    def test_rejects_off_portal_sources(self, source: str) -> None:
+        assert parse_portal_layer_source(source) is None
+
+    def test_portal_url_survives_a_sub_path_deployment(self) -> None:
+        ref = parse_portal_layer_source(vector_tile_uri("https://example/gis", "i__l"))
+        assert ref is not None
+        assert ref.portal_url == "https://example/gis"
+
+
+class TestParseOapifLayerSource:
+    """The editable subset. Vector tiles are read-only in QGIS."""
+
+    def test_resolves_oapif_shape(self) -> None:
+        ref = parse_oapif_layer_source(
+            oapif_uri("https://portal.example", "item-1__roads")
+        )
+        assert ref == PortalLayerRef(
+            portal_url="https://portal.example", item_id="item-1", layer_id="roads"
+        )
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            vector_tile_uri("https://portal.example", "item-1__roads"),
+            authed_vector_tile_uri(
+                "https://portal.example", "item-1", "roads", authcfg_id="a"
+            ),
+        ],
+    )
+    def test_refuses_tile_shapes_the_general_resolver_accepts(
+        self, source: str
+    ) -> None:
+        # Both are real portal layers, hence resolvable in general, and
+        # both are unusable for pushing edits.
+        assert parse_portal_layer_source(source) is not None
+        assert parse_oapif_layer_source(source) is None
 
 
 @pytest.mark.parametrize(

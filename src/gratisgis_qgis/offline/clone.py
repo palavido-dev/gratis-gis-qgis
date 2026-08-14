@@ -3,8 +3,8 @@
 
 The flow:
 
-  1. Dialog identifies a portal-backed layer (OAPIF source we
-     recognize via `browser/uris.py`).
+  1. Dialog identifies a portal-backed layer (any source shape
+     `browser/uris.py` can resolve to an item + layer).
   2. Plugin downloads a full GeoJSON FeatureCollection via the
      client's `features.download_geojson(...)`.
   3. Plugin normalizes the response and writes it to a local
@@ -17,17 +17,28 @@ This module owns the parts of the pipeline that don't touch QGIS:
   - destination-path generation (deterministic, collision-safe)
   - GeoJSON shape normalization (so an empty or malformed body
     doesn't propagate as a `None` into the writer)
-  - pre-flight validation of the chosen target directory.
+  - pre-flight validation of the chosen target directory
+  - reading back the portal origin the writer stamps into the
+    GeoPackage, which is what makes a clone pushable.
 """
 from __future__ import annotations
 
 import contextlib
 import os
 import re
+import shutil
+import sqlite3
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal
+from urllib.request import pathname2url
+
+from ..browser.uris import PortalLayerRef
+from ..log import get_logger
+
+_log = get_logger(__name__)
 
 # Match the portal's internal feature-id columns we strip out before
 # writing to GeoPackage. These are useful for the push-edits flow
@@ -70,7 +81,7 @@ def make_target(
       - capped at 80 chars (room for the .gpkg suffix + Windows path budget)
       - falls back to ``clone_<layer_id>`` if the title produces an empty stem
 
-    We deliberately don't append a timestamp -- that would generate
+    We deliberately don't append a timestamp, which would generate
     a new file on every clone and pile up. The caller can collision-
     handle (overwrite confirm, suffix-N) at the dialog layer.
     """
@@ -187,18 +198,88 @@ def safe_write_path(final_path: str) -> Iterator[str]:
     the old unlink-the-target-then-write sequence did.
     """
     directory = os.path.dirname(final_path) or "."
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(final_path)}.", suffix=".part", dir=directory
-    )
-    os.close(fd)
+    basename = os.path.basename(final_path)
+    # A temp DIRECTORY holding the real filename, rather than a temp
+    # file beside the target. Two reasons, both learned the hard way:
+    # mkstemp CREATES the file, and OGR cannot create a GeoPackage on
+    # top of an existing zero-byte file, so the write silently produced
+    # nothing; and the driver cares about the extension, which a
+    # ".part" suffix destroys. Keeping the final basename also means
+    # the layer inside the container is named after the target rather
+    # than a random temp stem.
+    tmp_dir = tempfile.mkdtemp(prefix=f".{basename}.", dir=directory)
+    tmp_path = os.path.join(tmp_dir, basename)
     try:
         yield tmp_path
     except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
     else:
+        # Same filesystem (sibling directory), so this is atomic.
         os.replace(tmp_path, final_path)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# -----------------------------------------------------------
+# Clone provenance: which portal layer a GeoPackage came from.
+# -----------------------------------------------------------
+
+# A clone is a plain GeoPackage, so nothing in its source URI says
+# which portal layer it came from and the push-edits dialog could
+# never offer it back. The origin is recorded as an extra
+# (non-spatial) table INSIDE the container rather than a sidecar
+# file: a sidecar is lost the moment someone moves, copies or emails
+# the .gpkg, while a table travels with the data.
+CLONE_SOURCE_TABLE = "gratisgis_source"
+
+# Column order is the writer's field order too; both sides read this
+# tuple so they cannot drift apart.
+CLONE_SOURCE_FIELDS = ("portal_url", "item_id", "layer_id", "cloned_at")
+
+
+def clone_timestamp() -> str:
+    """ISO-8601 UTC stamp for the clone-source row."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def read_clone_source(gpkg_path: str) -> PortalLayerRef | None:
+    """Recover the portal origin recorded in a cloned GeoPackage.
+
+    Returns None whenever the file is not a clone of ours (no such
+    table, unreadable, empty row). Never raises: this runs while a
+    dialog populates its layer list, over every GeoPackage in the
+    user's project, most of which have nothing to do with the portal.
+
+    Read through sqlite3 rather than a QGIS provider because a
+    GeoPackage is a SQLite database by definition, this needs no
+    geometry support, and staying QGIS-free keeps the reader usable
+    (and testable) outside a running QGIS. Opened read-only via a
+    URI filename so probing an unrelated path can neither create a
+    file nor take a write lock on one the user has open.
+    """
+    if not gpkg_path or not os.path.isfile(gpkg_path):
+        return None
+    columns = ", ".join(f'"{name}"' for name in CLONE_SOURCE_FIELDS[:3])
+    try:
+        uri = f"file:{pathname2url(os.path.abspath(gpkg_path))}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            row = conn.execute(
+                f'SELECT {columns} FROM "{CLONE_SOURCE_TABLE}" LIMIT 1'
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        # An ordinary GeoPackage simply has no such table; that is the
+        # expected path here, not an error worth surfacing.
+        _log.debug("no clone-source table in %s", gpkg_path, exc_info=True)
+        return None
+    if not row:
+        return None
+    portal_url, item_id, layer_id = (str(v or "") for v in row)
+    if not portal_url or not item_id or not layer_id:
+        return None
+    return PortalLayerRef(portal_url=portal_url, item_id=item_id, layer_id=layer_id)
 
 
 # -----------------------------------------------------------

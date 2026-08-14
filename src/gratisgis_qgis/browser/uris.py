@@ -16,6 +16,7 @@ and the Search dock's add-to-canvas action (ui/search_dock.py).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from urllib.parse import quote
 
 
@@ -251,6 +252,86 @@ def _parse_authed_tile_template(template: str) -> tuple[str, str] | None:
     if not item_id or not layer_id:
         return None
     return portal_url, f"{item_id}__{layer_id}"
+
+
+# -----------------------------------------------------------
+# Portal layer resolution (what the dialogs actually need)
+# -----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PortalLayerRef:
+    """The portal coordinates behind a QGIS layer.
+
+    ``layer_id`` is ``"default"`` for the portal's bare-UUID v1
+    collection alias, which addresses an item's first layer without
+    naming it. The features endpoints take that spelling, so callers
+    never have to special-case the old shape.
+    """
+
+    portal_url: str
+    item_id: str
+    layer_id: str
+
+
+def parse_portal_layer_source(source: str) -> PortalLayerRef | None:
+    """Resolve a QGIS layer source to the portal item + layer it came from.
+
+    The Browser tree emits THREE different URIs for portal layers,
+    picked by ``browser/items.py`` from the sublayer's geometry and
+    the item's access:
+
+      1. OAPIF, for non-spatial sublayers (``oapif_uri``)
+      2. public vector tiles, for spatial sublayers on public items
+         (``vector_tile_uri``)
+      3. authed per-layer MVT, for spatial sublayers otherwise
+         (``authed_vector_tile_uri``)
+
+    Recognising only the first is why the clone dialog reported "no
+    portal-backed layers in project" for ordinary spatial data: that
+    is the common case and it never travels as OAPIF. Anything that
+    walks project layers looking for portal ones must go through this
+    function rather than a single-shape parser.
+
+    Returns None for off-portal layers.
+    """
+    parsed = parse_oapif_uri(source) or parse_vector_tile_uri(source)
+    if parsed is None:
+        return None
+    portal_url, collection_id = parsed
+    return _ref_from_collection_id(portal_url, collection_id)
+
+
+def parse_oapif_layer_source(source: str) -> PortalLayerRef | None:
+    """The editable subset of ``parse_portal_layer_source``.
+
+    QGIS's vector-tile layers are a read-only rendering format: they
+    have no edit buffer, so a user can never produce edits to push
+    from one. The push-edits dialog therefore resolves only the OAPIF
+    shape, and offering the tile shapes there would list layers that
+    can only ever yield an empty plan.
+    """
+    parsed = parse_oapif_uri(source)
+    if parsed is None:
+        return None
+    portal_url, collection_id = parsed
+    return _ref_from_collection_id(portal_url, collection_id)
+
+
+def _ref_from_collection_id(portal_url: str, collection_id: str) -> PortalLayerRef:
+    """Split a portal collection id into its item and layer parts.
+
+    ``<itemId>__<layerId>`` for v3 multi-layer items; a bare item id
+    for the v1 alias, which resolves to the ``default`` layer.
+    """
+    if "__" in collection_id:
+        item_id, layer_id = collection_id.split("__", 1)
+        return PortalLayerRef(
+            portal_url=portal_url, item_id=item_id, layer_id=layer_id
+        )
+    return PortalLayerRef(
+        portal_url=portal_url, item_id=collection_id, layer_id="default"
+    )
 
 
 def _parse_quoted_kv(uri: str, key: str) -> str | None:

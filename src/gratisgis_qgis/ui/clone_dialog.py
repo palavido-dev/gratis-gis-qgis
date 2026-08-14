@@ -6,13 +6,17 @@ to a local GeoPackage so the user can keep working offline.
 
 Flow:
 
-  1. List vector layers in the project whose source URI is an
-     OAPIF endpoint we recognize.
+  1. List vector layers in the project whose source URI resolves
+     to a portal item, in any of the shapes the Browser tree emits
+     (OAPIF for tables, public or authed vector tiles for spatial
+     sublayers).
   2. User picks one + a target directory.
   3. Plugin downloads the full GeoJSON FeatureCollection via the
      client's `features.download_geojson(...)`.
   4. Plugin normalizes the response (move portal ids into
-     _portal_id property) and writes the result to a GeoPackage.
+     _portal_id property) and writes the result to a GeoPackage,
+     alongside a small table recording which portal layer it came
+     from so the push-edits flow can send edits back.
   5. Plugin loads the GeoPackage as a new project layer so the
      user immediately sees the clone.
 
@@ -50,10 +54,13 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QWidget,
 )
 
-from ..browser.uris import parse_oapif_uri
+from ..browser.uris import PortalLayerRef, parse_portal_layer_source
 from ..log import get_logger
 from ..offline.clone import (
+    CLONE_SOURCE_FIELDS,
+    CLONE_SOURCE_TABLE,
     CloneTarget,
+    clone_timestamp,
     make_target,
     normalize_feature_collection,
     safe_write_path,
@@ -135,7 +142,7 @@ class CloneToGeoPackageDialog(QDialog):
         for layer_id, layer in project.mapLayers().items():
             if not isinstance(layer, QgsVectorLayer):
                 continue
-            if parse_oapif_uri(layer.source()) is None:
+            if parse_portal_layer_source(layer.source()) is None:
                 continue
             self._layer_combo.addItem(layer.name(), userData=layer_id)
         if self._layer_combo.count() == 0:
@@ -163,14 +170,12 @@ class CloneToGeoPackageDialog(QDialog):
     def _on_layer_changed(self) -> None:
         layer = self._selected_layer()
         if layer is not None:
-            parsed = parse_oapif_uri(layer.source())
-            if parsed:
-                _portal, type_name = parsed
-                layer_id = type_name.split("__", 1)[1] if "__" in type_name else "default"
+            ref = parse_portal_layer_source(layer.source())
+            if ref is not None:
                 target = make_target(
                     directory=self._target_directory or tempfile.gettempdir(),
                     item_title=layer.name(),
-                    layer_id=layer_id,
+                    layer_id=ref.layer_id,
                 )
                 self._filename_input.setText(target.file_name)
         self._refresh_validation()
@@ -217,19 +222,15 @@ class CloneToGeoPackageDialog(QDialog):
             QMessageBox.warning(self, "Connection not ready", "Sign in first.")
             return
 
-        parsed = parse_oapif_uri(layer.source())
-        if parsed is None:
+        ref = parse_portal_layer_source(layer.source())
+        if ref is None:
             QMessageBox.critical(
                 self,
                 "Unresolved layer",
                 "Could not resolve the portal item from the layer source.",
             )
             return
-        _portal_url, type_name = parsed
-        if "__" in type_name:
-            item_id, layer_id = type_name.split("__", 1)
-        else:
-            item_id, layer_id = type_name, "default"
+        item_id, layer_id = ref.item_id, ref.layer_id
 
         target = CloneTarget(
             directory=self._target_directory,
@@ -268,7 +269,9 @@ class CloneToGeoPackageDialog(QDialog):
         def done(body) -> None:
             if self._closed:
                 return
-            self._write_and_load(body, target=target, layer_name=layer_name)
+            self._write_and_load(
+                body, target=target, layer_name=layer_name, source=ref
+            )
 
         def failed(exc: BaseException) -> None:
             _log.error("download failed", exc_info=exc)
@@ -284,7 +287,14 @@ class CloneToGeoPackageDialog(QDialog):
         self._closed = True
         super().reject()
 
-    def _write_and_load(self, body, *, target: CloneTarget, layer_name: str) -> None:
+    def _write_and_load(
+        self,
+        body,
+        *,
+        target: CloneTarget,
+        layer_name: str,
+        source: PortalLayerRef,
+    ) -> None:
         # The GeoPackage write and layer registration use QGIS API
         # objects, so they stay on the GUI thread; only the network
         # download runs in the task.
@@ -293,7 +303,7 @@ class CloneToGeoPackageDialog(QDialog):
         self._progress_label.setText(f"Writing {count} feature(s) to GeoPackage...")
 
         try:
-            _write_geojson_to_geopackage(fc, target.gpkg_path)
+            _write_geojson_to_geopackage(fc, target.gpkg_path, source=source)
         except Exception as e:
             _log.exception("geopackage write failed")
             QMessageBox.critical(self, "Write failed", str(e))
@@ -328,7 +338,7 @@ class CloneToGeoPackageDialog(QDialog):
 
 
 def _write_geojson_to_geopackage(
-    feature_collection: dict, gpkg_path: str
+    feature_collection: dict, gpkg_path: str, *, source: PortalLayerRef | None = None
 ) -> None:
     """Write the normalized FeatureCollection to a GeoPackage.
 
@@ -339,10 +349,17 @@ def _write_geojson_to_geopackage(
     helper independent of the QgsVectorFileWriter version
     (writeAsVectorFormatV3 vs the legacy API).
 
+    ``source`` is stamped into the same container as a second,
+    non-spatial table so the push-edits flow can offer the clone
+    back to its origin layer; see ``offline.clone``.
+
     The GeoPackage itself is written via ``safe_write_path``: the
     writer targets a sibling temp file that only replaces
     ``gpkg_path`` once the write succeeded, so a failed re-clone
     can never destroy an existing (possibly locally edited) copy.
+    Both tables are written inside that one block, so a clone that
+    fails halfway still cannot replace a good file with a partial
+    one.
     """
     import contextlib
 
@@ -389,6 +406,74 @@ def _write_geojson_to_geopackage(
             )
             if err != no_error:
                 raise RuntimeError(f"GeoPackage write failed: {msg or err}")
+            if source is not None:
+                # Best-effort by design: the features are already
+                # written, and losing the origin stamp only costs the
+                # user the push-back shortcut. Failing the clone here
+                # would throw away a download that may have taken
+                # minutes.
+                try:
+                    _write_clone_source_table(tmp_gpkg, source, ctx=ctx)
+                except Exception:
+                    _log.exception("clone-source table could not be written")
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp_geojson)
+
+
+def _write_clone_source_table(
+    gpkg_path: str, source: PortalLayerRef, *, ctx
+) -> None:
+    """Add the clone-origin table to an already-written GeoPackage.
+
+    ``CreateOrOverwriteLayer`` is the load-bearing detail: the
+    default action for an existing file is CreateOrOverwriteFile,
+    which would drop the feature layer written a moment ago and
+    leave a GeoPackage holding nothing but provenance.
+
+    Called inside the caller's ``safe_write_path`` block against the
+    temp path, so the origin table lands in the same container as
+    the data and the same atomic promote covers both.
+    """
+    from qgis.core import QgsFeature, QgsVectorFileWriter
+
+    field_spec = "&".join(f"field={name}:string" for name in CLONE_SOURCE_FIELDS)
+    # "None" geometry: the origin row has no location, and a
+    # geometry column would make QGIS list it as a map layer.
+    holder = QgsVectorLayer(f"None?{field_spec}", CLONE_SOURCE_TABLE, "memory")
+    if not holder.isValid():
+        _log.warning("clone-source table skipped: memory layer did not build")
+        return
+    values = {
+        "portal_url": source.portal_url,
+        "item_id": source.item_id,
+        "layer_id": source.layer_id,
+        "cloned_at": clone_timestamp(),
+    }
+    feature = QgsFeature(holder.fields())
+    feature.setAttributes([values[name] for name in CLONE_SOURCE_FIELDS])
+    added, _ = holder.dataProvider().addFeatures([feature])
+    if not added:
+        _log.warning("clone-source table skipped: origin row was rejected")
+        return
+
+    options = QgsVectorFileWriter.SaveVectorOptions()
+    options.driverName = "GPKG"
+    options.fileEncoding = "UTF-8"
+    options.layerName = CLONE_SOURCE_TABLE
+    options.actionOnExistingFile = resolve_enum(
+        (
+            getattr(QgsVectorFileWriter, "ActionOnExistingFile", None),
+            "CreateOrOverwriteLayer",
+        ),
+        (QgsVectorFileWriter, "CreateOrOverwriteLayer"),
+    )
+    no_error = resolve_enum(
+        (getattr(QgsVectorFileWriter, "WriterError", None), "NoError"),
+        (QgsVectorFileWriter, "NoError"),
+    )
+    err, msg, *_ = QgsVectorFileWriter.writeAsVectorFormatV3(
+        holder, gpkg_path, ctx, options
+    )
+    if err != no_error:
+        _log.warning("clone-source table skipped: %s", msg or err)
