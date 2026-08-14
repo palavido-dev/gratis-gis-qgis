@@ -4,8 +4,10 @@
 QGIS-side wrapper around the pure-Python sync planner in
 `edit/sync.py`. The dialog:
 
-  1. Lists vector layers in the project that come from a portal
-     source we recognize (OAPIF / vectortile).
+  1. Lists the vector layers in the project that can be pushed: a
+     live OAPIF layer, or an offline clone that recorded its origin.
+     Vector-tile layers are portal-backed but read-only in QGIS, so
+     they are deliberately not offered.
   2. For each, walks the layer's `editBuffer()` to capture added,
      changed-geometry, changed-attribute, and deleted features.
   3. Builds a SyncPlan and shows it for confirmation.
@@ -46,7 +48,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 from gratisgis_client.client import GratisGISClient
 from gratisgis_client.endpoints.features import FeatureIn
 
-from ..browser.uris import parse_oapif_uri
+from ..browser.uris import PortalLayerRef, parse_oapif_layer_source
 from ..edit.sync import (
     EditedFeature,
     SyncOp,
@@ -55,7 +57,7 @@ from ..edit.sync import (
     summarize_plan,
 )
 from ..log import get_logger
-from ..offline.clone import PORTAL_ID_PROPERTY
+from ..offline.clone import PORTAL_ID_PROPERTY, read_clone_source
 from ..portal import get_client
 from ..settings import ConnectionStore
 from ..tasks import TaskHandle, format_error, run_in_task
@@ -70,6 +72,18 @@ _log = get_logger(__name__)
 # the post-push write-back fills for created features); the rest are
 # the id spellings the OAPIF provider / GeoJSON responses have used.
 _PORTAL_ID_FIELDS = (PORTAL_ID_PROPERTY, "featureId", "feature_id", "id", "fid_portal")
+
+# Shown when nothing in the project can be pushed. Naming the fix is
+# the point: the Browser tree hands out vector-tile layers for spatial
+# data, which QGIS cannot edit at all, so a user staring at a portal
+# layer in their Layers panel has no way to guess why this dialog
+# claims there is nothing to push.
+_NO_PUSHABLE_LAYERS = (
+    "Nothing in this project can be pushed. A layer added from the "
+    "Browser tree draws as vector tiles, which are read only in QGIS. "
+    "Use 'Clone layer for offline use...' on it first, then edit the "
+    "offline copy and push that back."
+)
 
 
 class PushEditsDialog(QDialog):
@@ -122,9 +136,8 @@ class PushEditsDialog(QDialog):
     # ----- Setup -----
 
     def _populate_layer_combo(self) -> None:
-        # Only show vector layers whose source URI we recognize as a
-        # portal endpoint. Pushing edits to an unrelated layer is
-        # meaningless and would confuse the user.
+        # Only show layers we can actually push: a live OAPIF layer,
+        # or an offline clone that recorded where it came from.
         # isinstance covers both QGIS 3 (where layer.type() returns
         # QgsMapLayer.VectorLayer as int) and QGIS 4 (where it
         # returns Qgis.LayerType.Vector).
@@ -132,12 +145,11 @@ class PushEditsDialog(QDialog):
         for layer_id, layer in project.mapLayers().items():
             if not isinstance(layer, QgsVectorLayer):
                 continue
-            parsed = parse_oapif_uri(layer.source())
-            if parsed is None:
+            if _resolve_push_target(layer) is None:
                 continue
             self._layer_combo.addItem(layer.name(), userData=layer_id)
         if self._layer_combo.count() == 0:
-            self._layer_combo.addItem("(no portal-backed layers in project)", None)
+            self._layer_combo.addItem("(no editable portal layers in project)", None)
             self._layer_combo.setEnabled(False)
 
     def _populate_connection_combo(self) -> None:
@@ -160,22 +172,15 @@ class PushEditsDialog(QDialog):
 
         layer = self._selected_layer()
         if layer is None:
+            if not self._layer_combo.isEnabled():
+                self._summary_label.setText(_NO_PUSHABLE_LAYERS)
             return
-        # Resolve the portal item-id and layer-id from the OAPIF URI.
-        parsed = parse_oapif_uri(layer.source())
-        if parsed is None:
-            self._summary_label.setText(
-                "Selected layer doesn't appear to be a portal-backed OAPIF source."
-            )
+        ref = _resolve_push_target(layer)
+        if ref is None:
+            self._summary_label.setText(_NO_PUSHABLE_LAYERS)
             return
-        _portal_url, type_name = parsed
-        # Portal collection-id is `<itemId>` or `<itemId>__<layerKey>`.
-        if "__" in type_name:
-            item_id, layer_id = type_name.split("__", 1)
-        else:
-            item_id, layer_id = type_name, "default"
-        self._target_item_id = item_id
-        self._target_layer_id = layer_id
+        self._target_item_id = ref.item_id
+        self._target_layer_id = ref.layer_id
 
         edits = _collect_edits(layer)
         plan = build_sync_plan(edits)
@@ -348,6 +353,49 @@ class PushEditsDialog(QDialog):
         if self._push_task is not None:
             self._push_task.cancel()
         super().reject()
+
+
+# -----------------------------------------------------------
+# Which project layers can be pushed
+# -----------------------------------------------------------
+
+
+def _resolve_push_target(layer: QgsVectorLayer) -> PortalLayerRef | None:
+    """Resolve the portal layer a project layer's edits belong to.
+
+    Two shapes qualify, and the asymmetry with the clone dialog is
+    deliberate:
+
+      - a live OAPIF layer, which QGIS can put into edit mode;
+      - an offline clone, which is an ordinary GeoPackage on disk
+        carrying the origin table the clone flow wrote.
+
+    Vector-tile layers are excluded even though they are portal
+    layers, because QGIS treats vector tiles as a read-only
+    rendering format: they have no edit buffer, so listing one here
+    could only ever produce an empty plan.
+    """
+    source = layer.source()
+    ref = parse_oapif_layer_source(source)
+    if ref is not None:
+        return ref
+    gpkg_path = _gpkg_path_from_source(source)
+    if gpkg_path is None:
+        return None
+    return read_clone_source(gpkg_path)
+
+
+def _gpkg_path_from_source(source: str) -> str | None:
+    """Pull the file path out of an OGR GeoPackage layer source.
+
+    QGIS spells these ``<path>.gpkg|layername=<name>`` (the suffix is
+    absent for single-layer files). Keyed on the extension rather
+    than the provider name so it holds however the layer was added.
+    """
+    if not source:
+        return None
+    path = source.split("|", 1)[0].strip()
+    return path if path.lower().endswith(".gpkg") else None
 
 
 # -----------------------------------------------------------
