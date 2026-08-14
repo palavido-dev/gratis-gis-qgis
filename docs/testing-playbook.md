@@ -302,13 +302,25 @@ invisible until it breaks.
 
 1. `Plugins > GratisGIS > Manage GratisGIS connections...`
 2. **Sign out.**
-3. Refresh the Browser tree. Private and org layers should stop
-   drawing. *(Expected: the read-only key is revoked at sign-out.)*
-4. **Sign in** again.
-5. Re-add a **private** layer and confirm it draws again.
+3. The Browser tree should refresh **on its own** and every folder
+   under the connection should read "Not signed in." in plain black
+   text. No private or org titles should remain listed, and nothing
+   should be red.
+4. A **private raster** already on the canvas should stop drawing once
+   you pan somewhere it has not already fetched. *(This is the one that
+   used to keep working: its key is held by GDAL, not by the QGIS
+   password store.)*
+5. Try to add a private layer from the tree. You should not be able to,
+   and you should **not** see an "Authentication Manager" error.
+6. **Sign in** again. The tree should refresh on its own.
+7. Re-add a **private** layer and confirm it draws.
+8. **The one most worth checking:** a layer that was already on the
+   canvas from before the sign-out should start drawing again without
+   being removed and re-added. That is the reason sign-out now empties
+   the stored credential rather than deleting it.
 
-If step 5 fails, that is the credential re-mint path and I want the
-log.
+If step 8 fails, the credential entry is being replaced rather than
+reused, and I want the log.
 
 ---
 

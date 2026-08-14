@@ -160,7 +160,7 @@ class RootItem(QgsDataCollectionItem):
             profile = self._store.get(name)
             if profile is None:
                 continue
-            children.append(ConnectionItem(self, profile))
+            children.append(ConnectionItem(self, self._store, name))
         if not children:
             children.append(
                 _MessageItem(
@@ -173,23 +173,54 @@ class RootItem(QgsDataCollectionItem):
 
 
 class ConnectionItem(QgsDataCollectionItem):
-    """One configured portal. Expands into the four scope buckets."""
+    """One configured portal. Expands into the four scope buckets.
 
-    def __init__(self, parent: QgsDataItem, profile: ConnectionProfile) -> None:
+    Holds the connection's NAME and the store, never a
+    ``ConnectionProfile``. A profile is a frozen snapshot, and this
+    item outlives the state it describes: signing out changes the
+    profile but not this node's name or path, and QGIS's refresh keeps
+    an existing child whose name and path still match rather than
+    replacing it with the one ``createChildren`` just built. So a
+    captured profile survives sign-out, the node keeps reporting a
+    signed-in connection, and the tree offers private layers to a
+    signed-out user. Reading the store on each expand is what makes the
+    node describe the connection as it is now.
+    """
+
+    def __init__(
+        self, parent: QgsDataItem, store: ConnectionStore, name: str
+    ) -> None:
+        profile = store.get(name)
         super().__init__(
             parent,
-            profile.display_label,
-            f"gratisgis:/{profile.name}",
+            profile.display_label if profile else name,
+            f"gratisgis:/{name}",
         )
-        self._profile = profile
+        self._store = store
+        self._name = name
         self.setCapabilitiesV2(_BROWSER_CAP_FERTILE | _BROWSER_CAP_FAST)
 
     @property
-    def profile(self) -> ConnectionProfile:
-        return self._profile
+    def profile(self) -> ConnectionProfile | None:
+        """The connection as the store has it right now, or None.
+
+        None means the connection was deleted while its node was still
+        on screen, which the Browser tree allows: the connection
+        manager is a separate dialog and nothing forces a refresh.
+        """
+        return self._store.get(self._name)
 
     def createChildren(self) -> list[QgsDataItem]:
-        if not self._profile.is_discovered:
+        profile = self.profile
+        if profile is None:
+            return [
+                _MessageItem(
+                    self,
+                    "This connection has been deleted. Refresh the Browser "
+                    "panel to remove it.",
+                )
+            ]
+        if not profile.is_discovered:
             return [
                 _MessageItem(
                     self,
@@ -197,7 +228,7 @@ class ConnectionItem(QgsDataCollectionItem):
                     "manager to sign in.",
                 )
             ]
-        if not self._profile.authcfg_id:
+        if not profile.authcfg_id:
             return [
                 _MessageItem(
                     self,
@@ -206,7 +237,7 @@ class ConnectionItem(QgsDataCollectionItem):
                 )
             ]
         return [
-            BucketItem(self, self._profile, kind=kind)
+            BucketItem(self, self._store, self._name, kind=kind)
             for kind in all_buckets()
         ]
 
@@ -214,18 +245,29 @@ class ConnectionItem(QgsDataCollectionItem):
 class BucketItem(QgsDataCollectionItem):
     """A per-scope folder under a connection. Lazily fetches the
     matching items the first time it expands.
+
+    Carries the connection name rather than a profile, for the reason
+    given on ``ConnectionItem``: the bucket's path does not change when
+    the user signs out, so QGIS keeps this node across a refresh and a
+    captured profile would still be the signed-in one.
     """
 
     def __init__(
-        self, parent: QgsDataItem, profile: ConnectionProfile, *, kind: str
+        self,
+        parent: QgsDataItem,
+        store: ConnectionStore,
+        name: str,
+        *,
+        kind: str,
     ) -> None:
         label = _BUCKET_LABELS.get(kind, kind)
         super().__init__(
             parent,
             label,
-            f"gratisgis:/{profile.name}/{kind}",
+            f"gratisgis:/{name}/{kind}",
         )
-        self._profile = profile
+        self._store = store
+        self._name = name
         self._kind = kind
         self.setCapabilitiesV2(_BROWSER_CAP_FERTILE)
 
@@ -239,8 +281,16 @@ class BucketItem(QgsDataCollectionItem):
         # as "everything access=org not owned by me" until the
         # share roster is exposed cleanly through the API; the
         # plugin filters client-side.
+        profile = self._store.get(self._name)
+        # Signed out, or the connection is gone. Checked here rather
+        # than left to the client so the row reads as a state the user
+        # put the plugin in, not as a red "Failed to load" error: this
+        # is what a signed-out tree is supposed to look like.
+        if profile is None or not profile.authcfg_id:
+            return [_MessageItem(self, "Not signed in.")]
+
         try:
-            items = list_items(self._profile)
+            items = list_items(profile)
         except Exception as e:  # pragma: no cover - defensive
             _log.exception("BucketItem.createChildren list failed")
             return [_MessageItem(self, f"Failed to load: {e}")]
@@ -252,7 +302,7 @@ class BucketItem(QgsDataCollectionItem):
                 # The sub claim captured at sign-in; empty for
                 # profiles that predate it, in which case the
                 # filter falls back to ownership inference.
-                caller_id=self._profile.user_id or None,
+                caller_id=profile.user_id or None,
             )
         )
         # Trim down to types QGIS can actually render. Portal-only
@@ -279,7 +329,7 @@ class BucketItem(QgsDataCollectionItem):
             children.append(
                 _TypeGroupItem(
                     self,
-                    self._profile,
+                    profile,
                     type_key=type_key,
                     items=group_items,
                 )

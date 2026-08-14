@@ -758,6 +758,97 @@ def _run_checks() -> None:
     print("\n[14] freeze diagnostics (the project-load hang)")
     _check_freeze_diagnostics()
 
+    print("\n[15] sign-out leaves a resolvable, credential-free authcfg")
+    _check_signed_out_authcfg()
+
+
+def _check_signed_out_authcfg() -> None:
+    """The emptied-not-deleted authcfg, against the real auth manager.
+
+    Sign-out used to delete the entry, stranding every saved project and
+    every canvas layer on an id that no longer resolved: QGIS reports
+    "FAILED to load config <id> from any storage". The replacement keeps
+    the entry and strips the credential, which only works if a real
+    QgsAuthManager accepts a config holding nothing but a marker header
+    and still loads it back. A stub cannot answer that, and the failure
+    mode if it is wrong is the exact banner the change exists to remove.
+    """
+    from gratisgis_qgis.auth_bridge import (
+        SIGNED_OUT_HEADER,
+        clear_api_header_credential,
+        find_api_header_method,
+        read_api_header,
+        remove_authcfg,
+        store_api_header_authcfg,
+    )
+
+    method = find_api_header_method()
+    if method is None:
+        check(
+            "API Header method available for the sign-out check",
+            lambda: _assert(False, "no API Header auth method; cannot verify"),
+        )
+        return
+
+    authcfg_id = "ggsmoke1"
+    try:
+        stored = check(
+            "store a credential-bearing authcfg",
+            lambda: store_api_header_authcfg(
+                authcfg_id,
+                name="GratisGIS smoke",
+                method_key=method,
+                headers={"Authorization": "Bearer ggk_smoke"},
+            ),
+        )
+        check("the credential stored", lambda: _assert(bool(stored), "store failed"))
+        check(
+            "the credential reads back",
+            lambda: _assert(
+                read_api_header(authcfg_id) == ("Authorization", "Bearer ggk_smoke"),
+                f"unexpected read-back: {read_api_header(authcfg_id)!r}",
+            ),
+        )
+
+        emptied = check(
+            "clear_api_header_credential() on a real auth manager",
+            lambda: clear_api_header_credential(
+                authcfg_id, name="GratisGIS smoke"
+            ),
+        )
+        check(
+            "emptying reports success",
+            lambda: _assert(bool(emptied), "could not empty the entry"),
+        )
+
+        # The two properties the whole design rests on.
+        after = read_api_header(authcfg_id)
+        check(
+            "the entry still resolves after being emptied",
+            lambda: _assert(
+                after is not None,
+                "the emptied entry no longer loads, which is the dangling "
+                "reference this change exists to prevent",
+            ),
+        )
+        check(
+            "and carries no credential",
+            lambda: _assert(
+                after == SIGNED_OUT_HEADER,
+                f"expected only the signed-out marker, got {after!r}",
+            ),
+        )
+        check(
+            "no Authorization header survives",
+            lambda: _assert(
+                (after or ("", ""))[0].lower() != "authorization",
+                f"a credential header survived sign-out: {after!r}",
+            ),
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            remove_authcfg(authcfg_id)
+
 
 def _check_freeze_diagnostics() -> None:
     """The freeze instrumentation, against the bindings it depends on.

@@ -222,6 +222,62 @@ def read_api_header(authcfg_id: str) -> tuple[str, str] | None:
         return None
 
 
+#: What a signed-out API Header authcfg carries instead of a credential.
+#:
+#: Not an empty config map: QGIS treats a config with nothing in it as
+#: invalid, which lands back in the same missing-config path this
+#: exists to avoid. A header the portal has no opinion about keeps the
+#: entry well formed while carrying no secret. The name is ours so it
+#: cannot collide with anything meaningful, and its presence in a
+#: request log is a true statement about the client's state.
+SIGNED_OUT_HEADER = ("X-GratisGIS-Signed-Out", "1")
+
+
+def clear_api_header_credential(authcfg_id: str, *, name: str) -> bool:
+    """Keep the authcfg entry, drop the credential inside it.
+
+    Sign-out used to delete the entry outright, which is wrong for a
+    reason that only shows up later: the id is written into every layer
+    URI the connection ever produced, and those URIs live on in saved
+    project files and in layers already on the canvas. Deleting the
+    entry turns all of them into references to a config that no longer
+    exists, which QGIS reports as "FAILED to load config <id> from any
+    storage" and which sends it hunting through the auth manager once
+    per layer. That hunt is the suspected route into the project-load
+    freeze (see docs/diagnosing-a-freeze.md).
+
+    Emptying it instead means the lookup still succeeds, the request
+    goes out with no credential, and the portal answers 401. A layer
+    that fails to authenticate is an ordinary layer failure with an
+    ordinary message, which is what signing out should look like.
+
+    Keeping the id on the profile matters just as much: the next
+    sign-in reuses it, so every layer and project already pointing at
+    this entry starts working again without being rebuilt.
+
+    Returns False when the entry could not be rewritten, in which case
+    the caller should fall back to removing it: a stale credential left
+    behind is worse than a dangling reference.
+    """
+    if not authcfg_id:
+        return False
+    method_key = find_api_header_method()
+    if method_key is None:
+        _log.info(
+            "No API Header auth method available; removing authcfg %s instead "
+            "of emptying it",
+            authcfg_id,
+        )
+        return False
+    header, value = SIGNED_OUT_HEADER
+    return store_api_header_authcfg(
+        authcfg_id,
+        name=name,
+        method_key=method_key,
+        headers={header: value},
+    )
+
+
 def remove_authcfg(authcfg_id: str) -> None:
     """Best-effort removal of one auth-manager entry.
 

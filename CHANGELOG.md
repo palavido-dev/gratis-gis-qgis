@@ -7,6 +7,37 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.8.0] - 2026-08-14
+
+### Fixed
+
+- **Signing out now actually signs you out of the Browser panel.** Every
+  private and org layer stayed listed after sign-out, and refreshing did
+  not clear them. The tree remembered how the connection looked when
+  each row was first drawn, and refreshing kept the remembered rows
+  rather than replacing them. Rows now report the connection as it is
+  at the moment you expand them.
+
+- **A private raster kept drawing after sign-out.** Raster tile layers
+  get their credential through GDAL rather than the QGIS password
+  store, so clearing that store never reached them and the key stayed
+  loaded until QGIS was closed. Sign-out and deleting a connection both
+  clear it now.
+
+- **Adding a private layer while signed out gave an Authentication
+  Manager error.** Sign-out used to delete the credential entry
+  outright, which broke every layer and saved project that pointed at
+  it, including after you signed back in. The entry is kept and emptied
+  instead, so those layers fail cleanly while signed out and start
+  working again the moment you sign back in, without being rebuilt.
+
+- **A signed-out folder said "Failed to load: Not signed in" in red.**
+  It now reads "Not signed in.", because that is a state you chose, not
+  a failure.
+
+- **Signing in or out refreshes the Browser panel** instead of leaving
+  you to do it by hand.
+
 ## [0.7.0] - 2026-08-14
 
 ### Added

@@ -48,11 +48,13 @@ from gratisgis_client.discovery import DiscoveryResult
 from gratisgis_client.endpoints.api_keys import ApiKeyCreated
 
 from ..auth_bridge import (
+    clear_api_header_credential,
     find_api_header_method,
     make_token_storage,
     remove_authcfg,
     store_api_header_authcfg,
 )
+from ..browser.refresh import refresh_browser_tree
 from ..layer_auth import mint_layer_key, revoke_layer_key
 from ..log import get_logger
 from ..portal import get_client, invalidate
@@ -213,10 +215,17 @@ class ConnectionManagerDialog(QDialog):
                     make_token_storage(existing.authcfg_id).clear()
                 except Exception:  # pragma: no cover - defensive
                     _log.exception("Failed to clear tokens for %s", name)
+            # Removed outright, not emptied the way sign-out does it:
+            # the connection itself is going, so nothing should be left
+            # pointing at it. raster_forget matters here for the same
+            # reason it does on sign-out, since the GDAL header outlives
+            # the auth database entry.
             remove_authcfg(existing.layer_authcfg_id)
+            raster_forget(existing)
             self._store.delete(name)
             self._set_busy(False)
             self._reload()
+            refresh_browser_tree()
 
         # Deleting a connection with its layer key still live would
         # leave a working credential on the portal that nothing local
@@ -235,6 +244,7 @@ class ConnectionManagerDialog(QDialog):
         def finished(_ok: bool) -> None:
             self._set_busy(False)
             self._reload()
+            refresh_browser_tree()
 
         _refresh_discovery_and_sign_in(self, self._store, profile, on_finished=finished)
 
@@ -263,13 +273,10 @@ class ConnectionManagerDialog(QDialog):
                 QMessageBox.warning(self, "Sign-out failed", str(exc))
                 self._set_busy(False)
                 return
-            remove_authcfg(profile.layer_authcfg_id)
-            cleared = replace(
-                profile, authcfg_id="", api_key_id="", layer_authcfg_id=""
-            )
-            self._store.save(cleared)
+            self._store.save(_signed_out(profile))
             self._set_busy(False)
             self._reload()
+            refresh_browser_tree()
 
         # The layer key is revoked server-side first, while the OIDC
         # session that authorizes the revoke call still exists.
@@ -416,6 +423,43 @@ def _revoke_layer_key_then(
         lambda _exc: continuation(),
         cancelable=False,
     )
+
+
+def _signed_out(profile: ConnectionProfile) -> ConnectionProfile:
+    """The profile as it should look once the user has signed out.
+
+    Three things have to happen together, and the bug this replaces was
+    doing only the first.
+
+    The OIDC session goes: ``authcfg_id`` is cleared and its tokens were
+    already removed by the caller. That is what makes the Browser tree
+    and every portal call report signed-out.
+
+    The layer credential is emptied but its authcfg is KEPT, along with
+    the id on the profile. Deleting it stranded every saved project and
+    every layer on the canvas on a config that no longer existed; see
+    ``clear_api_header_credential``. Keeping the id is also what lets
+    the next sign-in revive those layers rather than orphan them.
+
+    The GDAL header is dropped. Raster tile_layers read their credential
+    from a process-wide GDAL option rather than from the authcfg, so
+    clearing the auth database does nothing to them: a private raster
+    on the canvas kept drawing after sign-out because that option was
+    still registered. It lives for the life of the QGIS process, so
+    nothing short of forgetting it explicitly will do.
+    """
+    if not clear_api_header_credential(
+        profile.layer_authcfg_id, name=f"GratisGIS layers: {profile.name}"
+    ):
+        # Could not empty it. A live credential sitting in the auth
+        # database after sign-out is worse than a dangling reference,
+        # so fall back to removing the entry, and drop the id with it
+        # so nothing keeps pointing at something that is gone.
+        remove_authcfg(profile.layer_authcfg_id)
+        raster_forget(profile)
+        return replace(profile, authcfg_id="", api_key_id="", layer_authcfg_id="")
+    raster_forget(profile)
+    return replace(profile, authcfg_id="", api_key_id="")
 
 
 def _clear_layer_key(profile: ConnectionProfile) -> ConnectionProfile:
