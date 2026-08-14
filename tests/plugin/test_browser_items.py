@@ -46,6 +46,9 @@ class _StubBase:
     def setToolTip(self, text: str) -> None:  # QGIS API name
         self.tooltip = text
 
+    def toolTip(self) -> str:  # QGIS API name
+        return self.tooltip
+
 
 class _StubQgsDataItem(_StubBase):
     # QGIS 3 class-level shortcuts the production resolver finds.
@@ -530,19 +533,57 @@ class TestTileLayerRouting:
         child = items_mod._make_item(None, profile_factory(), self._item())
         assert isinstance(child, items_mod.UnsupportedTileLayerItem)
 
-    def test_still_processing_says_so(
+    @pytest.mark.parametrize(
+        "fmt,state,expected",
+        [
+            # The regression that hid every PMTiles layer: a finished
+            # pyramid reports 'pmtiles-ready', not 'ready', and an
+            # earlier readiness gate on state == 'ready' therefore
+            # routed all six of them to the "still preparing" row.
+            ("pmtiles", "pmtiles-ready", "PmtilesTileLayerItem"),
+            ("cog", "ready", "TileLayerItem"),
+            # Every other state still serves a file per the portal's
+            # own state machine, so none of them may block adding.
+            ("cog", "cog-ready", "TileLayerItem"),
+            ("cog", "tiling", "TileLayerItem"),
+            ("cog", "tiling-failed", "TileLayerItem"),
+            ("cog", "building", "TileLayerItem"),
+            ("pmtiles", "failed", "PmtilesTileLayerItem"),
+        ],
+    )
+    def test_format_decides_the_provider_not_the_state(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        fmt: str,
+        state: str,
+        expected: str,
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {"data": {"format": fmt, "processingState": state}},
+        )
+        child = items_mod._make_item(None, profile_factory(), self._item())
+        assert type(child).__name__ == expected
+
+    def test_no_format_yet_is_not_drawable(
         self,
         items_mod: ModuleType,
         profile_factory: ProfileFactory,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # Nothing is being served yet, which is the one case worth
+        # blocking on.
         monkeypatch.setattr(
             items_mod,
             "get_item",
-            lambda _p, _i: {"data": {"format": "cog", "processingState": "building"}},
+            lambda _p, _i: {"data": {"processingState": "uploading"}},
         )
         child = items_mod._make_item(None, profile_factory(), self._item())
         assert isinstance(child, items_mod.UnsupportedTileLayerItem)
+        assert "uploading" in child.tooltip
 
     def test_tile_layer_group_does_not_claim_fast(
         self,
@@ -556,3 +597,109 @@ class TestTileLayerRouting:
             parent, profile_factory(), type_key="tile_layer", items=[]
         )
         assert not group.capabilities_v2 & items_mod._BROWSER_CAP_FAST
+
+
+class TestLayerTargetResolution:
+    """The search dock must route exactly like the Browser tree.
+
+    It used to build its own URIs for two item types only, which
+    drifted: data layers went to the public-only OAPIF surface (so
+    private ones came back empty), tile layers to the vector-tile
+    surface that does not exist for them, and basemaps were refused
+    outright even though the tree adds them. Resolving through the
+    tree's own leaf is what stops the two from disagreeing again.
+    """
+
+    def _resolve(self, items_mod: ModuleType, profile: Any, summary: ItemSummary) -> Any:
+        # Resolution lives outside ui/ precisely so it can be
+        # exercised without Qt widgets; import after the qgis stub.
+        from gratisgis_qgis.layer_targets import resolve_layer_target
+
+        return resolve_layer_target(profile, summary)
+
+    def test_basemap_resolves_to_a_raster_target(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {"data": {"tileUrl": "https://tiles.test/{z}/{x}/{y}.png"}},
+        )
+        target = self._resolve(
+            items_mod,
+            profile_factory(),
+            _summary(type="basemap", title="Open Street Map", id="bm-1"),
+        )
+        assert target is not None
+        assert target.layer_type == "raster"
+        assert target.provider == "wms"
+        assert "tiles.test" in target.uri
+        assert target.name == "Open Street Map"
+
+    def test_pmtiles_tile_layer_resolves_to_the_xyz_route(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {
+                "data": {"format": "pmtiles", "processingState": "pmtiles-ready"}
+            },
+        )
+        target = self._resolve(
+            items_mod,
+            profile_factory(layer_authcfg_id="lyr1234"),
+            _summary(type="tile_layer", title="Hillshade", id="tl-1"),
+        )
+        assert target is not None
+        assert target.layer_type == "raster"
+        assert "type=xyz" in target.uri
+        assert "authcfg=lyr1234" in target.uri
+
+    def test_private_data_layer_resolves_to_the_authed_route(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The old dock sent this to public OAPIF, so a private layer
+        # added from search silently drew nothing.
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: _v3_envelope({"id": "roads", "geometryType": "line"}),
+        )
+        target = self._resolve(
+            items_mod,
+            profile_factory(layer_authcfg_id="lyr1234"),
+            _summary(type="data_layer", access="private", id="item-9"),
+        )
+        assert target is not None
+        assert "authcfg=lyr1234" in target.uri
+        assert target.layer_type == "vector-tile"
+
+    def test_not_drawable_item_reports_its_reason(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod,
+            "get_item",
+            lambda _p, _i: {"data": {"processingState": "uploading"}},
+        )
+        target = self._resolve(
+            items_mod,
+            profile_factory(),
+            _summary(type="tile_layer", id="tl-2"),
+        )
+        assert target is not None
+        assert not target.uri
+        assert "uploading" in target.message

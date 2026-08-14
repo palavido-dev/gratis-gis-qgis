@@ -1135,29 +1135,31 @@ def _make_item(
         full = get_item(profile, item.id) or {}
         raw = full.get("data") if isinstance(full, dict) else None
         data = raw if isinstance(raw, dict) else {}
+        # `format` is the field that says what is actually being
+        # served, so it alone decides the provider. processingState is
+        # NOT a readiness gate: the portal keeps serving a file through
+        # every non-terminal state (`tiling` and `building` serve the
+        # previous file, `tiling-failed` falls back to the COG), and
+        # the state for a finished pyramid is `pmtiles-ready` rather
+        # than `ready`. Gating on state == 'ready' therefore hid every
+        # PMTiles layer behind a "still being prepared" row while the
+        # tiles were sitting there ready to serve.
         fmt = str(data.get("format") or "").lower()
-        state = str(data.get("processingState") or "").lower()
-        if state and state not in ("ready", ""):
-            return UnsupportedTileLayerItem(
-                parent,
-                item,
-                reason=(
-                    f"This layer is still being prepared on the portal "
-                    f"(status: {state}). Refresh once it is ready."
-                ),
-            )
         if fmt == "cog":
             return TileLayerItem(parent, profile, item, data=data)
         if fmt == "pmtiles":
             return PmtilesTileLayerItem(parent, profile, item, data=data)
+        # No format means nothing is being served yet, which is the one
+        # case worth blocking on. Name the state when we have it so the
+        # row says "still uploading" rather than something cryptic.
+        state = str(data.get("processingState") or "").lower()
         return UnsupportedTileLayerItem(
             parent,
             item,
             reason=(
-                "QGIS cannot open this layer's tile format"
-                + (f" ({fmt})" if fmt else "")
-                + ". Open it in the portal, or use Download on the item "
-                "page to get a file you can add here."
+                f"This layer is not ready to draw yet (status: {state})."
+                if state
+                else "This layer has no tile file on the portal yet."
             ),
         )
     if t == "basemap":
