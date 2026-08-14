@@ -7,6 +7,33 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.9] - 2026-08-14
+
+### Fixed
+
+- **The clone dialog still saw no layers.** 0.2.8 taught the source
+  parser all three URI shapes, but the picker rejected each layer on its
+  CLASS before ever reading its source: it accepted only vector layers,
+  and a spatial layer from the browser tree is a vector-TILE layer,
+  which is a separate QGIS class rather than a kind of vector layer.
+  Both the picker and the selection now accept either. Cloning reads
+  features over HTTP and never touches the layer's provider, so a
+  read-only rendering format is a perfectly good thing to clone from.
+- **A response that was not a success leaked its network connection.**
+  Every non-2xx reply left a live socket for the garbage collector to
+  reclaim whenever it got around to it. Non-2xx is routine here (asking
+  for an item that turns out not to exist, an expired token prompting a
+  refresh), so this accumulated over a long session.
+
+### Changed
+
+- The tests behind the clone picker now model the QGIS layer classes
+  faithfully, one stand-in per real class. A single stand-in had been
+  serving for every class, which made the type check pass by
+  construction: that is why the suite stayed green through both of the
+  clone bugs. The check is now covered by a real-QGIS assertion too, so
+  a stand-in can no longer be the only witness.
+
 ## [0.2.8] - 2026-08-14
 
 ### Fixed
