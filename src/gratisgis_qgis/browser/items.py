@@ -523,13 +523,14 @@ def _spatial_sublayer_uri(
     did before authed rendering existed.
     """
     if item.access == "public":
-        return vector_tile_uri(profile.portal_url, collection_id)
+        return vector_tile_uri(profile.portal_url, collection_id, extent=item.bbox)
     if profile.layer_authcfg_id and layer_id:
         return authed_vector_tile_uri(
             profile.portal_url,
             item.id,
             layer_id,
             authcfg_id=profile.layer_authcfg_id,
+            extent=item.bbox,
         )
     _log.debug(
         "Non-public sublayer %s falls back to the public tiles surface "
@@ -538,7 +539,7 @@ def _spatial_sublayer_uri(
         bool(profile.layer_authcfg_id),
         layer_id,
     )
-    return vector_tile_uri(profile.portal_url, collection_id)
+    return vector_tile_uri(profile.portal_url, collection_id, extent=item.bbox)
 
 
 class _DataLayerSublayerItem(QgsLayerItem):
@@ -721,6 +722,7 @@ class PmtilesTileLayerItem(QgsLayerItem):
             authcfg_id=authcfg,
             min_zoom=_int_or(envelope.get("minZoom"), 0),
             max_zoom=_int_or(envelope.get("maxZoom"), 18),
+            extent=item.bbox,
         )
         super().__init__(
             parent,

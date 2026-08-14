@@ -124,6 +124,13 @@ class ItemSummary:
     org_id: str
     folder_id: str | None = None
     thumbnail_url: str | None = None
+    #: Geographic extent as (min_lon, min_lat, max_lon, max_lat) in
+    #: EPSG:4326, which is the CRS the portal states in ``bboxSrs``.
+    #: None when the portal has no extent for the item, which it sends
+    #: as an empty array rather than null. Kept in 4326 rather than the
+    #: layer's own CRS so this module needs no coordinate machinery;
+    #: the QGIS side transforms when it applies the extent.
+    bbox: tuple[float, float, float, float] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -156,6 +163,10 @@ class ItemSummary:
             "orgId": self.org_id,
             "folderId": self.folder_id,
             "thumbnailUrl": self.thumbnail_url,
+            # Empty array, not null, matching what the portal emits for
+            # an item with no extent, so a round-tripped payload is
+            # indistinguishable from a fetched one.
+            "bbox": list(self.bbox) if self.bbox is not None else [],
             "createdAt": self.created_at.isoformat(),
             "updatedAt": self.updated_at.isoformat(),
         }
@@ -199,9 +210,41 @@ def _summary_kwargs(data: dict[str, Any]) -> dict[str, Any]:
         "org_id": req_str(data, "orgId"),
         "folder_id": opt_str(data, "folderId"),
         "thumbnail_url": opt_str(data, "thumbnailUrl"),
+        "bbox": _bbox(data),
         "created_at": req_datetime(data, "createdAt"),
         "updated_at": req_datetime(data, "updatedAt"),
     }
+
+
+def _bbox(data: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    """Parse the portal's ``bbox`` array, tolerantly.
+
+    The portal sends ``[]`` for an item it has no extent for (tile
+    layers today), so an empty array means "unknown", not "empty
+    region". Anything that is not four finite numbers is treated the
+    same way: an extent is a convenience for zooming, and refusing to
+    parse an item because its bbox is odd would be a poor trade.
+
+    Degenerate extents (a single point, or a zero-width axis) are
+    returned as-is. The caller knows how to pad one; this layer should
+    not invent geography.
+    """
+    raw = data.get("bbox")
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    values: list[float] = []
+    for entry in raw:
+        if isinstance(entry, bool) or not isinstance(entry, (int, float)):
+            return None
+        number = float(entry)
+        # NaN and infinities would poison every later comparison.
+        if number != number or number in (float("inf"), float("-inf")):
+            return None
+        values.append(number)
+    min_lon, min_lat, max_lon, max_lat = values
+    if min_lon > max_lon or min_lat > max_lat:
+        return None
+    return (min_lon, min_lat, max_lon, max_lat)
 
 
 @dataclass(frozen=True, kw_only=True)

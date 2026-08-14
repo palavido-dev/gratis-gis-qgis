@@ -19,6 +19,79 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import quote
 
+# A parameter of our own, carried in the layer URI so the extent
+# travels with the layer instead of costing a network round trip when
+# QGIS asks for it.
+#
+# Why the URI at all: tiled layers (vector tiles, XYZ rasters) always
+# report the whole world as their extent, because a tile pyramid is
+# defined over the whole world whatever it actually contains. Verified
+# against real QGIS: no provider parameter changes that, but setExtent()
+# after construction does stick. So something has to apply the extent
+# afterwards, and that something only gets handed the layer, not the
+# portal item it came from. The URI is the only channel that reaches it,
+# because a layer dragged from the Browser tree is built by QGIS itself
+# from a mime URI.
+#
+# The URI is a seed, not storage. An unrecognised parameter survives
+# into layer.source() intact, but only a vector-tile source keeps it
+# across a project save: a raster's source is rewritten by the
+# provider's own encoder on the way out, which drops it. Persistence is
+# therefore a custom property; see layer_extent.EXTENT_PROPERTY.
+#
+# The prefix is deliberately not a bare "extent": that is a plausible
+# name for a real provider parameter to acquire later, and a collision
+# would mean silently feeding a provider our string.
+EXTENT_PARAM = "ggextent"
+
+
+def format_extent(bbox: tuple[float, float, float, float]) -> str:
+    """Render a bbox as the comma-separated text both carriers use.
+
+    Coordinates stay in EPSG:4326, the CRS the portal states, so this
+    module needs no coordinate machinery and stays importable without
+    QGIS. ``repr``-grade formatting keeps full float precision; a
+    rounded extent would be visibly off at street zoom.
+    """
+    return ",".join(repr(float(v)) for v in bbox)
+
+
+def parse_extent(text: str) -> tuple[float, float, float, float] | None:
+    """Read back what ``format_extent`` wrote, or None if unusable."""
+    parts = text.split(",")
+    if len(parts) != 4:
+        return None
+    try:
+        values = [float(p) for p in parts]
+    except ValueError:
+        return None
+    if any(v != v or v in (float("inf"), float("-inf")) for v in values):
+        return None
+    min_lon, min_lat, max_lon, max_lat = values
+    if min_lon > max_lon or min_lat > max_lat:
+        return None
+    return (min_lon, min_lat, max_lon, max_lat)
+
+
+def extent_suffix(bbox: tuple[float, float, float, float] | None) -> str:
+    """Render a bbox as the URI fragment that carries it, or ""."""
+    if bbox is None:
+        return ""
+    return f"&{EXTENT_PARAM}={format_extent(bbox)}"
+
+
+def parse_extent_suffix(source: str) -> tuple[float, float, float, float] | None:
+    """Recover the bbox stamped into a layer source by the builders.
+
+    Returns None for any source without the parameter, which is most of
+    them: this runs over every layer added to the project.
+    """
+    marker = f"&{EXTENT_PARAM}="
+    idx = source.find(marker)
+    if idx < 0:
+        return None
+    return parse_extent(source[idx + len(marker) :].split("&", 1)[0])
+
 
 def public_ogc_root(portal_url: str) -> str:
     """Return the portal's public OGC API root, no trailing slash."""
@@ -41,6 +114,7 @@ def tile_layer_xyz_uri(
     authcfg_id: str = "",
     min_zoom: int = 0,
     max_zoom: int = 18,
+    extent: tuple[float, float, float, float] | None = None,
 ) -> str:
     """Build the XYZ raster URI for a PMTiles-backed tile_layer item.
 
@@ -62,7 +136,7 @@ def tile_layer_xyz_uri(
     uri = f"type=xyz&url={quote(template, safe='')}&zmin={min_zoom}&zmax={max_zoom}"
     if authcfg_id:
         uri = f"{uri}&authcfg={authcfg_id}"
-    return uri
+    return f"{uri}{extent_suffix(extent)}"
 
 
 def tile_layer_cog_uri(portal_url: str, item_id: str) -> str:
@@ -120,7 +194,12 @@ def oapif_uri(portal_url: str, item_id: str) -> str:
     )
 
 
-def vector_tile_uri(portal_url: str, item_id: str) -> str:
+def vector_tile_uri(
+    portal_url: str,
+    item_id: str,
+    *,
+    extent: tuple[float, float, float, float] | None = None,
+) -> str:
     """Build the XYZ vector-tile URI for a portal tile_layer / MVT
     tileset.
 
@@ -142,11 +221,16 @@ def vector_tile_uri(portal_url: str, item_id: str) -> str:
         f"{base}/collections/{item_id}"
         "/tiles/WebMercatorQuad/{z}/{y}/{x}"
     )
-    return f"type=xyz&url={template}&zmin=0&zmax=18"
+    return f"type=xyz&url={template}&zmin=0&zmax=18{extent_suffix(extent)}"
 
 
 def authed_vector_tile_uri(
-    portal_url: str, item_id: str, layer_id: str, *, authcfg_id: str
+    portal_url: str,
+    item_id: str,
+    layer_id: str,
+    *,
+    authcfg_id: str,
+    extent: tuple[float, float, float, float] | None = None,
 ) -> str:
     """Build the authenticated XYZ vector-tile URI for a non-public
     data_layer sublayer.
@@ -172,7 +256,10 @@ def authed_vector_tile_uri(
         f"{base}/api/items/{item_id}/layers/{layer_id}/tile"
         "/{z}/{x}/{y}.mvt"
     )
-    return f"type=xyz&url={template}&zmin=0&zmax=18&authcfg={authcfg_id}"
+    return (
+        f"type=xyz&url={template}&zmin=0&zmax=18&authcfg={authcfg_id}"
+        f"{extent_suffix(extent)}"
+    )
 
 
 # -----------------------------------------------------------

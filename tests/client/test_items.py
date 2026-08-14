@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from gratisgis_client.config import PortalConfig
 from gratisgis_client.endpoints.items import ItemsEndpoint
 from gratisgis_client.http import PortalHttp
@@ -162,6 +164,65 @@ def test_delete_hits_expected_route() -> None:
     sent = transport.requests[0]
     assert sent.method == "DELETE"
     assert path_of(sent) == "/api/items/abc"
+
+
+class TestBboxParsing:
+    """The portal's extent, which the QGIS side uses to zoom to a layer.
+
+    The portal sends `[]` (not null) for an item it has no extent for,
+    which today is every tile layer, so "no extent" has to be a normal
+    outcome rather than a parse failure.
+    """
+
+    def _summary(self, bbox: object) -> object:
+        from gratisgis_client.models.item import ItemSummary
+
+        payload = _summary_payload()
+        payload["bbox"] = bbox
+        return ItemSummary.from_api(payload).bbox
+
+    def test_reads_a_real_extent(self) -> None:
+        assert self._summary([-79.88, 38.8, -79.72, 38.91]) == (
+            -79.88,
+            38.8,
+            -79.72,
+            38.91,
+        )
+
+    def test_integers_are_accepted_as_coordinates(self) -> None:
+        assert self._summary([-80, 38, -79, 39]) == (-80.0, 38.0, -79.0, 39.0)
+
+    def test_a_point_extent_is_kept_as_given(self) -> None:
+        # A single-feature layer is legitimately zero-width. Padding it
+        # is the QGIS side's job, since only it knows what a usable
+        # zoom looks like.
+        assert self._summary([-80.0, 38.0, -80.0, 38.0]) == (-80.0, 38.0, -80.0, 38.0)
+
+    @pytest.mark.parametrize(
+        "bbox",
+        [
+            [],  # what the portal sends for a tile layer
+            None,
+            "not a bbox",
+            [1, 2, 3],
+            [1, 2, 3, 4, 5],
+            ["a", "b", "c", "d"],
+            [True, 2, 3, 4],  # bools are ints in Python; not coordinates
+            [float("nan"), 2, 3, 4],
+            [float("inf"), 2, 3, 4],
+            [10, 2, 3, 4],  # min beyond max
+            [1, 10, 3, 4],
+        ],
+    )
+    def test_unusable_values_read_as_no_extent(self, bbox: object) -> None:
+        assert self._summary(bbox) is None
+
+    def test_a_missing_key_is_not_an_error(self) -> None:
+        from gratisgis_client.models.item import ItemSummary
+
+        payload = _summary_payload()
+        payload.pop("bbox", None)
+        assert ItemSummary.from_api(payload).bbox is None
 
 
 def test_summary_to_api_dict_round_trips() -> None:

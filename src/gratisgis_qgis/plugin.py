@@ -49,6 +49,9 @@ class GratisGISPlugin(QObject):
         self._actions: list[QAction] = []
         self._browser_provider: QgsDataItemProvider | None = None
         self._search_dock: GratisGISSearchDock | None = None
+        # Typed as object so the annotation needs no QGIS-only import
+        # at plugin-discovery time; see the lazy import in initGui.
+        self._extent_applier: object | None = None
         _log.info("GratisGIS plugin instantiated")
 
     # ----- QGIS hooks -----
@@ -111,6 +114,16 @@ class GratisGISPlugin(QObject):
 
         self._browser_provider = GratisGISDataItemProvider()
         QgsApplication.dataItemProviderRegistry().addProvider(self._browser_provider)
+
+        # Portal layers carry their real extent in the layer URI, but a
+        # tiled layer reports the whole world until something applies
+        # it. Listening on the project catches every route a layer can
+        # arrive by, including being dragged out of the Browser tree,
+        # where QGIS builds the layer itself and no plugin code runs.
+        from .layer_extent import ExtentApplier
+
+        self._extent_applier = ExtentApplier()
+        self._extent_applier.install()
         _log.debug("initGui: menu actions + browser provider registered")
 
     def unload(self) -> None:
@@ -123,6 +136,11 @@ class GratisGISPlugin(QObject):
         if self._browser_provider is not None:
             QgsApplication.dataItemProviderRegistry().removeProvider(self._browser_provider)
             self._browser_provider = None
+        if self._extent_applier is not None:
+            # Must disconnect: a reload would otherwise leave this
+            # instance's slot bound to a module the reload replaced.
+            self._extent_applier.remove()  # type: ignore[attr-defined]
+            self._extent_applier = None
         if self._search_dock is not None:
             self._iface.removeDockWidget(self._search_dock)
             self._search_dock.deleteLater()

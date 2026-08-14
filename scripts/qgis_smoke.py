@@ -266,7 +266,92 @@ def _run_checks() -> None:
     finally:
         QgsProject.instance().removeMapLayer(tile_layer.id())
 
-    print("\n[8] auth: the API Header method private layers depend on")
+    print("\n[8] recorded extents reach the layer")
+    # A tiled layer reports the whole world until something applies the
+    # portal's extent. Everything about that is a fact about the real
+    # bindings (that no URI parameter sets it, that setExtent sticks,
+    # that an unknown parameter survives into layer.source()), so stubs
+    # cannot testify here at all.
+    import os
+    import tempfile
+
+    from qgis.core import QgsRasterLayer
+
+    from gratisgis_qgis.layer_extent import ExtentApplier
+
+    # Randolph County parcels, as the portal reports it.
+    bbox = (-79.8817405459576, 38.8075562828525, -79.72808554075921, 38.91672787868328)
+    world_edge = 20037508.0
+
+    applier = ExtentApplier()
+    applier.install()
+    try:
+        cases = (
+            (
+                "vector tile",
+                QgsVectorTileLayer(
+                    uris.vector_tile_uri(
+                        "https://example.test", "item-1__parcels", extent=bbox
+                    ),
+                    "parcels",
+                ),
+            ),
+            (
+                "xyz raster",
+                QgsRasterLayer(
+                    uris.tile_layer_xyz_uri(
+                        "https://example.test", "item-1", extent=bbox
+                    ),
+                    "hillshade",
+                    "wms",
+                ),
+            ),
+        )
+        for label, layer in cases:
+            check(
+                f"{label}: source keeps the recorded extent",
+                lambda lyr=layer: _assert(
+                    uris.parse_extent_suffix(lyr.source()) == bbox,
+                    f"extent lost from source: {lyr.source()!r}",
+                ),
+            )
+            QgsProject.instance().addMapLayer(layer)
+            check(
+                f"{label}: extent is the data, not the world",
+                lambda lyr=layer: _assert(
+                    abs(lyr.extent().xMinimum()) < world_edge
+                    and lyr.extent().width() < world_edge,
+                    f"extent still global: {lyr.extent().toString()}",
+                ),
+            )
+
+        # A saved project reloads layers through a different path, and
+        # the extent resets to global on the way, so the applier has to
+        # see them again or the fix only survives one session.
+        project_path = os.path.join(tempfile.mkdtemp(), "smoke.qgz")
+        QgsProject.instance().write(project_path)
+        QgsProject.instance().clear()
+        QgsProject.instance().read(project_path)
+        restored = list(QgsProject.instance().mapLayers().values())
+        check(
+            "reloading a project restores both layers",
+            lambda: _assert(
+                len(restored) == 2, f"expected 2 layers, got {len(restored)}"
+            ),
+        )
+        for layer in restored:
+            check(
+                f"reloaded {layer.name()}: extent is still the data",
+                lambda lyr=layer: _assert(
+                    lyr.extent().width() < world_edge,
+                    f"extent global after reload: {lyr.extent().toString()}",
+                ),
+            )
+    finally:
+        applier.remove()
+        QgsProject.instance().clear()
+
+    print("\n[9] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
     method = check("find_api_header_method()", find_api_header_method)
