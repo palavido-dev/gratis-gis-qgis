@@ -12,7 +12,7 @@ Everything here targets the public demo at https://gratisgis.org.
 ## Before you start
 
 1. **Check the version.** `Plugins > Manage and Install Plugins >
-   Installed`, find GratisGIS. It should read **0.2.8**.
+   Installed`, find GratisGIS. It should read **0.2.10**.
 2. **Check you are signed in.** `Plugins > GratisGIS > Manage GratisGIS
    connections...`. The row should show the portal and a signed-in
    state. If anything later fails with "Your session has expired",
@@ -55,11 +55,18 @@ This is the one I just changed, so it is worth confirming first.
 
 **Expect:** parcels draw.
 
+Right-click the layer and pick **Zoom to Layer**. It should land on
+Randolph County, not the whole world. *(New in 0.2.10. Tile-based
+layers cannot work out their own extent, so the portal's is carried
+along with the layer.)*
+
 5. Set **Type** to `Tile layer`, search, double-click **"WV lidar
    terrain hillshade (terrain, 1m)"**.
 
-**Expect:** the hillshade draws. Zoom to the layer (right-click it in
-Layers, `Zoom to Layer`) since it covers a small area.
+**Expect:** the hillshade draws. `Zoom to Layer` on this one still
+goes to the whole world, and that is expected for now: the portal does
+not yet record an extent for raster/tile items, so there is nothing to
+carry. Data layers (step 4) do. Pan to Randolph County to see it.
 
 6. **Right-click** any result.
 
@@ -111,6 +118,10 @@ Item id: <uuid>
     `GratisGIS > GratisGIS > My Content` and Refresh, expand
     `Data layers`. Your new item should be there. Drag it to the canvas
     and confirm your polygons draw.
+12. **Zoom to Layer** on it. It should frame your polygons, not the
+    planet. This is the case the extent fix exists for: a layer you
+    just made from three shapes is exactly when you want to look at
+    what you published.
 
 **Worth trying deliberately:** publish a layer with **no CRS set** and
 confirm pre-flight blocks it with "Layer has no CRS defined."
@@ -127,10 +138,11 @@ Test 5 builds directly on this one, so do them together if you can.
 2. `Plugins > GratisGIS > Clone layer for offline use...`
 3. **Layer:** pick the Trails layer. **Portal:** your connection.
    *(Any layer from the tree qualifies now. This is the fix worth
-   confirming: the dropdown used to say `(no portal-backed layers in
-   project)` for anything spatial, because spatial sublayers arrive as
-   vector tiles and the dialog only recognised the plain-table
-   shape.)*
+   confirming, and it took two goes: the dropdown said `(no
+   portal-backed layers in project)` for anything spatial, first
+   because the dialog only recognised the plain-table URI shape, and
+   then because it still rejected the layer on its class before
+   reading the URI at all.)*
 4. Click **Choose directory...**, pick anywhere writable.
 5. **File name** auto-fills. Leave it. Do not type `.gpkg`, it is added
    for you.
@@ -295,6 +307,9 @@ That is enough for me to reproduce almost anything without guessing.
   success. Only the clone dialog does.
 - **The project-publish dialog has no Access setting.** The new map
   item takes the portal's default access.
+- **Raster and tile layers still zoom to the whole world.** The portal
+  does not record an extent for that item type yet, so they have none
+  to carry. Data layers do. Portal-side fix, not a plugin one.
 - **Two contour layers on the demo are genuinely empty** (0 features),
   so they correctly draw nothing: "Contour lines (Elkins 2018 Lidar
   elevation (2m))" and "outlines".
