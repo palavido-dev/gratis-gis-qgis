@@ -266,7 +266,97 @@ def _run_checks() -> None:
     finally:
         QgsProject.instance().removeMapLayer(tile_layer.id())
 
-    print("\n[8] recorded extents reach the layer")
+    print("\n[8] overwriting a clone that is open in the project")
+    # Windows refuses to replace a file another handle holds open,
+    # which POSIX allows, so the safe-write promote failed on exactly
+    # the case the overwrite prompt exists for. Whether removing the
+    # layer releases the handle is a question only real QGIS answers.
+    import os
+    import shutil
+    import tempfile
+
+    from qgis.core import QgsCoordinateTransformContext, QgsVectorFileWriter
+
+    from gratisgis_qgis.offline.clone import safe_write_path, source_targets_file
+    from gratisgis_qgis.ui.clone_dialog import _project_layers_using
+
+    work = tempfile.mkdtemp()
+    target = os.path.join(work, "clone.gpkg")
+
+    def write_gpkg(path):
+        mem = QgsVectorLayer(
+            "Point?crs=EPSG:4326&field=name:string", "src", "memory"
+        )
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "GPKG"
+        options.layerName = "clone"
+        QgsVectorFileWriter.writeAsVectorFormatV3(
+            mem, path, QgsCoordinateTransformContext(), options
+        )
+
+    try:
+        write_gpkg(target)
+        opened = QgsVectorLayer(f"{target}|layername=clone", "clone", "ogr")
+        QgsProject.instance().addMapLayer(opened)
+
+        check(
+            "the open layer is found by path",
+            lambda: _assert(
+                [lyr.name() for lyr in _project_layers_using(target)] == ["clone"],
+                "the layer holding the file open was not found",
+            ),
+        )
+        check(
+            "a real QGIS source string matches its file",
+            lambda: _assert(
+                source_targets_file(opened.source(), target),
+                f"source did not match: {opened.source()!r}",
+            ),
+        )
+
+        def overwrite_fails_while_open():
+            try:
+                with safe_write_path(target) as tmp:
+                    write_gpkg(tmp)
+            except OSError:
+                return True
+            return False
+
+        held = check("overwrite while open is refused", overwrite_fails_while_open)
+        check(
+            "no staging directory is left behind by the refusal",
+            lambda: _assert(
+                os.listdir(work) == ["clone.gpkg"],
+                f"leftovers in the destination folder: {os.listdir(work)}",
+            ),
+        )
+
+        for stale in _project_layers_using(target):
+            QgsProject.instance().removeMapLayer(stale.id())
+
+        def overwrite_after_release():
+            with safe_write_path(target) as tmp:
+                write_gpkg(tmp)
+            return True
+
+        check("overwrite succeeds once the layer is removed", overwrite_after_release)
+        check(
+            "and still leaves nothing behind",
+            lambda: _assert(
+                os.listdir(work) == ["clone.gpkg"],
+                f"leftovers after success: {os.listdir(work)}",
+            ),
+        )
+        if held is not True:
+            print(
+                "    note: this QGIS did not hold the file open, so the "
+                "refusal path was not exercised"
+            )
+    finally:
+        QgsProject.instance().clear()
+        shutil.rmtree(work, ignore_errors=True)
+
+    print("\n[9] recorded extents reach the layer")
     # A tiled layer reports the whole world until something applies the
     # portal's extent. Everything about that is a fact about the real
     # bindings (that no URI parameter sets it, that setExtent sticks,
@@ -351,7 +441,7 @@ def _run_checks() -> None:
         applier.remove()
         QgsProject.instance().clear()
 
-    print("\n[9] auth: the API Header method private layers depend on")
+    print("\n[10] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
     method = check("find_api_header_method()", find_api_header_method)

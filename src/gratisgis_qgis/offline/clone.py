@@ -211,13 +211,40 @@ def safe_write_path(final_path: str) -> Iterator[str]:
     tmp_path = os.path.join(tmp_dir, basename)
     try:
         yield tmp_path
-    except BaseException:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
-    else:
         # Same filesystem (sibling directory), so this is atomic.
         os.replace(tmp_path, final_path)
+    finally:
+        # finally, not else: the promote itself can fail (on Windows,
+        # replacing a file another handle holds open is refused), and
+        # an earlier version cleaned up only on the paths it had
+        # thought of. It left a hidden staging directory in the user's
+        # chosen folder every time an overwrite was refused.
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def source_targets_file(source: str, path: str) -> bool:
+    """Whether a QGIS layer source refers to the file at ``path``.
+
+    An OGR source is ``<file>|layername=<name>``, sometimes with more
+    pipe-separated options, so the filename is everything up to the
+    first pipe. Compared through ``normcase`` because a user typing a
+    destination gets a different drive-letter case than QGIS records,
+    and on Windows those are the same file.
+
+    Needed because a GeoPackage open in the project cannot be replaced
+    on Windows: the overwrite has to find the layers holding it first.
+    """
+    if not source or not path:
+        return False
+    candidate = source.split("|", 1)[0].strip()
+    if not candidate:
+        return False
+    try:
+        return os.path.normcase(os.path.abspath(candidate)) == os.path.normcase(
+            os.path.abspath(path)
+        )
+    except (OSError, ValueError):
+        return False
 
 
 # -----------------------------------------------------------

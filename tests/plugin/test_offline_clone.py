@@ -19,6 +19,7 @@ from gratisgis_qgis.offline.clone import (
     normalize_feature_collection,
     read_clone_source,
     safe_write_path,
+    source_targets_file,
     validate_clone_target,
 )
 
@@ -72,6 +73,87 @@ class TestSafeWritePath:
             raise RuntimeError("boom")
         assert not final.exists()
         assert list(tmp_path.iterdir()) == []
+
+    def test_a_failed_promote_still_cleans_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The promote itself can fail: on Windows, replacing a file
+        # another program holds open is refused. Cleanup used to run
+        # only on the two paths that had been thought of, so a refused
+        # overwrite left a hidden staging directory behind in the
+        # user's chosen folder, every single time.
+        final = tmp_path / "clone.gpkg"
+        final.write_bytes(b"previous clone")
+
+        def refuse(src: str, dst: str) -> None:
+            raise PermissionError(5, "Access is denied")
+
+        monkeypatch.setattr("os.replace", refuse)
+        with pytest.raises(PermissionError), safe_write_path(str(final)) as tmp:
+            Path(tmp).write_bytes(b"new bytes")
+
+        assert final.read_bytes() == b"previous clone"
+        assert list(tmp_path.iterdir()) == [final]
+
+
+class TestSourceTargetsFile:
+    """Matching a QGIS layer source to a file on disk.
+
+    Used to find the layers holding the destination open, which is what
+    makes an overwrite possible on Windows at all.
+    """
+
+    def test_matches_an_ogr_source_with_a_layername(self, tmp_path: Path) -> None:
+        gpkg = tmp_path / "clone.gpkg"
+        assert source_targets_file(f"{gpkg}|layername=clone", str(gpkg))
+
+    def test_matches_with_further_pipe_options(self, tmp_path: Path) -> None:
+        gpkg = tmp_path / "clone.gpkg"
+        assert source_targets_file(
+            f"{gpkg}|layername=clone|geometrytype=Polygon", str(gpkg)
+        )
+
+    def test_matches_a_bare_path(self, tmp_path: Path) -> None:
+        gpkg = tmp_path / "clone.gpkg"
+        assert source_targets_file(str(gpkg), str(gpkg))
+
+    def test_matches_across_separator_and_case_differences(
+        self, tmp_path: Path
+    ) -> None:
+        # QGIS reports forward slashes; a Windows user's chosen
+        # directory arrives with backslashes and possibly a different
+        # drive-letter case. Same file.
+        gpkg = tmp_path / "clone.gpkg"
+        source = str(gpkg).replace("\\", "/")
+        assert source_targets_file(source, str(gpkg))
+
+    def test_does_not_match_a_different_file(self, tmp_path: Path) -> None:
+        assert not source_targets_file(
+            f"{tmp_path / 'other.gpkg'}|layername=clone",
+            str(tmp_path / "clone.gpkg"),
+        )
+
+    def test_does_not_match_a_sibling_with_a_prefix_name(
+        self, tmp_path: Path
+    ) -> None:
+        # A plain "startswith" would call these the same file.
+        assert not source_targets_file(
+            f"{tmp_path / 'clone.gpkg.bak'}", str(tmp_path / "clone.gpkg")
+        )
+
+    @pytest.mark.parametrize(
+        ("source", "path"),
+        [("", "/tmp/clone.gpkg"), ("/tmp/clone.gpkg", ""), ("|layername=x", "/tmp/c")],
+    )
+    def test_empty_inputs_never_match(self, source: str, path: str) -> None:
+        assert not source_targets_file(source, path)
+
+    def test_a_remote_source_does_not_match(self, tmp_path: Path) -> None:
+        # Vector tiles and OAPIF layers go through here too.
+        assert not source_targets_file(
+            "type=xyz&url=https://portal.example/tiles/{z}/{y}/{x}",
+            str(tmp_path / "clone.gpkg"),
+        )
 
 
 class TestMakeTarget:

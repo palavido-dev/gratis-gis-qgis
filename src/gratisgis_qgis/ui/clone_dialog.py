@@ -65,6 +65,7 @@ from ..offline.clone import (
     make_target,
     normalize_feature_collection,
     safe_write_path,
+    source_targets_file,
     validate_clone_target,
 )
 from ..portal import get_client
@@ -259,10 +260,32 @@ class CloneToGeoPackageDialog(QDialog):
             return
         overwrite_warns = [i for i in issues if i.code == "target-exists"]
         if overwrite_warns:
+            # A previous clone of the same name is usually still open in
+            # the project, and Windows will not let the file be replaced
+            # while it is. Deal with that here, before the download, so
+            # the user is not told after waiting for one.
+            open_layers = _project_layers_using(target.gpkg_path)
+            unsaved = [lyr for lyr in open_layers if _has_unsaved_edits(lyr)]
+            if unsaved:
+                QMessageBox.critical(
+                    self,
+                    "Unsaved edits",
+                    f"{', '.join(lyr.name() for lyr in unsaved)} has unsaved "
+                    "edits and would be replaced.\n\nSave or discard those "
+                    "edits first, or clone under a different file name.",
+                )
+                return
+            extra = ""
+            if open_layers:
+                extra = (
+                    "\n\n"
+                    + ", ".join(lyr.name() for lyr in open_layers)
+                    + " is open here and will be reloaded from the new copy."
+                )
             ok = QMessageBox.question(
                 self,
                 "Overwrite?",
-                f"{overwrite_warns[0].message}\n\nProceed?",
+                f"{overwrite_warns[0].message}{extra}\n\nProceed?",
             )
             if ok != QMessageBox.StandardButton.Yes:
                 return
@@ -314,8 +337,27 @@ class CloneToGeoPackageDialog(QDialog):
         count = len(fc.get("features", []))
         self._progress_label.setText(f"Writing {count} feature(s) to GeoPackage...")
 
+        # Close any layer still holding the destination open. Windows
+        # refuses to replace a file another handle has, and the usual
+        # holder is the previous clone of the same name sitting in this
+        # very project. Anything with unsaved edits was refused earlier.
+        for stale in _project_layers_using(target.gpkg_path):
+            QgsProject.instance().removeMapLayer(stale.id())
+
         try:
             _write_geojson_to_geopackage(fc, target.gpkg_path, source=source)
+        except OSError as e:
+            _log.exception("geopackage write failed")
+            QMessageBox.critical(
+                self,
+                "Write failed",
+                f"Could not write {os.path.basename(target.gpkg_path)}.\n\n"
+                "The file may be open in another program. Close it and try "
+                f"again, or choose a different file name.\n\n{e}",
+            )
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
+            self._progress_bar.setVisible(False)
+            return
         except Exception as e:
             _log.exception("geopackage write failed")
             QMessageBox.critical(self, "Write failed", str(e))
@@ -347,6 +389,33 @@ class CloneToGeoPackageDialog(QDialog):
 # -----------------------------------------------------------
 # QGIS bridges
 # -----------------------------------------------------------
+
+
+def _project_layers_using(gpkg_path: str) -> list:
+    """Project layers reading from the given file.
+
+    Returned in project order; the caller removes them so the file can
+    be replaced.
+    """
+    return [
+        layer
+        for layer in QgsProject.instance().mapLayers().values()
+        if isinstance(layer, QgsVectorLayer)
+        and source_targets_file(layer.source(), gpkg_path)
+    ]
+
+
+def _has_unsaved_edits(layer) -> bool:
+    """Whether replacing this layer's file would destroy user work.
+
+    Checked before an overwrite rather than after, because the clone
+    that gets replaced is exactly the layer someone would have been
+    editing offline.
+    """
+    try:
+        return bool(layer.isModified())
+    except AttributeError:
+        return False
 
 
 def _write_geojson_to_geopackage(
