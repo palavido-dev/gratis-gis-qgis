@@ -7,6 +7,25 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.11] - 2026-08-14
+
+### Fixed
+
+- **Cloning over an existing file failed with "Access is denied".** The
+  file being replaced was almost always the previous clone, still open
+  in the project, and Windows will not let an open file be replaced.
+  The clone now closes the old copy first and reloads the new one in
+  its place, which is what answering yes to "Overwrite?" implied all
+  along. If that copy has unsaved edits it says so and stops, rather
+  than quietly throwing the edits away.
+- **Every refused overwrite left a hidden folder behind** next to the
+  destination, named after the file it failed to write. Cleanup only
+  ran on the failures that had been anticipated, and the file being
+  locked was not one of them. Existing leftovers are safe to delete;
+  they are named `.<filename>.<random>`.
+- A write that fails for a reason outside the plugin's control now
+  explains itself instead of showing a raw system error.
+
 ## [0.2.10] - 2026-08-14
 
 ### Fixed
