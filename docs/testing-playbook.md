@@ -12,7 +12,7 @@ Everything here targets the public demo at https://gratisgis.org.
 ## Before you start
 
 1. **Check the version.** `Plugins > Manage and Install Plugins >
-   Installed`, find GratisGIS. It should read **0.2.10**.
+   Installed`, find GratisGIS. It should read **0.2.11**.
 2. **Check you are signed in.** `Plugins > GratisGIS > Manage GratisGIS
    connections...`. The row should show the portal and a signed-in
    state. If anything later fails with "Your session has expired",
@@ -153,10 +153,16 @@ naming the feature count and full path, and a new layer in your project
 called **"Trails (offline)"** that draws.
 
 7. **Run it a second time with the same name.** You should get an
-   **"Overwrite?"** prompt. Say Yes and confirm it still works. *(This
-   path used to delete your existing file before writing the new one;
-   it now writes to a temp file and swaps, so a failure cannot destroy
-   the old copy.)*
+   **"Overwrite?"** prompt, which now also tells you the old copy is
+   open here and will be reloaded. Say Yes and confirm it still works,
+   and that you end up with one "Trails (offline)" layer rather than
+   two. *(Windows will not let an open file be replaced, so this
+   failed with "Access is denied" until 0.2.11. The old copy is closed
+   first now.)*
+
+   **Also worth trying:** start editing the offline layer (pencil on,
+   move something, do NOT save), then re-clone over it. It should
+   refuse with "Unsaved edits" rather than discarding your work.
 
 **Keep the "Trails (offline)" layer in your project.** Test 5 edits it.
 
