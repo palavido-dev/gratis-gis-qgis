@@ -110,6 +110,10 @@ def main() -> int:
     _prune(staged_plugin)
     _prune(vendor_root)
 
+    # Freshen the changelog QGIS shows in Manage and Install Plugins,
+    # from CHANGELOG.md, on the staged copy only.
+    _write_changelog_into(staged_plugin / "metadata.txt")
+
     # 5) Zip.
     zip_path = DIST_DIR / f"gratisgis_qgis-{version}.zip"
     if zip_path.exists():
@@ -138,6 +142,85 @@ def _read_plugin_version() -> str:
     if not match:
         raise RuntimeError("metadata.txt is missing a `version=` line")
     return match.group(1).strip()
+
+
+def _plain(text: str) -> str:
+    """Strip markdown that would show as punctuation in QGIS's panel.
+
+    The plugin manager renders this field as plain text, so asterisks
+    and backticks arrive as literal characters rather than emphasis.
+    """
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)
+    return text.replace("`", "")
+
+
+def _changelog_field(limit: int = 3) -> str:
+    """Build the metadata `changelog=` value from CHANGELOG.md.
+
+    Generated rather than hand-maintained. The field is what QGIS shows
+    in Manage and Install Plugins, and a hand-written copy is a second
+    place to remember: it sat describing 0.2.0 while the plugin said
+    0.4.1, which is worse than showing nothing because it reads as
+    current.
+
+    QGIS's metadata parser takes a multi-line value as long as the
+    continuation lines are indented, so the newest few releases go in
+    whole rather than being squashed into a sentence.
+    """
+    source = REPO_ROOT / "CHANGELOG.md"
+    if not source.is_file():
+        return ""
+    lines = source.read_text(encoding="utf-8").splitlines()
+
+    out: list[str] = []
+    seen = 0
+    for line in lines:
+        if line.startswith("## "):
+            seen += 1
+            if seen > limit:
+                break
+            # "## [0.4.1] - 2026-08-14" reads better without the
+            # brackets in a plain-text panel.
+            out.append(line[3:].replace("[", "").replace("]", "").strip())
+            continue
+        if seen == 0:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("### "):
+            out.append(f"  {_plain(stripped[4:])}:")
+        else:
+            out.append(f"  {_plain(stripped.lstrip('- '))}")
+
+    if not out:
+        return ""
+    # First line sits after `changelog=`; the rest are indented
+    # continuations.
+    body = "\n".join(f"    {entry}" for entry in out[1:])
+    return f"{out[0]}\n{body}" if body else out[0]
+
+
+def _write_changelog_into(metadata_path: Path) -> None:
+    """Replace the staged metadata's changelog field with a fresh one.
+
+    Only the copy inside the zip is touched; the file in the repo keeps
+    whatever placeholder it holds, so this cannot produce a diff on
+    every build.
+    """
+    field = _changelog_field()
+    if not field:
+        return
+    text = metadata_path.read_text(encoding="utf-8")
+    # A value may already span lines; consume the indented ones too.
+    pattern = re.compile(r"^changelog\s*=.*?(?=^\w+\s*=|\Z)", re.MULTILINE | re.DOTALL)
+    replacement = f"changelog={field}\n"
+    if pattern.search(text):
+        text = pattern.sub(replacement, text, count=1)
+    else:
+        text = text.rstrip("\n") + "\n" + replacement
+    metadata_path.write_text(text, encoding="utf-8")
 
 
 def _prune(root: Path) -> None:
