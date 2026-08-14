@@ -12,7 +12,7 @@ Everything here targets the public demo at https://gratisgis.org.
 ## Before you start
 
 1. **Check the version.** `Plugins > Manage and Install Plugins >
-   Installed`, find GratisGIS. It should read **0.4.0**.
+   Installed`, find GratisGIS. It should read **0.4.1**.
 2. **Check you are signed in.** `Plugins > GratisGIS > Manage GratisGIS
    connections...`. The row should show the portal and a signed-in
    state. If anything later fails with "Your session has expired",

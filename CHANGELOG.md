@@ -7,6 +7,32 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.4.1] - 2026-08-14
+
+### Fixed
+
+- **Publishing a raster failed with "HTTP 400 (code Bad Request)".**
+  The plugin was telling the portal the wrong place to find the file it
+  had just uploaded: it added a prefix to the storage location that was
+  already there. The portal looked for something that did not exist and
+  refused. Nothing was left behind on the portal, so retrying is all
+  that is needed.
+- **Errors from the portal now say what the portal said.** The failure
+  above showed up as a bare "HTTP 400" while the portal had been
+  answering with the actual reason all along. Messages now carry it.
+- **The title box follows the layer you pick.** It filled in from
+  whichever layer happened to be listed first and then kept that name
+  after you chose a different one, which was a quiet way to publish
+  under the wrong title. It still leaves a title you typed yourself
+  alone.
+
+### Changed
+
+- **Every toolbar button has its own icon.** They were six copies of
+  the GratisGIS pin, which is not a toolbar so much as a row of
+  identical buttons. They now use QGIS's own icons, so they read the
+  way the rest of QGIS reads and follow your theme.
+
 ## [0.4.0] - 2026-08-14
 
 ### Changed

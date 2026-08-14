@@ -139,6 +139,64 @@ def test_500_raises_generic_portalerror() -> None:
     assert exc.value.status == 500
 
 
+class TestErrorsCarryThePortalsReason:
+    """A status code on its own is close to useless to a user.
+
+    The raster publish failed for weeks-worth-of-confusion reasons
+    behind a bare "HTTP 400" while the portal had been answering
+    "Conversion failed: ..." the whole time.
+    """
+
+    def _message(self, body: object, status: int = 400) -> str:
+        transport = FakeTransport().add(json_response(body, status=status))
+        portal = _portal(transport, _fresh())
+        with pytest.raises(PortalError) as exc:
+            portal.request_json("POST", "/items/x/tile-layer/finalize", json={})
+        return str(exc.value)
+
+    def test_a_hand_thrown_message_is_included(self) -> None:
+        text = self._message(
+            {
+                "statusCode": 400,
+                "error": "Bad Request",
+                "message": "Conversion failed: NoSuchKey",
+            }
+        )
+        assert "Conversion failed: NoSuchKey" in text
+
+    def test_a_validation_list_is_joined(self) -> None:
+        # Nest's request validation answers with a list of failures.
+        text = self._message(
+            {
+                "statusCode": 400,
+                "message": ["title should not be empty", "access must be valid"],
+            }
+        )
+        assert "title should not be empty" in text
+        assert "access must be valid" in text
+
+    def test_the_status_is_still_there(self) -> None:
+        assert "400" in self._message({"message": "nope"})
+
+    def test_a_plain_text_body_is_included(self) -> None:
+        transport = FakeTransport().add(text_response("upstream exploded", status=502))
+        portal = _portal(transport, _fresh())
+        with pytest.raises(PortalError) as exc:
+            portal.request_json("GET", "/items")
+        assert "upstream exploded" in str(exc.value)
+
+    def test_a_body_with_no_message_still_reads_cleanly(self) -> None:
+        text = self._message({"statusCode": 400, "error": "Bad Request"})
+        assert "400" in text
+        assert text.endswith("400")
+
+    def test_a_runaway_message_is_truncated(self) -> None:
+        # An error body is not a log sink; a megabyte of it in a
+        # message box helps nobody.
+        text = self._message({"message": "x" * 5000})
+        assert len(text) < 600
+
+
 def test_auth_error_when_not_signed_in() -> None:
     transport = FakeTransport().add(json_response({}))
     portal = _portal(transport, None)

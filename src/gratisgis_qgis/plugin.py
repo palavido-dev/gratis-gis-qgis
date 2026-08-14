@@ -75,25 +75,30 @@ class GratisGISPlugin(QObject):
 
         # Order is the order of use: connect, find something, then act
         # on it. The separators group those three phases.
-        self._add_action(
-            icon, "Manage GratisGIS connections...", self._on_manage_connections
-        )
-        self._add_action(icon, "Open GratisGIS search...", self._on_open_search)
-        self._toolbar.addSeparator()
-
-        self._add_action(
-            icon, "Publish layer to GratisGIS...", self._on_publish_vector
-        )
-        self._add_action(
-            icon, "Publish current project as GratisGIS map...",
-            self._on_publish_project,
-        )
-        self._toolbar.addSeparator()
-
-        self._add_action(
-            icon, "Clone layer for offline use...", self._on_clone_offline
-        )
-        self._add_action(icon, "Sync layer with GratisGIS...", self._on_push_edits)
+        #
+        # A distinct icon each, because six copies of the plugin logo
+        # is a row of identical buttons and no toolbar at all. They are
+        # QGIS's own, so they read the way the rest of QGIS reads and
+        # follow the user's theme, including Night Mapping.
+        for label, handler, icon_name in (
+            ("Manage GratisGIS connections...", self._on_manage_connections,
+             "/mIconConnect.svg"),
+            ("Open GratisGIS search...", self._on_open_search, "/search.svg"),
+            (None, None, None),
+            ("Publish layer to GratisGIS...", self._on_publish_vector,
+             "/mActionSharingExport.svg"),
+            ("Publish current project as GratisGIS map...",
+             self._on_publish_project, "/mActionSaveMapAsImage.svg"),
+            (None, None, None),
+            ("Clone layer for offline use...", self._on_clone_offline,
+             "/mActionDuplicateLayer.svg"),
+            ("Sync layer with GratisGIS...", self._on_push_edits,
+             "/mActionRefresh.svg"),
+        ):
+            if label is None:
+                self._toolbar.addSeparator()
+                continue
+            self._add_action(_theme_icon(icon_name, icon), label, handler)
 
         # Phase 1: register the Browser-panel data item provider so
         # configured connections show up as a "GratisGIS" subtree
@@ -214,19 +219,34 @@ class GratisGISPlugin(QObject):
         dlg = PushEditsDialog(self._iface, self._iface.mainWindow())
         dlg.exec()
 
-    def _on_publish_raster(self) -> None:
-        """Open the Publish-raster dialog (Phase 5)."""
-        from .ui.publish_raster_dialog import PublishRasterDialog
-
-        dlg = PublishRasterDialog(self._iface, self._iface.mainWindow())
-        dlg.exec()
-
     def _on_clone_offline(self) -> None:
         """Open the Clone-to-GeoPackage dialog (Phase 7)."""
         from .ui.clone_dialog import CloneToGeoPackageDialog
 
         dlg = CloneToGeoPackageDialog(self._iface, self._iface.mainWindow())
         dlg.exec()
+
+
+def _theme_icon(name: str, fallback: QIcon) -> QIcon:
+    """One of QGIS's own icons, or the plugin's own if it is missing.
+
+    Theme icon names are not a stable API: they are renamed and
+    retired between QGIS releases, and asking for one that no longer
+    exists yields a null icon, which shows up as an invisible toolbar
+    button rather than an error. Falling back to the brand icon means
+    the worst case is a duplicate-looking button instead of a gap, and
+    the smoke test asserts every name still resolves so the fallback
+    stays theoretical.
+    """
+    try:
+        icon = QgsApplication.getThemeIcon(name)
+    except Exception:  # pragma: no cover - defensive
+        _log.debug("theme icon %s could not be loaded", name, exc_info=True)
+        return fallback
+    if icon is None or icon.isNull():
+        _log.info("QGIS has no theme icon named %s; using the plugin icon", name)
+        return fallback
+    return icon
 
 
 def _load_icon() -> QIcon:

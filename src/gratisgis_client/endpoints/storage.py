@@ -45,8 +45,8 @@ class PresignedUpload:
     """Response from POST /storage/presign-upload.
 
     The plugin uses ``upload_url`` to PUT bytes directly to MinIO
-    (no portal round-trip in the middle); ``key`` is the bare UUID
-    that gets handed to the finalize step.
+    (no portal round-trip in the middle); ``key`` is handed to the
+    finalize step unchanged.
     """
 
     upload_url: str
@@ -58,8 +58,13 @@ class PresignedUpload:
     URL is mediated by the portal's ACL-checked proxy."""
 
     key: str
-    """The bare UUID portion of the storage key. The full key is
-    ``<kind>/<key>``."""
+    """The complete storage key, ``<kind>/<uuid>``, prefix included.
+
+    Pass it to finalize exactly as received. This docstring used to
+    claim the value was the bare UUID, and the raster publish believed
+    it and prepended the prefix a second time, which named an object
+    that did not exist.
+    """
 
     max_bytes: int = 0
     """Per-file ceiling the portal enforces. Callers should

@@ -705,7 +705,43 @@ def _run_checks() -> None:
         QgsProject.instance().clear()
         shutil.rmtree(raster_dir, ignore_errors=True)
 
-    print("\n[12] auth: the API Header method private layers depend on")
+    print("\n[12] every toolbar icon still resolves")
+    # Theme icon names are not API. A renamed one yields a null icon,
+    # which ships as an invisible toolbar button rather than an error,
+    # so the only way to know is to ask a real QGIS.
+    import re as _re
+
+    from qgis.core import QgsApplication
+
+    from gratisgis_qgis import plugin as plugin_mod
+
+    with open(plugin_mod.__file__, encoding="utf-8") as fh:
+        source = fh.read()
+    icon_names = _re.findall(r'"(/m[A-Za-z0-9]+\.svg|/search\.svg)"', source)
+    check(
+        "the toolbar names some icons at all",
+        lambda: _assert(
+            len(icon_names) >= 6,
+            f"expected at least 6 icon names, found {icon_names!r}",
+        ),
+    )
+    for icon_name in icon_names:
+        check(
+            f"theme icon {icon_name}",
+            lambda n=icon_name: _assert(
+                not QgsApplication.getThemeIcon(n).isNull(),
+                f"QGIS has no theme icon named {n}; the button would be blank",
+            ),
+        )
+    check(
+        "the icons are not all the same one",
+        lambda: _assert(
+            len(set(icon_names)) == len(icon_names),
+            f"duplicate icons would make the buttons indistinguishable: {icon_names!r}",
+        ),
+    )
+
+    print("\n[13] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
     method = check("find_api_header_method()", find_api_header_method)

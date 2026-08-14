@@ -261,6 +261,14 @@ class PortalHttp:
         body = _safe_json(response)
         code = _extract_code(body)
         message = f"Portal {method} {path} failed: HTTP {status}"
+        # The portal says why. Without this the user (and the log) got
+        # "HTTP 400" and nothing else, which is close to useless: the
+        # doubled storage key in the raster publish presented as a bare
+        # 400 for exactly this reason, when the portal had been
+        # answering "Conversion failed: ..." all along.
+        detail = _extract_message(body)
+        if detail:
+            message = f"{message} - {detail}"
         if status in (401, 403):
             return AuthError(message, status=status, body=body, code=code)
         if status == 404:
@@ -277,6 +285,29 @@ def _safe_json(response: TransportResponse) -> Any:
         return response.json()
     except ValueError:
         return response.text
+
+
+def _extract_message(body: Any) -> str | None:
+    """Pull the human-readable reason out of a portal error body.
+
+    The portal answers ``{statusCode, error, message}``, where
+    ``message`` is a string for a hand-thrown error and a LIST of
+    strings when request validation rejected several fields at once.
+    Both shapes appear in normal use, so both are read.
+    """
+    if isinstance(body, str):
+        text = body.strip()
+        return text[:400] or None
+    if not isinstance(body, dict):
+        return None
+    value = body.get("message")
+    if isinstance(value, str) and value.strip():
+        return value.strip()[:400]
+    if isinstance(value, list):
+        parts = [str(v).strip() for v in value if str(v).strip()]
+        if parts:
+            return "; ".join(parts)[:400]
+    return None
 
 
 def _extract_code(body: Any) -> str | None:

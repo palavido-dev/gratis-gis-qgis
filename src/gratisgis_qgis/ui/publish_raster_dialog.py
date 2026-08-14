@@ -143,10 +143,20 @@ def run_raster_pipeline(
         handle.set_progress(_PCT_UPLOAD_END)
         _raise_if_canceled(handle)
 
-        storage_key = f"item-tile-layer/{presigned.key}"
+        # The portal's presign response already carries the full key,
+        # prefix included. Composing one here produced
+        # `item-tile-layer/item-tile-layer/<uuid>`, which named no
+        # object, so finalize failed the moment it tried to read the
+        # upload back. That surfaced as a bare "HTTP 400" because
+        # finalize wraps any read failure as a conversion error.
+        #
+        # It only became fatal when the portal stopped fetching the
+        # client-supplied storageUrl (an SSRF surface) and started
+        # streaming by key instead: before that the wrong key was
+        # carried but never dereferenced.
         client.tile_layer.finalize(
             item_id=item.id,
-            storage_key=storage_key,
+            storage_key=presigned.key,
             storage_url=presigned.public_url,
             file_name=file_name,
             size_bytes=size,

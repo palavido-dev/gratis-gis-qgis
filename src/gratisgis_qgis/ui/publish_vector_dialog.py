@@ -124,6 +124,10 @@ class PublishLayerDialog(QDialog):
         self._populate_connection_combo()
 
         self._title_input = QLineEdit()
+        # Whether the user has typed their own title. Until they do,
+        # the box follows the selected layer.
+        self._title_touched = False
+        self._title_input.textEdited.connect(self._on_title_edited)
         self._description_input = QPlainTextEdit()
         self._description_input.setFixedHeight(60)
         self._access_combo = QComboBox()
@@ -269,16 +273,33 @@ class PublishLayerDialog(QDialog):
             self._connection_combo.setEnabled(False)
 
     def _on_layer_changed(self) -> None:
+        """Follow the selection, unless the user has typed a title.
+
+        The title has to track the chosen layer rather than only fill
+        when blank. Project layers arrive in no particular order, so
+        the box was pre-filled from whichever happened to be first and
+        then kept that name after the user picked something else,
+        which is a good way to publish under the wrong title without
+        noticing.
+
+        ``textEdited`` rather than ``textChanged`` is what makes this
+        safe: it fires only for typing, so the dialog's own setText
+        below cannot mark the field as user-owned.
+        """
         choice = self._selected_choice()
         if choice is None:
-            self._title_input.setText("")
+            if not self._title_touched:
+                self._title_input.setText("")
             return
-        if not self._title_input.text().strip():
+        if not self._title_touched:
             stem = choice.label
             if choice.kind == "file":
                 stem = os.path.splitext(choice.label)[0]
             self._title_input.setText(stem)
         self._on_validate()
+
+    def _on_title_edited(self, _text: str) -> None:
+        self._title_touched = True
 
     # ----- Validation -----
 
