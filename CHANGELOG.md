@@ -7,6 +7,20 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.7] - 2026-08-14
+
+### Fixed
+
+- **Publishing a vector layer failed at the upload step** with
+  "field 'fileName': expected a string, got NoneType". The plugin
+  expected the upload response to carry a file name, a size and an
+  expiry; the portal has never sent any of the three, so every upload
+  failed to parse and no vector layer could be published. The response
+  is now read as the portal actually sends it. The whole publish path
+  (upload, inspect, create, import, read back) was then run against the
+  live portal to confirm nothing else in the chain was assumed rather
+  than checked.
+
 ## [0.2.6] - 2026-08-14
 
 ### Fixed
