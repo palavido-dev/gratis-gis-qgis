@@ -40,7 +40,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 from gratisgis_client.models.item import ItemSummary, ItemType
 
 from ..browser.buckets import is_qgis_consumable
-from ..browser.uris import oapif_uri, vector_tile_uri
+from ..layer_targets import LayerTarget, resolve_layer_target
 from ..log import get_logger
 from ..portal import list_items
 from ..settings import ConnectionStore
@@ -228,9 +228,19 @@ class GratisGISSearchDock(QDockWidget):
         self._status.setText(f"{len(items)} result(s).")
 
     def _on_double_click(self, item: QListWidgetItem) -> None:
-        """Add the picked item to the QGIS canvas via the built-in
-        OAPIF provider. Only supported for data_layer + tile_layer
-        leaves today; other types pop a "no runtime here" message.
+        """Add the picked item to the canvas the same way the tree does.
+
+        This used to build its own URIs for exactly two item types,
+        which drifted badly: it still pointed data layers at the
+        public-only OAPIF surface (so private ones came back empty) and
+        tile layers at the vector-tile surface that does not exist for
+        them, and it refused basemaps outright even though the Browser
+        tree adds them happily.
+
+        Rather than duplicate that routing a second time, it now builds
+        the very same Browser leaf the tree would build and adds
+        whatever that leaf says it is. One implementation, so the two
+        entry points cannot disagree again.
         """
         payload = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(payload, dict):
@@ -246,21 +256,45 @@ class GratisGISSearchDock(QDockWidget):
         if profile is None:
             return
 
-        # Accept both kebab and snake spellings the portal has
-        # used over time.
-        normalized_type = (summary.type or "").replace("-", "_")
-        if normalized_type == "data_layer":
-            self._add_data_layer(profile.portal_url, summary)
-        elif normalized_type == "tile_layer":
-            self._add_tile_layer(profile.portal_url, summary)
-        else:
-            QMessageBox.information(
-                self,
-                "Open in QGIS",
-                f"'{summary.title}' is a {summary.type} item; the QGIS plugin "
-                "doesn't yet open this type in the canvas. Use the Browser "
-                "panel for the matching item types (data_layer, tile_layer).",
+        # Resolving a leaf fetches the item envelope, so it belongs off
+        # the GUI thread like every other network call in the plugin.
+        def resolve(_handle) -> LayerTarget | None:
+            return resolve_layer_target(profile, summary)
+
+        def done(target: LayerTarget | None) -> None:
+            self._status.setText("")
+            if target is None:
+                QMessageBox.information(
+                    self,
+                    "Open in QGIS",
+                    f"'{summary.title}' cannot be added to the canvas. "
+                    "Open it in the portal instead.",
+                )
+                return
+            if target.message:
+                QMessageBox.information(self, "Open in QGIS", target.message)
+                return
+            self._add_target(target)
+
+        def failed(exc: BaseException) -> None:
+            self._status.setText("")
+            QMessageBox.warning(
+                self, "Open in QGIS", f"Could not add the layer: {format_error(exc)}"
             )
+
+        self._status.setText(f"Opening {summary.title}...")
+        run_in_task(
+            f"GratisGIS open {summary.title}", resolve, done, failed, cancelable=False
+        )
+
+    def _add_target(self, target: LayerTarget) -> None:
+        """Hand the resolved leaf to the matching iface entry point."""
+        if target.layer_type == "vector-tile":
+            self._iface.addVectorTileLayer(target.uri, target.name)
+        elif target.layer_type == "raster":
+            self._iface.addRasterLayer(target.uri, target.name, target.provider)
+        else:
+            self._iface.addVectorLayer(target.uri, target.name, target.provider)
 
     def _on_results_context_menu(self, _pos) -> None:
         """Right-click on a result row opens the item properties
@@ -287,20 +321,6 @@ class GratisGISSearchDock(QDockWidget):
             item_id=payload.get("id", ""),
         )
         dlg.exec()
-
-    def _add_data_layer(self, portal_url: str, summary: ItemSummary) -> None:
-        self._iface.addVectorLayer(
-            oapif_uri(portal_url, summary.id),
-            summary.title,
-            "OAPIF",
-        )
-
-    def _add_tile_layer(self, portal_url: str, summary: ItemSummary) -> None:
-        self._iface.addVectorTileLayer(
-            vector_tile_uri(portal_url, summary.id),
-            summary.title,
-        )
-
 
 def _format_result_row(item: ItemSummary) -> str:
     return f"{item.title}  -  {item.type}  ({item.access})"
