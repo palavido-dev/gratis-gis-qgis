@@ -151,14 +151,17 @@ class TestSkippedLayers:
         skipped = result.skipped[0]
         assert isinstance(skipped, SkippedLayer)
         assert skipped.name == "Mystery"
-        assert "mystery" in skipped.reason.lower() or "unsupported" in skipped.reason.lower()
+        # A reason, in words a user can act on. Deliberately NOT
+        # asserting that it echoes the provider key: these strings are
+        # read by someone who wants their map published, not by
+        # someone debugging QGIS.
+        assert "layer" in skipped.reason.lower()
+        assert skipped.reason.endswith(".")
 
     def test_external_service_layer_has_specific_skip_reason(self) -> None:
         # External services (WMS, ArcGIS Feature Server, etc.) are a
-        # known-but-unsupported case. The reason text should hint at
-        # the workaround (register the service as a portal item) so
-        # the dialog doesn't just say "unsupported" and leave the
-        # user to guess.
+        # known case with a known fix, and the reason should name the
+        # fix rather than leaving the user to guess.
         snap = _snapshot(
             CanvasLayer(
                 name="Census Tracts",
@@ -170,7 +173,7 @@ class TestSkippedLayers:
         result = translate(snap)
         assert len(result.skipped) == 1
         reason = result.skipped[0].reason.lower()
-        assert "external" in reason
+        assert "outside service" in reason
         assert "portal" in reason
 
     def test_local_file_layer_has_specific_skip_reason(self) -> None:

@@ -14,13 +14,48 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
+
+from ..log import get_logger
+
+_log = get_logger(__name__)
 
 #: Prefixes that mean the raster is streamed rather than stored: a web
 #: service, or a file read over HTTP. There is no local file to upload,
 #: and reaching through to fetch one would be a surprising amount of
 #: work to do on someone's behalf.
 _REMOTE_MARKERS = ("/vsicurl/", "/vsis3/", "/vsigs/", "/vsiaz/", "/vsizip//vsicurl/")
+
+
+#: Where the plugin records what a QGIS layer was published as.
+#:
+#: Stamped when a layer is published and read back by the
+#: publish-as-map flow, so a layer published five minutes ago is
+#: recognised as being on the portal instead of being offered for
+#: publishing all over again. A custom property rather than anything
+#: derived, because nothing in a local file's own source says which
+#: portal item it became, and it survives a project save.
+PUBLISHED_ITEM_PROPERTY = "gratisgis/published_item_id"
+PUBLISHED_LAYER_PROPERTY = "gratisgis/published_layer_key"
+
+
+def remember_published_item(
+    layer: Any, item_id: str, layer_key: str | None = None
+) -> None:
+    """Record that ``layer`` was published as ``item_id``.
+
+    Best-effort: failing to remember costs a redundant offer to
+    publish later, which is far cheaper than failing a publish that
+    has already succeeded.
+    """
+    if layer is None or not item_id:
+        return
+    try:
+        layer.setCustomProperty(PUBLISHED_ITEM_PROPERTY, item_id)
+        if layer_key:
+            layer.setCustomProperty(PUBLISHED_LAYER_PROPERTY, layer_key)
+    except Exception:  # pragma: no cover - defensive
+        _log.debug("could not record the published item id", exc_info=True)
 
 
 @dataclass(frozen=True)

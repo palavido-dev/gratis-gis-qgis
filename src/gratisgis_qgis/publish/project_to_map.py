@@ -35,7 +35,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import unquote
 
-from ..browser.uris import parse_oapif_uri, parse_vector_tile_uri
+from ..browser.uris import (
+    parse_oapif_uri,
+    parse_tile_layer_uri,
+    parse_vector_tile_uri,
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,29 @@ class CanvasLayer:
     as data layer" action on a skipped row can re-look up the
     layer object in the project. Optional because tests don't
     need it."""
+
+    portal_item_id: str | None = None
+    """The portal item this layer already stands for, when that is
+    known from something other than the source URI.
+
+    Two things fill it, and both describe a layer that IS on the
+    portal despite reading as a local file:
+
+      - an offline clone, which records its origin inside the
+        GeoPackage. Its data came from the portal, so a map should
+        reference the SOURCE layer rather than treat the local copy
+        as unpublished and offer to upload it back.
+      - a layer this plugin published, which stamps the resulting
+        item onto the QGIS layer. Publishing a layer and then
+        publishing the project used to offer to publish it twice.
+
+    Resolved by the dialog rather than here: finding it means reading
+    a file or a QGIS property, and this module stays free of both so
+    the translation rules can be tested without either.
+    """
+
+    portal_layer_key: str | None = None
+    """Sublayer within ``portal_item_id``, when it has more than one."""
 
 
 @dataclass(frozen=True)
@@ -160,6 +187,14 @@ class PortalServiceRef:
 
 
 @dataclass(frozen=True)
+class PortalTileLayerRef:
+    """What a map needs to carry a raster tile_layer item."""
+
+    tile_url: str
+    bbox_wgs84: tuple[float, float, float, float] | None = None
+
+
+@dataclass(frozen=True)
 class PortalIndex:
     """Lookup the publish flow uses to recognize layers that came
     from the portal even when the QGIS layer URI points at the
@@ -178,6 +213,16 @@ class PortalIndex:
     """Mapping of connected-service ``data.url`` (root URL, no
     layer suffix) -> service item ref. Used to backref ArcGIS REST
     layers that came from a portal service item."""
+
+    tile_layers_by_item: dict[str, PortalTileLayerRef] = field(default_factory=dict)
+    """Mapping of tile_layer item id -> the details a map needs.
+
+    Filled by the dialog for the raster items it recognised on the
+    canvas. A map's tile layer must carry the item's own tile URL,
+    which lives in the item's data envelope rather than anywhere in
+    the QGIS layer, so recognising the item is not by itself enough
+    to emit one.
+    """
 
 
 # Match identifiers used on the portal-side MapLayerSource union.
@@ -233,6 +278,33 @@ def translate(
                     },
                 )
             )
+            continue
+        if isinstance(resolved, _ResolvedTileLayer):
+            ref = index.tile_layers_by_item.get(resolved.item_id)
+            if ref is None:
+                # Recognised as a portal raster, but the details a map
+                # needs are not to hand. Say that plainly rather than
+                # emit a layer the portal would render as nothing.
+                skipped.append(
+                    SkippedLayer(
+                        name=lyr.name,
+                        provider=lyr.provider,
+                        reason=(
+                            "This is a portal layer, but its details could "
+                            "not be read just now. Check your connection "
+                            "and try again."
+                        ),
+                    )
+                )
+                continue
+            tile_source: dict[str, Any] = {
+                "kind": "tile",
+                "itemId": resolved.item_id,
+                "tileUrl": ref.tile_url,
+            }
+            if ref.bbox_wgs84 is not None:
+                tile_source["bboxWgs84"] = list(ref.bbox_wgs84)
+            map_layers.append(_emit_layer(lyr, source=tile_source))
             continue
         if isinstance(resolved, _ResolvedArcgisRest):
             source: dict[str, Any] = {
@@ -300,7 +372,16 @@ class _ResolvedBasemap:
     item_id: str
 
 
-_Resolved = _ResolvedDataLayer | _ResolvedArcgisRest | _ResolvedBasemap
+@dataclass(frozen=True)
+class _ResolvedTileLayer:
+    """A raster tile_layer item, carried as a map overlay."""
+
+    item_id: str
+
+
+_Resolved = (
+    _ResolvedDataLayer | _ResolvedArcgisRest | _ResolvedBasemap | _ResolvedTileLayer
+)
 
 
 def _resolve_layer(
@@ -314,6 +395,24 @@ def _resolve_layer(
     connected-service items by service-root URL).
     """
     provider = layer.provider.lower()
+
+    # --- Already known to be a portal item ---
+    # An offline clone or a layer this plugin just published. Checked
+    # before the provider rules because both look like ordinary local
+    # files, which is exactly why they were being missed.
+    if layer.portal_item_id:
+        return _ResolvedDataLayer(
+            item_id=layer.portal_item_id, layer_key=layer.portal_layer_key
+        )
+
+    # --- Raster tile_layer items ---
+    # Tried before the provider table because the same item reaches the
+    # canvas as `gdal` (a COG) or `wms` (unpacked tiles) depending on
+    # how it was stored, and the user cannot see which. Keying on the
+    # URL rather than the provider covers both without caring.
+    parsed_tile = parse_tile_layer_uri(layer.source_uri)
+    if parsed_tile is not None:
+        return _ResolvedTileLayer(item_id=parsed_tile[1])
 
     # --- OGC API Features (data_layer items) ---
     if provider == "oapif":
@@ -485,8 +584,18 @@ def _build_skipped(layer: CanvasLayer) -> SkippedLayer:
                 basemap_tile_url=unquote(m.group(1)),
             )
 
-    # Local file / in-memory vector layer.
-    if provider in ("ogr", "memory", "delimitedtext", "gpx", "spatialite"):
+    # Local file / in-memory vector layer. A local raster is offered
+    # too: the merged publish flow can upload one as a tile layer, so
+    # excluding it here would be the dialog forgetting something the
+    # plugin can do.
+    if provider in (
+        "ogr",
+        "memory",
+        "delimitedtext",
+        "gpx",
+        "spatialite",
+        "gdal",
+    ):
         return SkippedLayer(
             name=layer.name,
             provider=layer.provider,
@@ -503,25 +612,37 @@ def _build_skipped(layer: CanvasLayer) -> SkippedLayer:
 
 
 def _skip_reason(layer: CanvasLayer) -> str:
+    """Say why a layer cannot go in the map, in the user's terms.
+
+    These strings are read by someone who wants their map published,
+    not by someone debugging QGIS, so they name what to DO. The
+    previous wording leaked the plugin's own vocabulary: provider
+    keys, "data_layer", and a development phase number that meant
+    nothing outside this repository.
+    """
     p = layer.provider.lower()
     if p in ("oapif", "vectortile", "xyzvectortiles"):
         return (
-            "Source URL doesn't match a recognized portal endpoint. "
-            "Sign in to the matching connection or use a published "
-            "layer from the GratisGIS Browser tree."
+            "This looks like a portal layer, but not one on the portal "
+            "you are publishing to. Sign in to the right connection, or "
+            "add the layer again from the GratisGIS panel."
         )
     if p in ("wms", "wmts", "wfs", "arcgisfeatureserver", "arcgismapserver"):
         return (
-            f"{layer.provider} layer points at an external service "
-            "without a matching portal item. Add it as a service / "
-            "basemap item in the portal first, then re-publish."
+            "This layer comes from an outside service that the portal "
+            "does not know about yet. Tick 'Publish it too' to add it, "
+            "or add it to the portal first."
         )
-    if p in ("ogr", "memory", "delimitedtext", "gpx", "spatialite"):
+    if p in ("ogr", "memory", "delimitedtext", "gpx", "spatialite", "gdal"):
         return (
-            "Local file or in-memory layer. Publish the data to a "
-            "portal data_layer (Phase 3) before including it in a map."
+            "This layer is only on your computer. Tick 'Publish it too' "
+            "and it will be added to the portal as part of publishing "
+            "this map."
         )
-    return f"Unsupported provider: {layer.provider}"
+    return (
+        "The plugin does not know how to put this kind of layer on a "
+        "portal map yet."
+    )
 
 
 def _clamp_unit(x: float) -> float:

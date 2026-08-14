@@ -7,6 +7,30 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.5.0] - 2026-08-14
+
+### Fixed
+
+- **Publish-as-map now recognises portal rasters.** An imagery or
+  hillshade layer from the portal was listed as something only on your
+  computer, so a project full of portal layers could show an empty
+  "included in the map" list. It is recognised whichever way the item
+  is stored, which is not something you can see from QGIS.
+- **An offline copy counts as its original.** A layer you cloned for
+  offline use is on the portal, so the map now points at the layer it
+  came from instead of offering to upload your copy back as a new item.
+- **A layer you just published is remembered.** Publish a layer and
+  then publish the project, and the map uses what you published rather
+  than offering to publish it again.
+
+### Changed
+
+- The reasons a layer cannot go in a map are written for someone
+  publishing a map, not for someone debugging QGIS. They said things
+  like "Phase 3" and named internal machinery.
+- The changelog QGIS shows under Manage and Install Plugins is built
+  from this file, so it stops describing a version four releases old.
+
 ## [0.4.1] - 2026-08-14
 
 ### Fixed

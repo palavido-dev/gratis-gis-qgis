@@ -58,7 +58,11 @@ from gratisgis_client.models.item import Item
 from ..log import get_logger
 from ..portal import get_client
 from ..publish.raster import validate_raster_upload
-from ..publish.source import PublishChoice, resolve_raster_source
+from ..publish.source import (
+    PublishChoice,
+    remember_published_item,
+    resolve_raster_source,
+)
 from ..publish.vector import (
     LayerSummary,
     build_data_layer_envelope,
@@ -507,6 +511,14 @@ class PublishLayerDialog(QDialog):
             self._progress_bar.setVisible(False)
             if self._closed:
                 return
+            # Remember what this layer became, so publishing the
+            # project afterwards recognises it instead of offering to
+            # publish the same raster a second time.
+            if choice.kind == "raster" and choice.layer_id:
+                remember_published_item(
+                    QgsProject.instance().mapLayer(choice.layer_id),
+                    outcome.item_id,
+                )
             QMessageBox.information(
                 self,
                 "Published",

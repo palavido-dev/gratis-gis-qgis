@@ -11,7 +11,7 @@ This dialog stays thin: the shape-mapping rules live in
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from qgis.core import (  # type: ignore[import-not-found]
     QgsCoordinateReferenceSystem,
@@ -39,6 +39,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 from gratisgis_client.models.item import ItemSummary
 
 from ..log import get_logger
+from ..offline.clone import read_clone_source
 from ..portal import get_client
 from ..publish.project_to_map import (
     CanvasLayer,
@@ -50,6 +51,7 @@ from ..publish.project_to_map import (
     SkippedLayer,
     translate,
 )
+from ..publish.source import PUBLISHED_ITEM_PROPERTY, PUBLISHED_LAYER_PROPERTY
 from ..settings import ConnectionProfile, ConnectionStore
 from ..tasks import format_error, run_in_task
 
@@ -631,7 +633,118 @@ def _fetch_portal_index(profile: ConnectionProfile) -> PortalIndex:
                 services[root] = PortalServiceRef(
                     item_id=it.id, service_type="MapServer"
                 )
-    return PortalIndex(basemaps_by_tile_url=basemaps, services_by_url=services)
+    # Raster layers already on the canvas need one extra lookup each,
+    # so gather their ids from the project rather than walking every
+    # tile layer on the portal.
+    tile_ids = _tile_layer_ids_on_canvas()
+    return PortalIndex(
+        basemaps_by_tile_url=basemaps,
+        services_by_url=services,
+        tile_layers_by_item=_tile_layer_index(client, tile_ids),
+    )
+
+
+def _tile_layer_ids_on_canvas() -> set[str]:
+    """Portal raster item ids among the project's layers."""
+    from ..browser.uris import parse_tile_layer_uri
+
+    found: set[str] = set()
+    for layer in QgsProject.instance().mapLayers().values():
+        try:
+            source = layer.source()
+        except Exception:  # pragma: no cover - defensive
+            continue
+        if not isinstance(source, str):
+            continue
+        parsed = parse_tile_layer_uri(source)
+        if parsed is not None:
+            found.add(parsed[1])
+    return found
+
+
+def _tile_layer_index(client: Any, item_ids: set[str]) -> dict[str, Any]:
+    """Fetch what a map needs for each recognised raster.
+
+    A tile layer's map source has to carry the item's own tile URL,
+    which lives in the item's data envelope and nowhere in the QGIS
+    layer, so recognising the item is not enough on its own.
+
+    One request per raster, and only for rasters actually on the
+    canvas. A failure is swallowed per item: the layer then reports
+    that its details could not be read, which is better than failing
+    the whole dialog over one item.
+    """
+    from ..publish.project_to_map import PortalTileLayerRef
+
+    out: dict[str, Any] = {}
+    for item_id in item_ids:
+        try:
+            item = client.items.get(item_id)
+        except Exception:
+            _log.debug("could not read tile layer %s", item_id, exc_info=True)
+            continue
+        data = item.data if isinstance(item.data, dict) else {}
+        tile_url = data.get("tileUrl")
+        if not isinstance(tile_url, str) or not tile_url:
+            continue
+        out[item_id] = PortalTileLayerRef(
+            tile_url=tile_url, bbox_wgs84=item.bbox
+        )
+    return out
+
+
+def _known_portal_origin(layer: Any) -> tuple[str | None, str | None]:
+    """The portal item a layer stands for, when its URI cannot say.
+
+    Two cases, both of which look like an ordinary local file and were
+    therefore offered for publishing despite already being on the
+    portal:
+
+      - an **offline clone**, which records where it came from inside
+        the GeoPackage. Its data IS a portal layer, so a map should
+        point at the source rather than treat the copy as new. Read
+        from the file, so it works even in a fresh QGIS session that
+        has never seen the clone before.
+      - a layer **this plugin published**, which stamps the resulting
+        item onto the QGIS layer. Publishing a layer and then
+        publishing the project used to offer to publish it twice.
+
+    Both are best-effort: this runs over every layer in the project,
+    most of which have nothing to do with the portal.
+    """
+    stamped = _published_item_property(layer)
+    if stamped[0]:
+        return stamped
+
+    try:
+        source = layer.source()
+    except Exception:  # pragma: no cover - defensive
+        return (None, None)
+    if not isinstance(source, str):
+        return (None, None)
+    path = source.split("|", 1)[0].strip()
+    if not path.lower().endswith(".gpkg"):
+        return (None, None)
+    ref = read_clone_source(path)
+    if ref is None:
+        return (None, None)
+    # "default" is the portal's alias for a single-layer item; a map
+    # source names no sublayer in that case.
+    layer_key = ref.layer_id if ref.layer_id != "default" else None
+    return (ref.item_id, layer_key)
+
+
+def _published_item_property(layer: Any) -> tuple[str | None, str | None]:
+    """Read the portal item this plugin stamped onto the layer."""
+    try:
+        item_id = layer.customProperty(PUBLISHED_ITEM_PROPERTY)
+        layer_key = layer.customProperty(PUBLISHED_LAYER_PROPERTY)
+    except Exception:  # pragma: no cover - defensive
+        return (None, None)
+    if not isinstance(item_id, str) or not item_id.strip():
+        return (None, None)
+    key = layer_key.strip() if isinstance(layer_key, str) else ""
+    return (item_id.strip(), key or None)
 
 
 def _build_snapshot(iface: QgisInterface, title: str) -> ProjectSnapshot:
@@ -647,6 +760,7 @@ def _build_snapshot(iface: QgisInterface, title: str) -> ProjectSnapshot:
         if ml is None:
             continue
         provider = ml.providerType() if hasattr(ml, "providerType") else ""
+        item_id, layer_key = _known_portal_origin(ml)
         layers.append(
             CanvasLayer(
                 name=ml.name(),
@@ -655,6 +769,8 @@ def _build_snapshot(iface: QgisInterface, title: str) -> ProjectSnapshot:
                 visible=bool(tree_layer.isVisible()),
                 opacity=_layer_opacity(ml),
                 qgis_layer_id=ml.id() if hasattr(ml, "id") else None,
+                portal_item_id=item_id,
+                portal_layer_key=layer_key,
             )
         )
 

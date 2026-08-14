@@ -16,8 +16,9 @@ and the Search dock's add-to-canvas action (ui/search_dock.py).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 # A parameter of our own, carried in the layer URI so the extent
 # travels with the layer instead of costing a network round trip when
@@ -265,6 +266,56 @@ def authed_vector_tile_uri(
 # -----------------------------------------------------------
 # Reverse parsers (Phase 6 + later)
 # -----------------------------------------------------------
+
+
+def parse_tile_layer_uri(uri: str) -> tuple[str, str] | None:
+    """Recover (portal_url, item_id) from a tile_layer source.
+
+    Inverse of both raster builders, which emit two very different
+    strings for the same kind of item:
+
+      - ``tile_layer_cog_uri`` -> ``/vsicurl/<portal>/api/tile-layer/
+        <id>/file.cog``, read by GDAL.
+      - ``tile_layer_xyz_uri`` -> ``type=xyz&url=<encoded template>``,
+        read by the tiled-raster provider.
+
+    Both have to be recognised, because which one a layer got depends
+    on how the item was stored, which the user has no visibility of.
+    Publish-as-map recognised neither, so a portal raster sitting on
+    the canvas was reported as an unpublishable local file.
+    """
+    if not uri:
+        return None
+    text = uri.strip()
+
+    # XYZ shape: pull the template out of the parameter string first.
+    if text.startswith("type=xyz"):
+        match = re.search(r"url=([^&]+)", text)
+        if match is None:
+            return None
+        text = unquote(match.group(1))
+
+    # GDAL prefixes stack, and in either order (/vsizip//vsicurl/...),
+    # so strip until none is left rather than walking a fixed list
+    # once: taking them in list order leaves the second one in place.
+    while True:
+        for prefix in ("/vsicurl/", "/vsizip/", "/vsigzip/"):
+            if text.startswith(prefix):
+                text = text[len(prefix) :]
+                break
+        else:
+            break
+
+    marker = "/api/tile-layer/"
+    index = text.find(marker)
+    if index < 0:
+        return None
+    portal_url = text[:index]
+    rest = text[index + len(marker) :]
+    item_id = rest.split("/", 1)[0]
+    if not portal_url or not item_id:
+        return None
+    return portal_url, item_id
 
 
 def parse_oapif_uri(uri: str) -> tuple[str, str] | None:
