@@ -7,6 +7,30 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.2.1] - 2026-08-13
+
+### Fixed
+
+- **Sign-in crashed immediately on QGIS 4.** Starting any background
+  task raised `TypeError: QgsTask(): argument 2 has unexpected type
+  'int'`, so connecting to a portal failed at the first step. The
+  cause was a compatibility branch that decided which value to pass
+  by asking whether the flag was an integer; on Qt6 the flag types
+  are integers as well, so the branch fired on exactly the QGIS
+  version it was written to support. QGIS 3 is unaffected.
+
+### Added
+
+- `scripts/qgis_smoke.py`, a headless check that runs against a real
+  QGIS install (`python-qgis.bat scripts/qgis_smoke.py`). The unit
+  tests run against a simulated QGIS, which cannot catch a value of
+  the wrong type being handed to a real QGIS function, which is how
+  the crash above shipped. The new check exercises the plugin against
+  the genuine bindings: every module imports, every version-dependent
+  enum resolves, a background task runs start to finish, the browser
+  provider builds, the layer addresses parse, and the authentication
+  method that private layers rely on is present.
+
 ## [0.2.0] - 2026-08-13
 
 A foundation release: same features as 0.1.0, rebuilt so they
