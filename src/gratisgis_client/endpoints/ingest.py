@@ -94,19 +94,25 @@ class IngestLayer:
 
 @dataclass(frozen=True, kw_only=True)
 class StageResult:
-    """Response envelope for ``POST /api/ingest/stage``."""
+    """Response envelope for ``POST /api/ingest/stage``.
+
+    Mirrors what the endpoint actually returns, which is
+    ``{stagingId, driver, layers}`` and nothing else. It previously
+    also declared a required ``file_name`` plus ``size_bytes`` and
+    ``expires_at``; the portal has never sent any of the three, so
+    every stage response failed to parse with "field 'fileName':
+    expected a string, got NoneType" and publishing a vector layer
+    could not get past the upload. Verified against the live endpoint,
+    not inferred.
+    """
 
     staging_id: str
     """Opaque id the caller hands back to the import-jobs endpoint."""
 
-    file_name: str
-    """Original filename the user uploaded (for display in the wizard)."""
+    driver: str = ""
+    """OGR driver the probe recognised, e.g. "GeoJSON" or "GPKG"."""
 
-    size_bytes: int = 0
     layers: list[IngestLayer] = field(default_factory=list)
-    expires_at: str | None = None
-    """ISO-8601 UTC. Helps the dialog warn before the upload silently
-    falls out of /tmp/gg-staging/."""
 
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> StageResult:
@@ -116,10 +122,8 @@ class StageResult:
             raise ValueError("field 'layers': expected a list")
         return cls(
             staging_id=req_str(payload, "stagingId"),
-            file_name=req_str(payload, "fileName"),
-            size_bytes=int_or(payload, "sizeBytes", 0),
+            driver=opt_str(payload, "driver") or "",
             layers=[IngestLayer.from_api(row) for row in rows],
-            expires_at=opt_str(payload, "expiresAt"),
         )
 
 

@@ -54,23 +54,24 @@ def _http(transport: FakeTransport) -> PortalHttp:
 
 class TestIngestStage:
     def test_stage_parses_portal_envelope(self, tmp_path: Path) -> None:
-        # Pinning the response shape against what the portal's
-        # IngestController.stage actually returns. Adding a field
-        # later is fine (unknown keys ignored); renaming one breaks
-        # here and we update both sides in lockstep.
+        # This payload is a verbatim capture from POST /api/ingest/stage
+        # on the live portal, not a guess. The previous version of this
+        # test invented fileName / sizeBytes / expiresAt keys the
+        # endpoint has never sent, so it passed while every real stage
+        # response failed to parse and publishing a vector layer could
+        # not get past the upload. A fixture that describes a contract
+        # nobody checked is worse than no fixture.
         transport = FakeTransport().add(
             json_response(
                 {
-                    "stagingId": "stg_abc",
-                    "fileName": "parcels.gpkg",
-                    "sizeBytes": 1024,
-                    "expiresAt": "2026-05-20T12:00:00Z",
+                    "stagingId": "b8ca5e53-810c-42d6-a2d1-c97d5990a889",
+                    "driver": "GeoJSON",
                     "layers": [
                         {
-                            "name": "parcels",
+                            "name": "tiny",
                             "geometryType": "polygon",
-                            "fields": [{"name": "PIN", "type": "string"}],
-                            "featureCount": 1000,
+                            "fields": [{"name": "label", "type": "string"}],
+                            "featureCount": 2,
                         }
                     ],
                 }
@@ -83,15 +84,32 @@ class TestIngestStage:
         result = endpoint.stage(file_path=str(gpkg))
 
         assert path_of(transport.requests[0]) == "/api/ingest/stage"
-        assert result.staging_id == "stg_abc"
-        assert result.file_name == "parcels.gpkg"
-        assert result.size_bytes == 1024
+        assert result.staging_id == "b8ca5e53-810c-42d6-a2d1-c97d5990a889"
+        assert result.driver == "GeoJSON"
         assert len(result.layers) == 1
         layer = result.layers[0]
-        assert layer.name == "parcels"
+        assert layer.name == "tiny"
         assert layer.geometry_type == "polygon"
-        assert layer.feature_count == 1000
-        assert layer.fields[0].name == "PIN"
+        assert layer.feature_count == 2
+        assert layer.fields[0].name == "label"
+
+    def test_stage_tolerates_extra_keys(self, tmp_path: Path) -> None:
+        # Forward compatibility: the portal adding a field must not
+        # break an older plugin.
+        transport = FakeTransport().add(
+            json_response(
+                {
+                    "stagingId": "stg_1",
+                    "driver": "GPKG",
+                    "layers": [],
+                    "somethingNew": {"nested": True},
+                }
+            )
+        )
+        gpkg = tmp_path / "x.gpkg"
+        gpkg.write_bytes(b"x")
+        result = IngestEndpoint(_http(transport)).stage(file_path=str(gpkg))
+        assert result.staging_id == "stg_1"
 
     def test_stage_uses_file_basename_when_name_omitted(self, tmp_path: Path) -> None:
         # The portal's `originalName` should reflect the picked file
