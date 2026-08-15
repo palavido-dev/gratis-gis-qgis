@@ -812,6 +812,129 @@ def _run_checks() -> None:
     print("\n[16] a replaced clone keeps its symbology and its place")
     _check_layer_placement()
 
+    print("\n[17] splitting a feature in a clone sends both halves")
+    _check_split_feature()
+
+
+def _check_split_feature() -> None:
+    """Does QGIS's split really copy the portal id onto the new part?
+
+    The whole fix rests on that being true, and it is exactly the sort
+    of thing a stub would be written to agree with. So it is asked of
+    the real splitFeatures: split a polygon, save, and count how many
+    rows come back carrying the original's id.
+
+    Reported by a user as "I split a polygon, synced, and the bottom
+    half disappeared from the portal", plus "it still says one edit to
+    sync". Both are the same collision.
+    """
+    import shutil
+    import tempfile
+
+    from qgis.core import (
+        QgsFeature,
+        QgsField,
+        QgsGeometry,
+        QgsPointXY,
+        QgsProject,
+        QgsVectorLayer,
+    )
+    from qgis.PyQt.QtCore import QVariant
+
+    from gratisgis_qgis.offline.clone import PORTAL_ID_PROPERTY
+    from gratisgis_qgis.offline.reader import (
+        baseline_from_features,
+        read_local_features,
+    )
+    from gratisgis_qgis.offline.sync_state import plan_local_changes
+
+    portal_id = "01a00350-f0c5-71b6-9aea-1b5088dc676a"
+    work = tempfile.mkdtemp(prefix="gg-split-")
+    try:
+        layer = QgsVectorLayer("Polygon?crs=EPSG:4326", "clone", "memory")
+        layer.dataProvider().addAttributes([
+            QgsField(PORTAL_ID_PROPERTY, QVariant.String),
+            QgsField("owner", QVariant.String),
+        ])
+        layer.updateFields()
+        feat = QgsFeature(layer.fields())
+        feat.setGeometry(
+            QgsGeometry.fromPolygonXY([[
+                QgsPointXY(0, 0), QgsPointXY(10, 0),
+                QgsPointXY(10, 10), QgsPointXY(0, 10), QgsPointXY(0, 0),
+            ]])
+        )
+        feat.setAttributes([portal_id, "matt"])
+        layer.dataProvider().addFeatures([feat])
+
+        before = check(
+            "the clone starts with one feature", lambda: layer.featureCount()
+        )
+        baseline = baseline_from_features(read_local_features(layer))
+        check(
+            "and one baseline entry",
+            lambda: _assert(len(baseline) == 1, f"baseline: {baseline!r}"),
+        )
+
+        # Split it straight down the middle, the way the user did.
+        check("start editing", layer.startEditing)
+        check(
+            "split the polygon in two",
+            lambda: layer.splitFeatures(
+                [QgsPointXY(5, -1), QgsPointXY(5, 11)], 0
+            ),
+        )
+        check("save the split", layer.commitChanges)
+        check(
+            "the split produced a second feature",
+            lambda: _assert(
+                layer.featureCount() == 2,
+                f"expected 2 features after the split, got "
+                f"{layer.featureCount()} (was {before})",
+            ),
+        )
+
+        live = check("read the saved rows", lambda: read_local_features(layer))
+        sharing = [f for f in (live or []) if f.global_id == portal_id]
+        check(
+            "BOTH halves carry the original's portal id",
+            lambda: _assert(
+                len(sharing) == 2,
+                "QGIS did not copy the portal id onto the new part, so "
+                f"the premise of this fix is wrong: {[f.global_id for f in (live or [])]}",
+            ),
+        )
+
+        changes = check(
+            "plan the changes", lambda: plan_local_changes(live or [], baseline)
+        )
+        kinds = sorted(c.kind for c in (changes or []))
+        check(
+            "one update and one create, not a single update",
+            lambda: _assert(
+                kinds == ["create", "update"],
+                f"the second half would be lost: {kinds}",
+            ),
+        )
+        check(
+            "the two changes carry different portal ids",
+            lambda: _assert(
+                len({c.portal_id for c in (changes or [])}) == 2,
+                "both ops name the same feature, so the plan builder "
+                "will merge them and one half disappears again",
+            ),
+        )
+        check(
+            "the new half keeps its own geometry",
+            lambda: _assert(
+                all(c.geometry is not None for c in (changes or [])),
+                "a change went out with no geometry",
+            ),
+        )
+    finally:
+        QgsProject.instance().clear()
+        shutil.rmtree(work, ignore_errors=True)
+
 
 def _check_layer_placement() -> None:
     """Carrying styling and tree position across an overwrite (#17).

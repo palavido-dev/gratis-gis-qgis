@@ -7,6 +7,28 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.9.2] - 2026-08-15
+
+### Fixed
+
+- **Splitting a feature offline sent only one half to the portal.** The
+  other half vanished, and every sync afterwards kept offering the same
+  edit no matter how many times you ran it.
+
+  When QGIS splits a feature it keeps the original and adds a second
+  one, copying every attribute across, which includes the hidden id
+  that says which portal feature the row belongs to. Both halves then
+  claimed to be the same feature: one overwrote the other on the way
+  out, and the leftover never looked finished.
+
+  A half that QGIS added is now recognised as a new feature and gets an
+  id of its own, so both halves reach the portal and the sync finishes
+  for good. This applies to anything that copies a feature, not just
+  Split: copy and paste in place had the same problem.
+
+  **If you have already hit this**, the missing half is still in your
+  offline copy. Sync again and it will be sent.
+
 ## [0.9.1] - 2026-08-15
 
 ### Fixed

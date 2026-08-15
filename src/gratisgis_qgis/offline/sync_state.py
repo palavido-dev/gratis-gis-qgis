@@ -222,6 +222,23 @@ def plan_local_changes(
     Rules, in the order they are decided:
 
       - A row with no id is new: mint one, create it.
+      - A row claiming an id an EARLIER row already claimed is new too,
+        and gets a fresh id rather than the one it arrived with. Two
+        local rows cannot both be one portal feature. This is what
+        splitting a polygon produces: QGIS keeps the original feature
+        and adds another for the new part, copying every attribute
+        across, portal id included. Without this rule the two collapse
+        downstream, in two places at once, and both are silent. The
+        plan builder merges updates by portal id, so only one half ever
+        reaches the portal and the other disappears. The baseline is
+        keyed by portal id too, so the surviving entry can only match
+        one of the rows and the other reads as edited forever.
+
+        The first row seen keeps the id. Features arrive in fid order,
+        so that is the original feature, and the piece QGIS added
+        becomes the new one. Either choice sends the same two
+        geometries; this one keeps the portal's existing feature
+        pointing at the part that kept its identity locally.
       - A row whose id is not in the baseline is also a create. That is
         not a contradiction: an id is written into the clone at the
         moment it is minted, BEFORE the create is sent, so this is
@@ -245,15 +262,29 @@ def plan_local_changes(
 
     for feature in live:
         global_id = feature.global_id or None
+        # Checked before it is recorded as seen, or every row would
+        # look like a duplicate of itself.
+        duplicate = global_id is not None and global_id in seen
         if global_id is not None:
             seen.add(global_id)
-        recorded = baseline.get(global_id) if global_id is not None else None
+        recorded = (
+            None
+            if duplicate or global_id is None
+            else baseline.get(global_id)
+        )
 
         if recorded is None:
             changes.append(
                 EditedFeature(
                     kind="create",
-                    portal_id=global_id or new_global_id(),
+                    # A duplicate must NOT keep the id it copied: that
+                    # is the collision, and reusing it would send the
+                    # create straight back into the same merge.
+                    portal_id=(
+                        new_global_id()
+                        if duplicate or global_id is None
+                        else global_id
+                    ),
                     qgis_fid=feature.qgis_fid,
                     geometry=feature.geometry,
                     properties=_user_properties(feature.properties),
