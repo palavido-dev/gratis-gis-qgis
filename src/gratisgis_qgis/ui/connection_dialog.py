@@ -56,6 +56,7 @@ from ..auth_bridge import (
 )
 from ..browser.refresh import refresh_browser_tree
 from ..layer_auth import mint_layer_key, revoke_layer_key
+from ..layer_reload import reload_layers_using
 from ..log import get_logger
 from ..portal import get_client, invalidate
 from ..raster_auth import configure_gdal_auth
@@ -245,6 +246,8 @@ class ConnectionManagerDialog(QDialog):
             self._set_busy(False)
             self._reload()
             refresh_browser_tree()
+            # The canvas reload happens inside the sign-in flow, where
+            # the freshly minted credential is in hand.
 
         _refresh_discovery_and_sign_in(self, self._store, profile, on_finished=finished)
 
@@ -277,6 +280,8 @@ class ConnectionManagerDialog(QDialog):
             self._set_busy(False)
             self._reload()
             refresh_browser_tree()
+            # The canvas reload happens inside _signed_out, right after
+            # the credential is emptied.
 
         # The layer key is revoked server-side first, while the OIDC
         # session that authorizes the revoke call still exists.
@@ -532,6 +537,12 @@ def _signed_out(profile: ConnectionProfile) -> ConnectionProfile:
     on the canvas kept drawing after sign-out because that option was
     still registered. It lives for the life of the QGIS process, so
     nothing short of forgetting it explicitly will do.
+
+    Then the affected canvas layers are reloaded. Emptying the
+    credential changes what the auth manager would hand out from now
+    on; a provider that already built its request template keeps the
+    copy it took when the layer was added, so without the reload the
+    layer carries on drawing with a credential the user has revoked.
     """
     # Logged because a successful sign-out used to say nothing at all,
     # which made "I signed out and my layers still draw" impossible to
@@ -555,8 +566,10 @@ def _signed_out(profile: ConnectionProfile) -> ConnectionProfile:
         )
         remove_authcfg(profile.layer_authcfg_id)
         raster_forget(profile)
+        reload_layers_using(profile.layer_authcfg_id)
         return replace(profile, authcfg_id="", api_key_id="", layer_authcfg_id="")
     raster_forget(profile)
+    reload_layers_using(profile.layer_authcfg_id)
     _log.info("signed out of %s; layer credential emptied", profile.name)
     return replace(profile, authcfg_id="", api_key_id="")
 
@@ -726,6 +739,13 @@ def _run_pkce_sign_in(
     def done(outcome: _SignInOutcome) -> None:
         updated, warn_line = resolve_sign_in(profile, outcome, api_header_method)
         store.save(updated)
+        # A layer already on the canvas resolved its credential when it
+        # was added and holds that copy; clearing the auth manager's
+        # cache does not reach it. Without this, signing back in fixes
+        # the Browser tree while the canvas stays blank until QGIS is
+        # restarted. Here rather than in the callers so every sign-in
+        # path gets it.
+        reload_layers_using(updated.layer_authcfg_id)
         progress.finish()
         if warn_line:
             QMessageBox.warning(parent, "Private layer rendering", warn_line)

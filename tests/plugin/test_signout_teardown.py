@@ -89,6 +89,7 @@ def spies(dialog_mod: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, _Spy]:
         "clear_api_header_credential": _Spy(result=True),
         "remove_authcfg": _Spy(),
         "raster_forget": _Spy(),
+        "reload_layers_using": _Spy(result=0),
     }
     for name, spy in made.items():
         monkeypatch.setattr(dialog_mod, name, spy)
@@ -167,6 +168,79 @@ class TestSignedOutProfile:
         out = dialog_mod._signed_out(profile)
         assert out.authcfg_id == ""
         assert out.api_key_id == ""
+
+    def test_layers_on_the_canvas_are_reloaded(
+        self,
+        dialog_mod: Any,
+        spies: dict[str, _Spy],
+        profile_factory: ProfileFactory,
+    ) -> None:
+        """The third way a signed-out layer keeps drawing.
+
+        Emptying the credential changes what the auth manager hands out
+        from here on. It does not reach a provider that already built
+        its request template when the layer was added, so that layer
+        carries on drawing with a credential the user just revoked.
+        Reported as "I signed out, but all my existing map layers still
+        draw from the portal".
+        """
+        profile = profile_factory(
+            authcfg_id="auth-1", api_key_id="key-1", layer_authcfg_id="lay-1"
+        )
+        dialog_mod._signed_out(profile)
+        assert spies["reload_layers_using"].calls == [(("lay-1",), {})]
+
+    def test_the_reload_happens_after_the_credential_is_emptied(
+        self,
+        dialog_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        spies: dict[str, _Spy],
+        profile_factory: ProfileFactory,
+    ) -> None:
+        """Order is the whole point.
+
+        Reloading first would have every provider re-resolve the key
+        that is about to be cleared, which is precisely the state being
+        fixed, and it would look like it worked.
+        """
+        order: list[str] = []
+        for name in ("clear_api_header_credential", "raster_forget",
+                     "reload_layers_using"):
+            def record(*_a: Any, _n: str = name, **_k: Any) -> Any:
+                order.append(_n)
+                return True if _n == "clear_api_header_credential" else None
+
+            monkeypatch.setattr(dialog_mod, name, record)
+        dialog_mod._signed_out(
+            profile_factory(
+                authcfg_id="auth-1", api_key_id="key-1",
+                layer_authcfg_id="lay-1",
+            )
+        )
+        assert order.index("reload_layers_using") > order.index(
+            "clear_api_header_credential"
+        )
+        assert order.index("reload_layers_using") > order.index(
+            "raster_forget"
+        )
+
+    def test_the_fallback_path_reloads_too(
+        self,
+        dialog_mod: Any,
+        spies: dict[str, _Spy],
+        profile_factory: ProfileFactory,
+    ) -> None:
+        """The branch that deletes the entry instead of emptying it.
+
+        It is the rarer branch, so it is the one that gets forgotten,
+        and it is also the branch where the layer is most broken.
+        """
+        spies["clear_api_header_credential"].result = False
+        profile = profile_factory(
+            authcfg_id="auth-1", api_key_id="key-1", layer_authcfg_id="lay-1"
+        )
+        dialog_mod._signed_out(profile)
+        assert spies["reload_layers_using"].calls == [(("lay-1",), {})]
 
     def test_a_failed_empty_falls_back_to_deleting(
         self,

@@ -483,3 +483,163 @@ class TestResolveSignIn:
             method,
         )
         assert profile.user_id == "user-42"
+
+
+def _record(dialog_mod: Any, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Swap the canvas reload for a list of the ids it was asked for."""
+    calls: list[str] = []
+
+    def reload(authcfg_id: str) -> int:
+        calls.append(authcfg_id)
+        return 0
+
+    monkeypatch.setattr(dialog_mod, "reload_layers_using", reload)
+    return calls
+
+
+class _SaveStore:
+    """A store that only has to remember the last profile saved."""
+
+    def __init__(self) -> None:
+        self.saved: list[Any] = []
+
+    def save(self, profile: Any) -> None:
+        self.saved.append(profile)
+
+
+class TestSignInCompletion:
+    """What ``_run_pkce_sign_in`` does once the browser flow returns.
+
+    The sign-in path is reached from two places, the Add dialog and the
+    main list's Sign In button, and both hand it the same completion
+    callback. Asserted through the real function with its background
+    task run inline, so the callback body itself is under test rather
+    than a copy of it.
+    """
+
+    @pytest.fixture
+    def run(
+        self, dialog_mod: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> Any:
+        """Drive ``_run_pkce_sign_in`` to its success callback."""
+        monkeypatch.setattr(
+            dialog_mod, "find_api_header_method", lambda: "APIHeader"
+        )
+        monkeypatch.setattr(
+            dialog_mod, "_TaskProgressDialog",
+            lambda *a, **k: SimpleNamespace(
+                show=lambda: None, finish=lambda: None
+            ),
+        )
+        monkeypatch.setattr(
+            dialog_mod, "QMessageBox",
+            SimpleNamespace(warning=lambda *a: None, critical=lambda *a: None),
+        )
+        monkeypatch.setattr(
+            dialog_mod, "resolve_sign_in",
+            lambda profile, _outcome, _method: (profile, None),
+        )
+
+        def run_inline(_name: str, work: Any, done: Any, _failed: Any) -> Any:
+            done(work(SimpleNamespace(is_canceled=lambda: False)))
+            return SimpleNamespace(cancel=lambda: None)
+
+        monkeypatch.setattr(dialog_mod, "run_in_task", run_inline)
+        monkeypatch.setattr(dialog_mod, "get_client", lambda _p: _FakeClient())
+        monkeypatch.setattr(dialog_mod, "revoke_layer_key", lambda *a: None)
+        monkeypatch.setattr(dialog_mod, "mint_layer_key", lambda *a: _Minted())
+
+        def go(profile: Any) -> _SaveStore:
+            store = _SaveStore()
+            dialog_mod._run_pkce_sign_in(
+                None, store, profile,
+                clear_authcfg_on_failure=False,
+                on_finished=lambda _ok: None,
+            )
+            return store
+
+        return go
+
+    def test_layers_on_the_canvas_are_reloaded(
+        self,
+        dialog_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        run: Any,
+        profile_factory: ProfileFactory,
+    ) -> None:
+        """The reported half of the bug that survived the first fix.
+
+        Signing out stopped the layers drawing, and signing back in
+        brought the vector layer back but left the two rasters blank.
+        Storing a fresh key under the same authcfg id fixes what the
+        auth manager hands out; a provider already holding a resolved
+        copy needs telling.
+        """
+        calls = _record(dialog_mod, monkeypatch)
+        run(profile_factory(layer_authcfg_id="lay-1"))
+        assert calls == ["lay-1"]
+
+    def test_the_id_comes_from_the_saved_profile(
+        self,
+        dialog_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        run: Any,
+        profile_factory: ProfileFactory,
+    ) -> None:
+        """A first sign-in mints the id during this very callback.
+
+        Reading it off the profile passed in would reload nothing at
+        all on the path where the connection had no layer credential
+        yet, which is exactly the path that just created one.
+        """
+        monkeypatch.setattr(
+            dialog_mod, "resolve_sign_in",
+            lambda profile, _o, _m: (
+                profile.__class__(**{
+                    **profile.__dict__, "layer_authcfg_id": "minted-1",
+                }),
+                None,
+            ),
+        )
+        calls = _record(dialog_mod, monkeypatch)
+        run(profile_factory(layer_authcfg_id=""))
+        assert calls == ["minted-1"]
+
+    def test_the_reload_happens_after_the_profile_is_saved(
+        self,
+        dialog_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        run: Any,
+        profile_factory: ProfileFactory,
+    ) -> None:
+        """So a redraw that reads the store sees the new credential."""
+        order: list[str] = []
+
+        def reload(_authcfg_id: str) -> int:
+            order.append("reload")
+            return 0
+
+        monkeypatch.setattr(dialog_mod, "reload_layers_using", reload)
+        store = _SaveStore()
+        real_save = store.save
+
+        def spy_save(profile: Any) -> None:
+            order.append("save")
+            real_save(profile)
+
+        store.save = spy_save  # type: ignore[method-assign]
+        dialog_mod._run_pkce_sign_in(
+            None, store, profile_factory(layer_authcfg_id="lay-1"),
+            clear_authcfg_on_failure=False,
+            on_finished=lambda _ok: None,
+        )
+        assert order == ["save", "reload"]
+
+
+class _FakeClient:
+    """Just enough client for the sign-in worker to run."""
+
+    def __init__(self) -> None:
+        self.auth = SimpleNamespace(
+            login_interactive=lambda cancel: _Tokens("user-42")
+        )

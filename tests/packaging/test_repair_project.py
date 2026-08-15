@@ -16,7 +16,7 @@ sys.path.insert(
     0, str(Path(__file__).resolve().parent.parent.parent / "scripts")
 )
 
-from repair_project import repair_file, repair_xml, xyz_uri
+from repair_project import find_authcfg, repair_file, repair_xml, xyz_uri
 
 _PORTAL = "https://gratisgis.org"
 _ITEM = "15be62b2-7af0-48f2-9f61-dfe7814e5050"
@@ -106,6 +106,38 @@ class TestRepairXml:
         second = f"/vsicurl/{_PORTAL}/api/tile-layer/aaaa-bbbb/file.cog"
         _fixed, changed = repair_xml(_project_xml(_COG, second))
         assert changed == [_ITEM, "aaaa-bbbb"]
+
+    def test_the_credential_is_carried_over_from_the_project(self) -> None:
+        """A COG source has no authcfg; the tile route needs one.
+
+        GDAL cannot use a QGIS authcfg, so a COG layer never carried
+        one and the key reached it another way. Rewriting to the tile
+        route without a credential leaves a private raster permanently
+        unauthorised, and the user has no way to look the id up. Every
+        other portal layer in the same project already names it.
+        """
+        authed = (
+            "authcfg=e53df68&type=xyz&url=https%3A%2F%2Fgratisgis.org%2Fx"
+        )
+        fixed, _ = repair_xml(_project_xml(authed, _COG))
+        # The repaired layer, not the one it was copied from.
+        repaired = next(
+            line for line in fixed.splitlines() if "tiles" in line
+        )
+        assert "authcfg=e53df68" in repaired
+
+    def test_no_credential_in_the_project_means_none_is_invented(
+        self,
+    ) -> None:
+        """A public raster needs none, and a wrong id is worse than none."""
+        fixed, _ = repair_xml(_project_xml(_COG))
+        assert "authcfg" not in fixed
+
+    def test_find_authcfg_reads_both_spellings(self) -> None:
+        """QGIS writes it bare in one place and entity-escaped in another."""
+        assert find_authcfg("type=xyz&authcfg=abc1234&zmin=0") == "abc1234"
+        assert find_authcfg("&amp;authcfg=abc1234&amp;zmin=0") == "abc1234"
+        assert find_authcfg("nothing here") == ""
 
     def test_the_provider_changes_with_the_source(self) -> None:
         """Both edits, or the layer loads invalid instead of hanging.

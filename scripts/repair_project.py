@@ -39,20 +39,43 @@ _COG = re.compile(
 #: to the layers that actually changed.
 _MAPLAYER = re.compile(r"<maplayer\b.*?</maplayer>", re.DOTALL)
 
+#: An ``authcfg`` already present somewhere in the project.
+#:
+#: A COG source carries no credential, because GDAL cannot use a QGIS
+#: authcfg and the key reaches it another way. The tile route CAN use
+#: one, and a private layer needs it, so the rewritten URI has to get a
+#: credential from somewhere. The project is the only place to look:
+#: any other portal layer in the same file already names the id.
+_AUTHCFG = re.compile(r"authcfg=(?:&quot;|['\"])?([A-Za-z0-9]+)")
+
 #: The provider element inside such a block.
 _GDAL_PROVIDER = re.compile(r"(<provider[^>]*>)\s*gdal\s*(</provider>)")
 
 
-def xyz_uri(portal: str, item_id: str) -> str:
+def xyz_uri(portal: str, item_id: str, authcfg: str = "") -> str:
     """The tile route for the same item.
 
     Deliberately a copy of ``browser.uris.tile_layer_xyz_uri`` rather
     than an import: this script has to run against a broken project
     without the plugin importable, which is the state anyone reaching
-    for it is in.
+    for it is in. A test asserts the two agree.
     """
     template = f"{portal}/api/tile-layer/{item_id}/tiles/{{z}}/{{x}}/{{y}}.png"
-    return f"type=xyz&url={quote(template, safe='')}&zmin=0&zmax=18"
+    uri = f"type=xyz&url={quote(template, safe='')}&zmin=0&zmax=18"
+    if authcfg:
+        uri = f"{uri}&authcfg={authcfg}"
+    return uri
+
+
+def find_authcfg(xml: str) -> str:
+    """The credential id this project already uses, or "".
+
+    Any other portal layer in the file names it. Taking it from there
+    means a repaired private layer keeps working without asking the
+    user for something they have no way to look up.
+    """
+    match = _AUTHCFG.search(xml)
+    return match.group(1) if match else ""
 
 
 def repair_xml(xml: str) -> tuple[str, list[str]]:
@@ -84,12 +107,15 @@ def repair_xml(xml: str) -> tuple[str, list[str]]:
     # occurrences reports "2 layers" for one raster and reads like the
     # script found something it did not.
     changed: list[str] = []
+    authcfg = find_authcfg(xml)
 
     def swap(match: re.Match[str]) -> str:
         item = match.group("item")
         if item not in changed:
             changed.append(item)
-        return xyz_uri(match.group("portal"), item).replace("&", "&amp;")
+        return xyz_uri(
+            match.group("portal"), item, authcfg
+        ).replace("&", "&amp;")
 
     def fix_block(match: re.Match[str]) -> str:
         """One ``<maplayer>``: source and provider together."""
@@ -164,6 +190,13 @@ def main(argv: list[str]) -> int:
             print(f"    original kept at {path.name}.bak")
     if total and not args.dry_run:
         print("\nOpen the project again; it should load.")
+        print(
+            "\nNote: a repaired layer draws only if the portal serves that\n"
+            "item as tiles. PMTiles-backed rasters do. A COG-backed raster\n"
+            "is served as a file, not as tiles, so its entry will be there\n"
+            "but blank until the portal grows a tile route for COGs. The\n"
+            "point of the repair is that the project opens at all."
+        )
     return 0
 
 
