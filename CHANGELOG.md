@@ -7,6 +7,26 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.9.1] - 2026-08-15
+
+### Fixed
+
+- **Cloning a layer a second time failed, and took the layer with it.**
+  The overwrite has to close the existing layer before it can write the
+  file, and on Windows the write was then refused anyway, leaving you
+  with no layer and no new data. Two things were wrong.
+
+  Closing the layer does not actually release the file: QGIS keeps the
+  data open behind the scenes once anything has read from it, which is
+  true of every layer you have looked at. The clone now writes into the
+  existing file rather than replacing it, which works, and puts the old
+  contents back if that write fails part way.
+
+  And if it still fails, your layer is returned to the project with its
+  styling and position intact, instead of quietly disappearing. The
+  message says so either way, and no longer tells you to close the file
+  in another program when the program holding it was QGIS.
+
 ## [0.9.0] - 2026-08-15
 
 ### Fixed

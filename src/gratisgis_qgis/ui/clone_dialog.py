@@ -333,6 +333,44 @@ class CloneToGeoPackageDialog(QDialog):
         self._closed = True
         super().reject()
 
+    def _restore_removed(
+        self,
+        target: CloneTarget,
+        removed: list[str],
+        placement: LayerPlacement,
+    ) -> bool:
+        """Put back a layer that was closed for a write that then failed.
+
+        The overwrite cannot start until the old layer lets go of the
+        file, so every failure after that point owes the user their
+        layer back. Without this a refused overwrite cost them the
+        layer AND its styling while leaving the file untouched, which
+        is the worst of both: nothing gained and something lost.
+
+        The file is still the one they had, because ``safe_write_path``
+        never promoted the staged copy, so re-adding it restores
+        exactly what was there.
+        """
+        if not removed:
+            return True
+        try:
+            layer = QgsVectorLayer(
+                f"{target.gpkg_path}|layername={target.file_name}",
+                removed[0],
+                "ogr",
+            )
+            if not layer.isValid():
+                _log.warning(
+                    "could not reopen %s after a failed write", target.gpkg_path
+                )
+                return False
+            QgsProject.instance().addMapLayer(layer)
+            restore_placement(layer, placement)
+        except Exception:
+            _log.exception("could not restore the layer after a failed write")
+            return False
+        return True
+
     def _write_and_load(
         self,
         body,
@@ -359,9 +397,11 @@ class CloneToGeoPackageDialog(QDialog):
         # bottom of the list, outside whatever group it was in. The
         # file updated, so it looked like it had worked.
         placement = LayerPlacement()
+        removed: list[str] = []
         for stale in _project_layers_using(target.gpkg_path):
             if placement.is_empty:
                 placement = capture_placement(stale)
+            removed.append(stale.name())
             QgsProject.instance().removeMapLayer(stale.id())
 
         try:
@@ -373,19 +413,26 @@ class CloneToGeoPackageDialog(QDialog):
             )
         except OSError as e:
             _log.exception("geopackage write failed")
+            restored = self._restore_removed(target, removed, placement)
             QMessageBox.critical(
                 self,
                 "Write failed",
                 f"Could not write {os.path.basename(target.gpkg_path)}.\n\n"
-                "The file may be open in another program. Close it and try "
-                f"again, or choose a different file name.\n\n{e}",
+                f"{_restored_note(removed, restored)}"
+                "Close the file in any other program and try again, or "
+                f"choose a different file name.\n\n{e}",
             )
             self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
         except Exception as e:
             _log.exception("geopackage write failed")
-            QMessageBox.critical(self, "Write failed", str(e))
+            restored = self._restore_removed(target, removed, placement)
+            QMessageBox.critical(
+                self,
+                "Write failed",
+                f"{e}\n\n{_restored_note(removed, restored)}".strip(),
+            )
             self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
             self._progress_bar.setVisible(False)
             return
@@ -419,6 +466,27 @@ class CloneToGeoPackageDialog(QDialog):
 # -----------------------------------------------------------
 # QGIS bridges
 # -----------------------------------------------------------
+
+
+def _restored_note(removed: list[str], restored: bool) -> str:
+    """One sentence about what happened to the layer that was removed.
+
+    Silence is not an option here. The overwrite has to take the old
+    layer out of the project before it can touch the file, so a failure
+    after that point leaves the user staring at a Layers panel that is
+    missing something, and the error box has to account for it either
+    way.
+    """
+    if not removed:
+        return ""
+    name = removed[0]
+    if restored:
+        return f"'{name}' is still in your project and unchanged. "
+    return (
+        f"'{name}' had to be closed to write the file and could not be "
+        "reopened. The file on disk is unchanged; add it back from the "
+        "Browser panel. "
+    )
 
 
 def _project_layers_using(gpkg_path: str) -> list:
@@ -520,7 +588,11 @@ def _write_geojson_to_geopackage(
             (QgsVectorFileWriter, "NoError"),
         )
         ctx = QgsCoordinateTransformContext()
-        with safe_write_path(gpkg_path) as tmp_gpkg:
+        # allow_in_place: the caller removed every project layer reading
+        # this file before getting here, so a lock that survives is a
+        # stale GDAL pool entry rather than a live reader. Nothing else
+        # in the plugin may ask for this.
+        with safe_write_path(gpkg_path, allow_in_place=True) as tmp_gpkg:
             err, msg, *_ = QgsVectorFileWriter.writeAsVectorFormatV3(
                 loader, tmp_gpkg, ctx, options
             )

@@ -315,6 +315,23 @@ def _run_checks() -> None:
             ),
         )
 
+        # READ the features. This line is the whole test.
+        #
+        # An earlier version removed the layer and asserted the
+        # overwrite then succeeded, which it did, and the assertion was
+        # worthless: a layer that has only been OPENED releases its
+        # file, while one whose features have been read does not,
+        # because reading puts the dataset in GDAL's pool and removing
+        # the layer does not empty the pool. Every layer drawn on the
+        # canvas has read its features, so real overwrites hit the
+        # locked case and this test never did. It passed for two
+        # releases while the second clone of a layer failed for the
+        # user.
+        check(
+            "reading the layer's features (what puts it in GDAL's pool)",
+            lambda: list(opened.getFeatures()),
+        )
+
         def overwrite_fails_while_open():
             try:
                 with safe_write_path(target) as tmp:
@@ -335,17 +352,48 @@ def _run_checks() -> None:
         for stale in _project_layers_using(target):
             QgsProject.instance().removeMapLayer(stale.id())
 
-        def overwrite_after_release():
-            with safe_write_path(target) as tmp:
+        # Removing the layer is NOT enough, which is the finding this
+        # section exists to record. GDAL keeps the dataset pooled and
+        # the rename stays refused, so the clone's second run failed
+        # for the user while this test passed.
+        def still_refused_after_removal():
+            try:
+                with safe_write_path(target) as tmp:
+                    write_gpkg(tmp)
+            except OSError:
+                return True
+            return False
+
+        check(
+            "removing the layer does NOT release the file",
+            lambda: _assert(
+                still_refused_after_removal() is True,
+                "the rename worked after removal, so this QGIS releases "
+                "pooled datasets and the in-place fallback is untested here",
+            ),
+        )
+
+        def overwrite_in_place():
+            with safe_write_path(target, allow_in_place=True) as tmp:
                 write_gpkg(tmp)
             return True
 
-        check("overwrite succeeds once the layer is removed", overwrite_after_release)
+        check("overwrite succeeds with allow_in_place", overwrite_in_place)
         check(
             "and still leaves nothing behind",
             lambda: _assert(
                 os.listdir(work) == ["clone.gpkg"],
                 f"leftovers after success: {os.listdir(work)}",
+            ),
+        )
+        check(
+            "the overwritten file is a readable GeoPackage",
+            lambda: _assert(
+                QgsVectorLayer(
+                    f"{target}|layername=clone", "check", "ogr"
+                ).isValid(),
+                "the promoted file does not open; the in-place write "
+                "produced something GDAL will not read",
             ),
         )
         if held is not True:

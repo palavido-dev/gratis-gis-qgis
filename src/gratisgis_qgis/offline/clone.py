@@ -193,7 +193,9 @@ def _extract_portal_id(
 
 
 @contextlib.contextmanager
-def safe_write_path(final_path: str) -> Iterator[str]:
+def safe_write_path(
+    final_path: str, *, allow_in_place: bool = False
+) -> Iterator[str]:
     """Yield a temp path beside ``final_path``; promote on success.
 
     The writer inside the ``with`` block gets a sibling temp path in
@@ -204,6 +206,13 @@ def safe_write_path(final_path: str) -> Iterator[str]:
     untouched. This is what keeps a failed re-clone from destroying
     the user's previous (possibly locally edited) offline copy, which
     the old unlink-the-target-then-write sequence did.
+
+    ``allow_in_place`` permits the fallback in ``_promote`` for a
+    target Windows will not let us rename over. It is off by default
+    and has to be asked for, because it cannot tell a file held open by
+    a stale GDAL pool entry from one a live layer is reading right now,
+    and overwriting the second is data corruption. Only a caller that
+    has already closed everything reading the file may turn it on.
     """
     directory = os.path.dirname(final_path) or "."
     basename = os.path.basename(final_path)
@@ -219,15 +228,75 @@ def safe_write_path(final_path: str) -> Iterator[str]:
     tmp_path = os.path.join(tmp_dir, basename)
     try:
         yield tmp_path
-        # Same filesystem (sibling directory), so this is atomic.
-        os.replace(tmp_path, final_path)
+        _promote(tmp_path, final_path, tmp_dir, allow_in_place=allow_in_place)
     finally:
-        # finally, not else: the promote itself can fail (on Windows,
-        # replacing a file another handle holds open is refused), and
-        # an earlier version cleaned up only on the paths it had
-        # thought of. It left a hidden staging directory in the user's
-        # chosen folder every time an overwrite was refused.
+        # finally, not else: the promote itself can fail, and an
+        # earlier version cleaned up only on the paths it had thought
+        # of. It left a hidden staging directory in the user's chosen
+        # folder every time an overwrite was refused.
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _promote(
+    tmp_path: str, final_path: str, tmp_dir: str, *, allow_in_place: bool
+) -> None:
+    """Move the staged file into place, by rename or by contents.
+
+    The rename is the good path: same filesystem, so it is atomic, and
+    a half-finished write can never be visible at the target.
+
+    Windows refuses it when anything still holds the target open, and
+    on a re-clone something does. Reading a GeoPackage through QGIS
+    puts the dataset in GDAL's pool, and the pool does NOT release it
+    when the layer is removed from the project. Measured, because the
+    distinction is not guessable: a layer that was merely opened
+    releases the file, a layer whose features have been read does not,
+    and every layer drawn on the canvas has read its features. That is
+    why an overwrite worked in a headless test and failed on the second
+    real clone.
+
+    Waiting does not help; the lock is not transient. Repointing the
+    provider elsewhere before removing the layer does not help either.
+    Asking GDAL to flush its pool by destroying the driver manager
+    takes the whole process down with an access violation.
+
+    What does work is writing the bytes into the existing file rather
+    than replacing the file itself: the handle permits writes, it is
+    only the rename that is refused. That costs the atomicity, so the
+    existing contents are copied aside first and put back if the write
+    fails part way. Reading the locked file is allowed, which is what
+    makes that backup possible.
+    """
+    try:
+        os.replace(tmp_path, final_path)
+        return
+    except OSError as rename_error:
+        if not allow_in_place or not os.path.exists(final_path):
+            # Either the caller has not vouched that nothing is reading
+            # the target, or the target does not exist, in which case
+            # the rename failed for some other reason and guessing
+            # would only hide it.
+            raise
+        _log.info(
+            "could not rename over %s (%s); writing the contents in place",
+            final_path,
+            rename_error,
+        )
+
+    backup = os.path.join(tmp_dir, "previous.bak")
+    shutil.copyfile(final_path, backup)
+    try:
+        with open(tmp_path, "rb") as staged, open(final_path, "r+b") as target:
+            shutil.copyfileobj(staged, target)
+            target.truncate()
+    except BaseException:
+        # Put back what was there. Without this the fallback would be
+        # strictly worse than the failure it replaces: a refused
+        # overwrite leaves the user's copy intact, a half-written one
+        # destroys it.
+        with contextlib.suppress(OSError):
+            shutil.copyfile(backup, final_path)
+        raise
 
 
 def source_targets_file(source: str, path: str) -> bool:
