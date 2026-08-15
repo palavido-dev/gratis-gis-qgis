@@ -11,6 +11,13 @@ for the client library; the QGIS plugin uses its own version line in
 
 ### Fixed
 
+- **Overwriting an offline clone no longer throws away its styling.**
+  Replacing a clone had to remove the old layer to release the file,
+  and what came back was a plain new layer: default symbology, dropped
+  to the bottom of the layer list, outside whatever group it was in.
+  The file updated, so it looked like it had worked. Styling, group and
+  position are now carried across.
+
 - **A published map opened slightly too far zoomed in.** The zoom was
   worked out using a figure that is only correct on the equator, so
   every map was off, always in the same direction, and more so the

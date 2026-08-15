@@ -89,7 +89,7 @@ from ..offline.reader import (
     portal_edited_stamps,
     read_local_features,
 )
-from ..offline.sync_state import find_conflicts, plan_local_changes
+from ..offline.sync_state import Conflict, find_conflicts, plan_local_changes
 from ..portal import get_client
 from ..settings import ConnectionStore
 from ..tasks import TaskHandle, format_error, run_in_task
@@ -486,10 +486,7 @@ class PushEditsDialog(QDialog):
         cannot provide. Naming the rows and letting the user pick a
         side is the honest limit of what can be offered here.
         """
-        conflicted = {c.global_id for c in conflicts}
-        detail = "\n".join(f"- {c.detail}" for c in conflicts[:10])
-        if len(conflicts) > 10:
-            detail += f"\n- and {len(conflicts) - 10} more"
+        detail = conflict_summary(conflicts)
 
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
@@ -511,7 +508,7 @@ class PushEditsDialog(QDialog):
         if clicked is keep_mine:
             return ops
         if clicked is keep_theirs:
-            return [op for op in ops if op.portal_id not in conflicted]
+            return ops_without_conflicts(ops, conflicts)
         return None
 
     def _refresh_baseline(self, profile, layer, gpkg_path, item_id, layer_id):
@@ -550,6 +547,47 @@ class PushEditsDialog(QDialog):
 # -----------------------------------------------------------
 # Which project layers can be pushed
 # -----------------------------------------------------------
+
+
+#: How many conflicting rows to name before summarising the rest.
+#:
+#: Enough to recognise what happened, few enough that the dialog stays
+#: readable. A list of 400 rows in a message box is a wall the user
+#: dismisses without reading, which is the opposite of the point.
+CONFLICT_DETAIL_LIMIT = 10
+
+
+def conflict_summary(
+    conflicts: list[Conflict], limit: int = CONFLICT_DETAIL_LIMIT
+) -> str:
+    """The bulleted list of conflicting rows shown to the user.
+
+    Split out of the message box so the truncation can be tested. It is
+    the sort of thing that reads as cosmetic and is not: a user
+    deciding whether to overwrite someone else's work is deciding from
+    this text, and silently showing ten of four hundred conflicts would
+    make a large collision look like a small one.
+    """
+    lines = [f"- {c.detail}" for c in conflicts[:limit]]
+    remaining = len(conflicts) - limit
+    if remaining > 0:
+        lines.append(f"- and {remaining} more")
+    return "\n".join(lines)
+
+
+def ops_without_conflicts(
+    ops: list[SyncOp], conflicts: list[Conflict]
+) -> list[SyncOp]:
+    """The ops to send when the user chooses to keep the portal's copy.
+
+    Drops exactly the conflicting features and keeps everything else,
+    which is the whole meaning of "skip those, send the rest". Getting
+    it wrong in either direction is silent: drop too much and the
+    user's other edits never arrive, drop too little and the overwrite
+    they declined happens anyway.
+    """
+    conflicted = {c.global_id for c in conflicts}
+    return [op for op in ops if op.portal_id not in conflicted]
 
 
 def _resolve_push_target(layer: QgsVectorLayer) -> PortalLayerRef | None:

@@ -56,6 +56,11 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
 )
 
 from ..browser.uris import PortalLayerRef, parse_portal_layer_source
+from ..layer_placement import (
+    LayerPlacement,
+    capture_placement,
+    restore_placement,
+)
 from ..log import get_logger
 from ..offline.clone import (
     CLONE_SOURCE_FIELDS,
@@ -347,7 +352,16 @@ class CloneToGeoPackageDialog(QDialog):
         # refuses to replace a file another handle has, and the usual
         # holder is the previous clone of the same name sitting in this
         # very project. Anything with unsaved edits was refused earlier.
+        #
+        # Photograph it on the way out. The replacement is a brand new
+        # layer, so without this an overwrite silently discarded any
+        # symbology the user had applied and dropped the layer to the
+        # bottom of the list, outside whatever group it was in. The
+        # file updated, so it looked like it had worked.
+        placement = LayerPlacement()
         for stale in _project_layers_using(target.gpkg_path):
+            if placement.is_empty:
+                placement = capture_placement(stale)
             QgsProject.instance().removeMapLayer(stale.id())
 
         try:
@@ -386,6 +400,11 @@ class CloneToGeoPackageDialog(QDialog):
         )
         if local.isValid():
             QgsProject.instance().addMapLayer(local)
+            # Give the replacement the styling and position the layer it
+            # replaced had. Best effort: losing symbology is a nuisance,
+            # failing here after the file is already written would leave
+            # the project describing data that no longer matches it.
+            restore_placement(local, placement)
         else:
             _log.warning("clone produced an invalid layer at %s", target.gpkg_path)
 

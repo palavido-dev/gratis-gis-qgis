@@ -761,6 +761,156 @@ def _run_checks() -> None:
     print("\n[15] sign-out leaves a resolvable, credential-free authcfg")
     _check_signed_out_authcfg()
 
+    print("\n[16] a replaced clone keeps its symbology and its place")
+    _check_layer_placement()
+
+
+def _check_layer_placement() -> None:
+    """Carrying styling and tree position across an overwrite (#17).
+
+    Overwriting a clone removes the layer to release the Windows file
+    lock and loads a fresh one, which discarded any symbology the user
+    had applied. Whether a captured style survives the round trip is a
+    question about real QGIS serialisation, and a stub asked the same
+    question would only confirm the stub.
+    """
+    import shutil
+    import tempfile
+
+    from qgis.core import (
+        QgsFeature,
+        QgsField,
+        QgsFillSymbol,
+        QgsGeometry,
+        QgsLayerTreeLayer,
+        QgsPointXY,
+        QgsProject,
+        QgsSingleSymbolRenderer,
+        QgsVectorLayer,
+    )
+    from qgis.PyQt.QtCore import QVariant
+
+    from gratisgis_qgis.layer_placement import (
+        capture_placement,
+        restore_placement,
+    )
+
+    work = tempfile.mkdtemp(prefix="gg-placement-")
+    try:
+        layer = QgsVectorLayer("Polygon?crs=EPSG:4326", "Parcels", "memory")
+        layer.dataProvider().addAttributes([QgsField("owner", QVariant.String)])
+        layer.updateFields()
+        feat = QgsFeature(layer.fields())
+        feat.setGeometry(
+            QgsGeometry.fromPolygonXY([[
+                QgsPointXY(0, 0), QgsPointXY(1, 0),
+                QgsPointXY(1, 1), QgsPointXY(0, 0),
+            ]])
+        )
+        layer.dataProvider().addFeatures([feat])
+
+        # A symbology the user would notice losing.
+        symbol = QgsFillSymbol.createSimple(
+            {"color": "255,0,0,255", "outline_color": "0,0,255,255"}
+        )
+        layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+        layer.setOpacity(0.42)
+
+        project = QgsProject.instance()
+        project.addMapLayer(layer, False)
+        root = project.layerTreeRoot()
+        group = root.addGroup("Reference")
+        group.addChildNode(QgsLayerTreeLayer(layer))
+        # A sibling above it, so "restored to index 1" means something
+        # more than "happens to be first".
+        other = QgsVectorLayer("Point?crs=EPSG:4326", "Marks", "memory")
+        project.addMapLayer(other, False)
+        group.insertChildNode(0, QgsLayerTreeLayer(other))
+
+        placement = check("capture_placement() on a styled layer", lambda: capture_placement(layer))
+        check(
+            "the style was captured",
+            lambda: _assert(
+                placement is not None and placement.style_xml,
+                "no style XML captured; an overwrite would lose symbology",
+            ),
+        )
+        check(
+            "the group path was captured",
+            lambda: _assert(
+                placement is not None and placement.group_path == ["Reference"],
+                f"unexpected group path: {getattr(placement, 'group_path', None)!r}",
+            ),
+        )
+        check(
+            "the position within the group was captured",
+            lambda: _assert(
+                placement is not None and placement.index == 1,
+                f"unexpected index: {getattr(placement, 'index', None)!r}",
+            ),
+        )
+
+        # Now the replacement: a brand new layer, as an overwrite builds.
+        project.removeMapLayer(layer.id())
+        replacement = QgsVectorLayer(
+            "Polygon?crs=EPSG:4326", "Parcels (offline)", "memory"
+        )
+        project.addMapLayer(replacement)
+        check(
+            "the replacement starts with default styling",
+            lambda: _assert(
+                replacement.opacity() != 0.42,
+                "the fresh layer already had the old opacity; the test proves nothing",
+            ),
+        )
+
+        check(
+            "restore_placement() on the replacement",
+            lambda: restore_placement(replacement, placement),
+        )
+        check(
+            "the symbology came back",
+            lambda: _assert(
+                abs(replacement.opacity() - 0.42) < 1e-6,
+                f"opacity is {replacement.opacity()}, expected 0.42",
+            ),
+        )
+        # Opacity alone would pass for a layer property that survived
+        # without the renderer coming with it, so the fill colour is
+        # checked too: that one can only have arrived through the
+        # symbology.
+        check(
+            "the renderer's fill colour came back too",
+            lambda: _assert(
+                replacement.renderer() is not None
+                and replacement.renderer().symbol().color().getRgb()[:3]
+                == (255, 0, 0),
+                "the restored renderer is not the captured one: "
+                f"{replacement.renderer() and replacement.renderer().symbol().color().getRgb()}",
+            ),
+        )
+        restored_node = root.findLayer(replacement.id())
+        check(
+            "it is back inside its group",
+            lambda: _assert(
+                restored_node is not None
+                and restored_node.parent() is not None
+                and str(restored_node.parent().name()) == "Reference",
+                "the replacement did not return to its group",
+            ),
+        )
+        check(
+            "at the position it had",
+            lambda: _assert(
+                restored_node is not None
+                and list(restored_node.parent().children()).index(restored_node) == 1,
+                "the replacement did not return to its position",
+            ),
+        )
+    finally:
+        QgsProject.instance().clear()
+        shutil.rmtree(work, ignore_errors=True)
+
 
 def _check_signed_out_authcfg() -> None:
     """The emptied-not-deleted authcfg, against the real auth manager.
