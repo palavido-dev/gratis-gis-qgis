@@ -86,21 +86,38 @@ class TestTheGate:
         assert "must leave the baseline" in result.stdout
         assert "TaskCancelledError" in result.stdout
 
-    def test_the_baseline_is_not_silently_empty(self) -> None:
-        """A truncated baseline would make the gate pass forever.
+    def test_the_baseline_is_empty_and_must_stay_that_way(self) -> None:
+        """Every public class is exercised by something. Keep it so.
 
-        The file is data, and data files get clobbered. If it ever
-        empties out, every untested class becomes "new" and the build
-        fails loudly, which is fine. This asserts the opposite risk:
-        that it is a real list today rather than an accident.
+        The baseline started at twelve entries and is now zero, which
+        turns the ratchet into a plain rule: a public class with
+        nothing constructing it fails the build, no exceptions
+        outstanding. An entry appearing here again is a deliberate act
+        and should arrive with a comment saying why.
+
+        Written as an assertion rather than left implicit because an
+        empty file is indistinguishable from a clobbered one, and a
+        clobbered baseline is the only way this gate goes quiet.
         """
         entries = [
             line.strip()
             for line in BASELINE.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.startswith("#")
         ]
-        assert entries, "the baseline should list today's known gaps"
-        assert all("::" in e for e in entries), f"malformed entries: {entries}"
+        assert entries == [], (
+            "public classes are being excused from the gate again: "
+            f"{entries}. If that is deliberate, say why in the file."
+        )
+
+    def test_the_baseline_file_still_exists_and_is_readable(self) -> None:
+        """Deleting it would silently widen the gate, not narrow it.
+
+        With no file the audit reads an empty baseline, which today is
+        the same as the real one. That equivalence is temporary and the
+        file is what makes an exemption visible when one is next added.
+        """
+        assert BASELINE.exists()
+        assert "may only shrink" in BASELINE.read_text(encoding="utf-8")
 
     def test_every_baseline_entry_names_a_class_that_exists(self) -> None:
         """Entries must not outlive the code they excuse.

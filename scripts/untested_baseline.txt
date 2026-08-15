@@ -6,8 +6,4 @@
 # rather than quietly becoming permanent.
 #
 # Regenerate with: python scripts/untested_audit.py --update-baseline
-src/gratisgis_qgis/auth_bridge.py::QgisAuthManagerTokenStorage
-src/gratisgis_qgis/publish/source.py::PublishChoice
-src/gratisgis_qgis/publish/source.py::RasterSource
-src/gratisgis_qgis/tasks.py::TaskController
-src/gratisgis_qgis/ui/connection_dialog.py::ConnectionManagerDialog
+

@@ -15,6 +15,7 @@ to be closures inside ``_run_pkce_sign_in`` where nothing could.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -68,6 +69,138 @@ class _Minted:
     def __init__(self, key_id: str = "key-9", token: str = "ggk_live") -> None:
         self.id = key_id
         self.token = token
+
+
+class _List:
+    """The parts of QListWidget the connection list uses."""
+
+    def __init__(self, current: int = -1) -> None:
+        self.items: list[str] = []
+        self.current = current
+
+    def clear(self) -> None:  # Qt API name
+        self.items.clear()
+
+    def addItem(self, label: str) -> None:  # Qt API name
+        self.items.append(label)
+
+    def currentRow(self) -> int:  # Qt API name
+        return self.current
+
+    def setEnabled(self, _value: bool) -> None:  # Qt API name
+        pass
+
+
+class _Store:
+    def __init__(self, profiles: dict[str, Any]) -> None:
+        self.profiles = dict(profiles)
+
+    def list_names(self) -> list[str]:
+        return sorted(self.profiles)
+
+    def get(self, name: str) -> Any:
+        return self.profiles.get(name)
+
+
+class TestConnectionList:
+    """What the list shows, and how a row maps back to a stored key.
+
+    The label is enriched with the portal's own name and a signed-in
+    flag, so it is not the QSettings key. Every action in the dialog
+    resolves the row back to that key by index, which makes the mapping
+    load bearing: get it wrong and Delete removes a different
+    connection from the one highlighted.
+    """
+
+    def _dialog(self, dialog_mod: Any, store: _Store, current: int = -1) -> Any:
+        dlg = dialog_mod.ConnectionManagerDialog.__new__(
+            dialog_mod.ConnectionManagerDialog
+        )
+        dlg._store = store
+        dlg._list = _List(current)
+        for name in (
+            "_btn_edit", "_btn_delete", "_btn_signin", "_btn_signout",
+        ):
+            setattr(dlg, name, SimpleNamespace(setEnabled=lambda _v: None))
+        return dlg
+
+    def test_a_signed_in_connection_is_marked(
+        self, dialog_mod: Any, profile_factory: ProfileFactory
+    ) -> None:
+        store = _Store({"demo": profile_factory(authcfg_id="auth-1")})
+        dlg = self._dialog(dialog_mod, store)
+        dlg._reload()
+        assert "[signed in]" in dlg._list.items[0]
+
+    def test_a_signed_out_connection_is_not(
+        self, dialog_mod: Any, profile_factory: ProfileFactory
+    ) -> None:
+        """The flag is the only signed-in cue the dialog gives.
+
+        Showing it for a signed-out connection is how a stale reserved
+        authcfg used to look like a working session.
+        """
+        store = _Store({"demo": profile_factory(authcfg_id="")})
+        dlg = self._dialog(dialog_mod, store)
+        dlg._reload()
+        assert "[signed in]" not in dlg._list.items[0]
+
+    def test_the_portal_name_is_shown_with_the_local_key(
+        self, dialog_mod: Any, profile_factory: ProfileFactory
+    ) -> None:
+        """Both, because they can differ and each answers a question.
+
+        The portal name is what the user recognises; the key is what
+        every error message and settings entry refers to.
+        """
+        store = _Store({
+            "demo": profile_factory(name="demo", portal_name="GratisGIS")
+        })
+        dlg = self._dialog(dialog_mod, store)
+        dlg._reload()
+        assert "GratisGIS" in dlg._list.items[0]
+        assert "demo" in dlg._list.items[0]
+
+    def test_an_undiscovered_connection_shows_its_key_once(
+        self, dialog_mod: Any, profile_factory: ProfileFactory
+    ) -> None:
+        """"demo (demo)" reads as a rendering bug."""
+        store = _Store({"demo": profile_factory(name="demo", portal_name="")})
+        dlg = self._dialog(dialog_mod, store)
+        dlg._reload()
+        assert dlg._list.items[0].count("demo") == 1
+
+    def test_the_selected_row_maps_back_to_the_right_key(
+        self, dialog_mod: Any, profile_factory: ProfileFactory
+    ) -> None:
+        """Rows are listed sorted, and resolved by the same order.
+
+        Delete, Sign out and Edit all go through this. Resolving to the
+        wrong key would act on a connection the user is not looking at.
+        """
+        store = _Store({
+            "alpha": profile_factory(name="alpha"),
+            "beta": profile_factory(name="beta"),
+            "gamma": profile_factory(name="gamma"),
+        })
+        assert self._dialog(dialog_mod, store, 1)._selected_name() == "beta"
+
+    def test_no_selection_resolves_to_nothing(
+        self, dialog_mod: Any, profile_factory: ProfileFactory
+    ) -> None:
+        store = _Store({"demo": profile_factory()})
+        assert self._dialog(dialog_mod, store, -1)._selected_name() is None
+
+    def test_a_row_beyond_the_store_resolves_to_nothing(
+        self, dialog_mod: Any, profile_factory: ProfileFactory
+    ) -> None:
+        """The list and the store are read at different moments.
+
+        A connection deleted between them would otherwise index past
+        the end and raise inside a button handler.
+        """
+        store = _Store({"demo": profile_factory()})
+        assert self._dialog(dialog_mod, store, 5)._selected_name() is None
 
 
 class TestNormalizePortalUrl:
