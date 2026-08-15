@@ -7,6 +7,20 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.8.1] - 2026-08-14
+
+### Changed
+
+- **Publishing a vector layer runs as one background job instead of
+  two.** No change to what you do or what you get, but the whole
+  sequence after the export now lives in one place that can be tested,
+  and that can be reused when publishing a project needs to publish a
+  layer that is not on the portal yet.
+
+  Worth re-running Test 3 in the playbook, including cancelling
+  part-way and closing the dialog mid-publish, since the flow between
+  those steps was rewritten.
+
 ## [0.8.0] - 2026-08-14
 
 ### Fixed

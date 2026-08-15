@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Orphaned-item cleanup in the publish flows, plus the poll reset.
+"""Orphaned-item cleanup in the raster publish, plus the poll reset.
 
-Both publish dialogs create a portal item and then perform further
-fallible calls with no transaction across them; the worker-side
-pipeline functions are exercised here with a fake client to pin
-that a post-create failure deletes the created item (best-effort),
-records what happened for the user, and re-raises the original
-error. The Qt widget classes are stubbed just enough for the dialog
-modules to import.
+The publish flows create a portal item and then perform further
+fallible calls with no transaction across them, so a post-create
+failure has to delete the created item (best-effort), record what
+happened for the user, and re-raise the original error.
+
+The raster half lives here; the vector half moved to
+test_vector_pipeline.py along with the code it covers. The Qt widget
+classes are stubbed just enough for the dialog modules to import.
 """
 from __future__ import annotations
 
@@ -192,76 +193,10 @@ class TestRasterPipelineCleanup:
         assert notes and "removed" in notes[0]
 
 
-class TestVectorCreateEnqueueCleanup:
-    def _client(self, *, delete_raises: Exception | None = None) -> SimpleNamespace:
-        items = _FakeItems(delete_raises=delete_raises)
-
-        def enqueue(**_kwargs: Any) -> None:
-            raise RuntimeError("enqueue exploded")
-
-        return SimpleNamespace(
-            items=items, import_jobs=SimpleNamespace(enqueue=enqueue)
-        )
-
-    def _run(
-        self, mod: ModuleType, client: SimpleNamespace
-    ) -> tuple[list[str], BaseException]:
-        notes: list[str] = []
-        with pytest.raises(RuntimeError) as excinfo:
-            mod._create_item_and_enqueue(
-                client,
-                title="Parcels",
-                description=None,
-                access="private",
-                envelope={"version": 3, "layers": []},
-                layer_id="parcels",
-                staging_id="stage-1",
-                source_layer_name="parcels",
-                cleanup_notes=notes,
-            )
-        return notes, excinfo.value
-
-    def test_enqueue_failure_deletes_created_item(
-        self, vector_dialog_mod: ModuleType
-    ) -> None:
-        client = self._client()
-        notes, exc = self._run(vector_dialog_mod, client)
-        assert "enqueue exploded" in str(exc)
-        assert client.items.deleted == ["item-1"]
-        assert notes == ["The partly created portal item was removed."]
-
-    def test_enqueue_failure_with_failed_cleanup_names_the_item(
-        self, vector_dialog_mod: ModuleType
-    ) -> None:
-        client = self._client(delete_raises=RuntimeError("delete refused"))
-        notes, _ = self._run(vector_dialog_mod, client)
-        assert len(notes) == 1
-        assert "item-1" in notes[0]
-        assert "could not be removed" in notes[0]
-
-    def test_success_path_touches_nothing(self, vector_dialog_mod: ModuleType) -> None:
-        items = _FakeItems()
-        job = SimpleNamespace(id="job-1")
-        client = SimpleNamespace(
-            items=items,
-            import_jobs=SimpleNamespace(enqueue=lambda **kw: job),
-        )
-        notes: list[str] = []
-        created_item, created_job = vector_dialog_mod._create_item_and_enqueue(
-            client,
-            title="Parcels",
-            description=None,
-            access="private",
-            envelope={"version": 3, "layers": []},
-            layer_id="parcels",
-            staging_id="stage-1",
-            source_layer_name="parcels",
-            cleanup_notes=notes,
-        )
-        assert created_item.id == "item-1"
-        assert created_job is job
-        assert items.deleted == []
-        assert notes == []
+# The vector half of this file has moved to test_vector_pipeline.py.
+# Its cleanup logic left publish_vector_dialog for publish/vector_pipeline.py,
+# where it is covered alongside the staging and probe steps it belongs
+# with, and without needing a single Qt stub to reach it.
 
 
 class _FakeProgressBar:

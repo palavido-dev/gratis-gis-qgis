@@ -51,9 +51,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
     QWidget,
 )
 
-from gratisgis_client.client import GratisGISClient
 from gratisgis_client.endpoints.import_jobs import ImportJob
-from gratisgis_client.models.item import Item
 
 from ..log import get_logger
 from ..portal import get_client
@@ -63,12 +61,8 @@ from ..publish.source import (
     remember_published_item,
     resolve_raster_source,
 )
-from ..publish.vector import (
-    LayerSummary,
-    build_data_layer_envelope,
-    layer_from_probe,
-    validate_layer,
-)
+from ..publish.vector import LayerSummary, validate_layer
+from ..publish.vector_pipeline import PCT_UPLOAD_DONE, run_vector_pipeline
 from ..qgis_compat import resolve_enum
 from ..settings import ConnectionStore
 from ..tasks import format_error, run_in_task
@@ -556,6 +550,15 @@ class PublishLayerDialog(QDialog):
         description: str | None,
         access: str,
     ) -> None:
+        """Export the layer, then hand the file to the pipeline.
+
+        The export stays here, on the GUI thread, because it needs QGIS
+        and because that is where it has always run. Everything after it
+        is one call into ``run_vector_pipeline``: what used to be two
+        tasks with a GUI hop between them, where the interesting half
+        (probe the staged file, build the envelope, create, enqueue,
+        clean up an orphan) sat in a method nothing could reach.
+        """
         try:
             gpkg_path = _export_to_geopackage(layer)
         except Exception as e:  # pragma: no cover - defensive
@@ -564,94 +567,29 @@ class PublishLayerDialog(QDialog):
             self._set_busy(False)
             return
 
-        self._progress_label.setText("Uploading to portal (stage)...")
-
-        def stage(_handle):
-            return get_client(profile).ingest.stage(file_path=gpkg_path)
-
-        def staged_done(staged) -> None:
-            # The local tempfile is no longer needed; the portal has
-            # its own copy under /tmp/gg-staging/<id>/.
-            _safe_unlink(gpkg_path)
-            if self._closed:
-                # Dialog dismissed while the upload ran; the staged
-                # copy ages out server-side within the hour.
-                return
-            self._on_staged(
-                staged,
-                profile=profile,
-                profile_name=profile_name,
-                title=title,
-                description=description,
-                access=access,
-            )
-
-        def stage_failed(exc: BaseException) -> None:
-            _log.error("stage-upload failed", exc_info=exc)
-            _safe_unlink(gpkg_path)
-            if self._closed:
-                return
-            QMessageBox.critical(self, "Upload failed", format_error(exc))
-            self._set_busy(False)
-
-        run_in_task(
-            "GratisGIS publish: upload", stage, staged_done, stage_failed, cancelable=False
-        )
-
-    def _on_staged(
-        self,
-        staged,
-        *,
-        profile,
-        profile_name: str,
-        title: str,
-        description: str | None,
-        access: str,
-    ) -> None:
-        # The stage response carries one source layer (we exported a
-        # single QGIS layer to a single-layer GeoPackage). Translate
-        # it to a v3 envelope and create the item.
-        if not staged.layers:
-            QMessageBox.critical(
-                self,
-                "Publish failed",
-                "Portal probe returned no layers from the uploaded file. "
-                "Check the layer's geometry validity in QGIS and retry.",
-            )
-            self._set_busy(False)
-            return
-
-        v3_layer = layer_from_probe(probe_layer=staged.layers[0].to_api_dict())
-        envelope = build_data_layer_envelope(layers=[v3_layer])
-        source_layer_name = staged.layers[0].name
-        staging_id = staged.staging_id
-
-        self._progress_label.setText("Creating portal item...")
+        self._progress_label.setText("Uploading to portal...")
 
         # Filled by the worker when a post-create failure triggered
         # orphan cleanup; read by the error callback so the user
         # hears what happened to the half-created item either way.
         cleanup_notes: list[str] = []
 
-        def create_and_enqueue(_handle):
-            return _create_item_and_enqueue(
-                get_client(profile),
+        def pipeline(handle):
+            return run_vector_pipeline(
+                handle,
+                profile=profile,
+                gpkg_path=gpkg_path,
                 title=title,
                 description=description,
                 access=access,
-                envelope=envelope,
-                layer_id=v3_layer.id,
-                staging_id=staging_id,
-                source_layer_name=source_layer_name,
                 cleanup_notes=cleanup_notes,
             )
 
-        def done(result) -> None:
-            item, job = result
-            self._current_item_id = item.id
-            self._current_layer_id = v3_layer.id
+        def done(outcome) -> None:
+            self._current_item_id = outcome.item_id
+            self._current_layer_id = outcome.layer_id
             self._current_profile_name = profile_name
-            self._current_job = job
+            self._current_job = outcome.job
             if self._closed:
                 # The job was already enqueued when the user bailed;
                 # ask the worker to stop rather than importing into
@@ -659,12 +597,14 @@ class PublishLayerDialog(QDialog):
                 self._request_job_cancel()
                 return
             self._progress_bar.setVisible(True)
-            self._render_job_progress(job)
+            self._render_job_progress(outcome.job)
             self._start_polling()
 
         def failed(exc: BaseException) -> None:
-            _log.error("item-create / enqueue failed", exc_info=exc)
+            _log.error("vector publish failed", exc_info=exc)
             if self._closed:
+                # Dialog dismissed mid-flight; the staged copy ages out
+                # server-side within the hour.
                 return
             message = format_error(exc)
             if cleanup_notes:
@@ -672,12 +612,23 @@ class PublishLayerDialog(QDialog):
             QMessageBox.critical(self, "Publish failed", message)
             self._set_busy(False)
 
+        def progress(pct: float) -> None:
+            # The label is the only progress signal until the import
+            # job starts reporting its own; the bar stays hidden until
+            # then because staging cannot say how far along it is.
+            self._progress_label.setText(
+                "Uploading to portal..."
+                if pct <= PCT_UPLOAD_DONE
+                else "Creating portal item..."
+            )
+
         run_in_task(
-            "GratisGIS publish: create item",
-            create_and_enqueue,
+            "GratisGIS publish: vector layer",
+            pipeline,
             done,
             failed,
             cancelable=False,
+            on_progress=progress,
         )
 
     def _start_polling(self) -> None:
@@ -837,63 +788,6 @@ class PublishLayerDialog(QDialog):
 # -----------------------------------------------------------
 # Worker-side helpers (no Qt in here)
 # -----------------------------------------------------------
-
-
-def _create_item_and_enqueue(
-    client: GratisGISClient,
-    *,
-    title: str,
-    description: str | None,
-    access: str,
-    envelope: dict,
-    layer_id: str,
-    staging_id: str,
-    source_layer_name: str,
-    cleanup_notes: list[str],
-) -> tuple[Item, ImportJob]:
-    """Create the data_layer item, then enqueue its import job.
-
-    Two portal calls with no transaction across them, so an enqueue
-    failure used to strand a freshly created empty item. Cleanup now
-    deletes it best-effort and records the outcome in
-    ``cleanup_notes`` so the dialog's error surface can tell the user
-    what happened either way.
-    """
-    item = client.items.create(
-        type="data_layer",
-        title=title,
-        description=description,
-        data=envelope,
-        access=access,
-    )
-    try:
-        job = client.import_jobs.enqueue(
-            item_id=item.id,
-            layer_id=layer_id,
-            staging_id=staging_id,
-            source_layer_name=source_layer_name,
-            mode="replace",
-        )
-    except BaseException:
-        if _delete_item_quietly(client, item.id):
-            cleanup_notes.append("The partly created portal item was removed.")
-        else:
-            cleanup_notes.append(
-                f"A partly created portal item ({item.id}) could not be "
-                "removed; delete it in the portal if it appears."
-            )
-        raise
-    return item, job
-
-
-def _delete_item_quietly(client: GratisGISClient, item_id: str) -> bool:
-    """Best-effort delete for orphan cleanup; never raises."""
-    try:
-        client.items.delete(item_id)
-    except Exception:
-        _log.exception("cleanup delete of item %s failed", item_id)
-        return False
-    return True
 
 
 # -----------------------------------------------------------
