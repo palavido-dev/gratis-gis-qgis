@@ -1,21 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """What signing out has to leave behind, and what it must not.
 
-Two bugs sat here at once, both reported from a real session.
+Reported from a real session: adding a private layer after signing out
+produced "FAILED to load config <id> from any storage". Sign-out
+deleted the authcfg entry, but the id is written into every layer URI
+the connection ever built, and those URIs outlive it in saved projects
+and in layers already on the canvas. The entry is now emptied rather
+than deleted, so the lookup still resolves and the layer fails with an
+ordinary 401.
 
-A private raster kept drawing after sign-out. Raster tile_layers do not
-read the authcfg at all: GDAL cannot use one, so the credential is
-installed as a process-wide GDAL option instead, and clearing the auth
-database does nothing to it. Sign-out hand-rolled its teardown and
-never called ``raster_forget``, so the portal key stayed registered for
-the life of the QGIS process.
-
-Adding a private layer afterwards produced "FAILED to load config
-<id> from any storage". Sign-out deleted the authcfg entry, but the id
-is written into every layer URI the connection ever built, and those
-URIs outlive it in saved projects and in layers already on the canvas.
-The entry is now emptied rather than deleted, so the lookup still
-resolves and the layer fails with an ordinary 401.
+A second bug lived here and no longer can. A private raster kept
+drawing after sign-out because its credential was a process-wide GDAL
+option rather than an authcfg, and clearing the auth database did not
+reach it. Raster layers no longer go through GDAL at all, so there is
+no second credential store left to forget.
 
 These run against the real ``_signed_out`` with its collaborators
 stubbed at module level, so the assertions are about which calls the
@@ -88,7 +86,6 @@ def spies(dialog_mod: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, _Spy]:
     made = {
         "clear_api_header_credential": _Spy(result=True),
         "remove_authcfg": _Spy(),
-        "raster_forget": _Spy(),
         "reload_layers_using": _Spy(result=0),
     }
     for name, spy in made.items():
@@ -97,24 +94,6 @@ def spies(dialog_mod: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, _Spy]:
 
 
 class TestSignedOutProfile:
-    def test_the_gdal_header_is_always_forgotten(
-        self,
-        dialog_mod: Any,
-        spies: dict[str, _Spy],
-        profile_factory: ProfileFactory,
-    ) -> None:
-        """The bug that let a private raster keep drawing.
-
-        Nothing else in the teardown touches the GDAL option, and it
-        outlives the auth database entry, so if this call is missing the
-        credential simply stays installed until QGIS exits.
-        """
-        profile = profile_factory(
-            authcfg_id="auth-1", api_key_id="key-1", layer_authcfg_id="lay-1"
-        )
-        dialog_mod._signed_out(profile)
-        assert spies["raster_forget"].called
-
     def test_the_authcfg_is_emptied_not_deleted(
         self,
         dialog_mod: Any,
@@ -204,8 +183,7 @@ class TestSignedOutProfile:
         fixed, and it would look like it worked.
         """
         order: list[str] = []
-        for name in ("clear_api_header_credential", "raster_forget",
-                     "reload_layers_using"):
+        for name in ("clear_api_header_credential", "reload_layers_using"):
             def record(*_a: Any, _n: str = name, **_k: Any) -> Any:
                 order.append(_n)
                 return True if _n == "clear_api_header_credential" else None
@@ -217,12 +195,7 @@ class TestSignedOutProfile:
                 layer_authcfg_id="lay-1",
             )
         )
-        assert order.index("reload_layers_using") > order.index(
-            "clear_api_header_credential"
-        )
-        assert order.index("reload_layers_using") > order.index(
-            "raster_forget"
-        )
+        assert order == ["clear_api_header_credential", "reload_layers_using"]
 
     def test_the_fallback_path_reloads_too(
         self,
@@ -260,5 +233,4 @@ class TestSignedOutProfile:
         )
         out = dialog_mod._signed_out(profile)
         assert spies["remove_authcfg"].called
-        assert spies["raster_forget"].called
         assert out.layer_authcfg_id == ""

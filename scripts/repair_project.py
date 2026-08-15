@@ -191,11 +191,10 @@ def main(argv: list[str]) -> int:
     if total and not args.dry_run:
         print("\nOpen the project again; it should load.")
         print(
-            "\nNote: a repaired layer draws only if the portal serves that\n"
-            "item as tiles. PMTiles-backed rasters do. A COG-backed raster\n"
-            "is served as a file, not as tiles, so its entry will be there\n"
-            "but blank until the portal grows a tile route for COGs. The\n"
-            "point of the repair is that the project opens at all."
+            "\nA repaired layer draws if the portal serves that item as\n"
+            "tiles, which it does for every raster from portal 0.9.27 on.\n"
+            "Against an older portal the layer will be listed but blank;\n"
+            "the point of the repair is that the project opens at all."
         )
     return 0
 

@@ -7,27 +7,71 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.11.0] - 2026-08-15
+
+Needs GratisGIS portal 0.9.27 or newer.
+
+### Fixed
+
+- **Opening a project with a portal raster in it froze QGIS.** This is
+  the hang that needed Task Manager, and it is fixed properly this
+  time.
+
+  Portal rasters could be added two ways: read directly from their
+  file, or drawn as map tiles. The direct route is what froze it. Such
+  a layer in a saved project deadlocks QGIS while it opens, every
+  time, and nothing the plugin can do reaches it. Adding the same
+  layer by hand always worked, which is what made this look random.
+
+  All portal rasters now draw as map tiles. The difference from
+  0.10.0, which tried this and left three rasters blank, is that the
+  portal now serves tiles for every raster rather than only some, so
+  there is a route to point at. That is the portal change this release
+  depends on.
+
+  Two other things went with the direct route. It needed the portal
+  key handed to a part of QGIS that ignores signing out, which is why
+  a private raster used to keep drawing after sign-out. And it read
+  the file over the network from your machine, so a slow link showed
+  up as a frozen QGIS rather than a slow map.
+
+  One trade-off worth knowing: an elevation layer drawn this way is a
+  picture of the terrain, not elevation values. Download the file from
+  the portal if you need to run analysis on it.
+
+- **Repairing a project you already have.** A project saved before
+  this release still contains the old kind of layer and will still
+  freeze. To fix one:
+
+      python scripts/repair_project.py "path\to\project.qgz"
+
+  It repoints those layers at the tile route, carries over the portal
+  credential the project already uses, and keeps the original
+  alongside as `.qgz.bak`. Add `--dry-run` to see what it would
+  change.
+
+- **Layers already on the canvas ignored signing in or out.** Signing
+  out stopped new layers but not existing ones; signing back in fixed
+  the Browser panel while the map stayed blank until QGIS restarted.
+  Both are the same cause: a layer keeps the credential it worked out
+  when it was added. They are now told to look again.
+
 ## [0.10.1] - 2026-08-15
 
 ### Fixed
 
 - **Reverted 0.10.0.** Portal rasters read directly from their file
-  (COG) work again. 0.10.0 sent them to a tile route the portal does
-  not serve for that kind of layer, so three of your rasters drew
-  nothing.
+  worked again. 0.10.0 had sent them to a tile route the portal did
+  not serve for that kind of layer, so three rasters drew nothing.
+  Superseded by 0.11.0, which fixes the portal side instead.
 
-  The reason 0.10.0 existed is unchanged and still real: a project
-  saved with one of those layers freezes QGIS when you reopen it. That
-  is issue #24 and it is not fixed. Until it is, use
-  `scripts/repair_project.py` on a project that will not open, and
-  expect to need it again after saving a project containing a portal
-  raster.
+## [0.10.0] - 2026-08-15
 
-  Why this cannot be fixed in the plugin: the portal serves
-  photographic COGs directly on purpose, because baking them into
-  tiles produced the black border you reported. So there is no tile
-  route to point at, and the direct route is the one QGIS deadlocks on.
-  The fix belongs on the portal: a tile route for COG-backed items.
+### Fixed
+
+- **Opening a project with a portal raster in it froze QGIS.** First
+  attempt at the fix above. Correct about the freeze, wrong about what
+  the portal served; withdrawn in 0.10.1 and redone in 0.11.0.
 
 ## [0.9.4] - 2026-08-15
 

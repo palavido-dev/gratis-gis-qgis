@@ -349,9 +349,7 @@ class TestResolveSignIn:
         monkeypatch.setattr(
             dialog_mod, "store_api_header_authcfg", lambda *a, **k: True
         )
-        monkeypatch.setattr(dialog_mod, "configure_gdal_auth", lambda *a, **k: True)
         monkeypatch.setattr(dialog_mod, "remove_authcfg", lambda *a, **k: None)
-        monkeypatch.setattr(dialog_mod, "raster_forget", lambda *a, **k: None)
 
     def _outcome(self, dialog_mod: Any, **overrides: Any) -> Any:
         base = {

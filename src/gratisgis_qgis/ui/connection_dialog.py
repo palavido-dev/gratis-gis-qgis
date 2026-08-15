@@ -59,8 +59,6 @@ from ..layer_auth import mint_layer_key, revoke_layer_key
 from ..layer_reload import reload_layers_using
 from ..log import get_logger
 from ..portal import get_client, invalidate
-from ..raster_auth import configure_gdal_auth
-from ..raster_auth import forget as raster_forget
 from ..settings import ConnectionProfile, ConnectionStore
 from ..tasks import TaskCancelledError, format_error, run_in_task
 
@@ -218,11 +216,8 @@ class ConnectionManagerDialog(QDialog):
                     _log.exception("Failed to clear tokens for %s", name)
             # Removed outright, not emptied the way sign-out does it:
             # the connection itself is going, so nothing should be left
-            # pointing at it. raster_forget matters here for the same
-            # reason it does on sign-out, since the GDAL header outlives
-            # the auth database entry.
+            # pointing at it.
             remove_authcfg(existing.layer_authcfg_id)
-            raster_forget(existing)
             self._store.delete(name)
             self._set_busy(False)
             self._reload()
@@ -531,18 +526,14 @@ def _signed_out(profile: ConnectionProfile) -> ConnectionProfile:
     ``clear_api_header_credential``. Keeping the id is also what lets
     the next sign-in revive those layers rather than orphan them.
 
-    The GDAL header is dropped. Raster tile_layers read their credential
-    from a process-wide GDAL option rather than from the authcfg, so
-    clearing the auth database does nothing to them: a private raster
-    on the canvas kept drawing after sign-out because that option was
-    still registered. It lives for the life of the QGIS process, so
-    nothing short of forgetting it explicitly will do.
-
     Then the affected canvas layers are reloaded. Emptying the
     credential changes what the auth manager would hand out from now
     on; a provider that already built its request template keeps the
     copy it took when the layer was added, so without the reload the
     layer carries on drawing with a credential the user has revoked.
+    Reported twice: once for rasters, whose credential used to be a
+    process-wide GDAL option that sign-out never touched, and again
+    after those moved onto the ordinary tile route.
     """
     # Logged because a successful sign-out used to say nothing at all,
     # which made "I signed out and my layers still draw" impossible to
@@ -565,10 +556,8 @@ def _signed_out(profile: ConnectionProfile) -> ConnectionProfile:
             profile.name,
         )
         remove_authcfg(profile.layer_authcfg_id)
-        raster_forget(profile)
         reload_layers_using(profile.layer_authcfg_id)
         return replace(profile, authcfg_id="", api_key_id="", layer_authcfg_id="")
-    raster_forget(profile)
     reload_layers_using(profile.layer_authcfg_id)
     _log.info("signed out of %s; layer credential emptied", profile.name)
     return replace(profile, authcfg_id="", api_key_id="")
@@ -583,10 +572,6 @@ def _clear_layer_key(profile: ConnectionProfile) -> ConnectionProfile:
     on disk after the profile forgot it exists.
     """
     remove_authcfg(profile.layer_authcfg_id)
-    # Raster tile_layers read their credential from a GDAL option, not
-    # the authcfg, and that lives in this process. Clearing it here
-    # keeps a re-sign-in from serving the revoked key out of the cache.
-    raster_forget(profile)
     return replace(profile, api_key_id="", layer_authcfg_id="")
 
 
@@ -640,9 +625,6 @@ def _apply_layer_key(
     updated = replace(
         profile, api_key_id=outcome.minted.id, layer_authcfg_id=authcfg_id
     )
-    # force=True: the key just changed, so the cached header for this
-    # portal is stale by definition.
-    configure_gdal_auth(updated, force=True)
     return (updated, None)
 
 
