@@ -533,6 +533,15 @@ def _signed_out(profile: ConnectionProfile) -> ConnectionProfile:
     still registered. It lives for the life of the QGIS process, so
     nothing short of forgetting it explicitly will do.
     """
+    # Logged because a successful sign-out used to say nothing at all,
+    # which made "I signed out and my layers still draw" impossible to
+    # tell apart from "sign-out never ran".
+    _log.info(
+        "signing out of %s (layer authcfg %s, api key %s)",
+        profile.name,
+        profile.layer_authcfg_id or "none",
+        profile.api_key_id or "none",
+    )
     if not clear_api_header_credential(
         profile.layer_authcfg_id, name=f"GratisGIS layers: {profile.name}"
     ):
@@ -540,10 +549,15 @@ def _signed_out(profile: ConnectionProfile) -> ConnectionProfile:
         # database after sign-out is worse than a dangling reference,
         # so fall back to removing the entry, and drop the id with it
         # so nothing keeps pointing at something that is gone.
+        _log.warning(
+            "could not empty the layer credential for %s; removing it instead",
+            profile.name,
+        )
         remove_authcfg(profile.layer_authcfg_id)
         raster_forget(profile)
         return replace(profile, authcfg_id="", api_key_id="", layer_authcfg_id="")
     raster_forget(profile)
+    _log.info("signed out of %s; layer credential emptied", profile.name)
     return replace(profile, authcfg_id="", api_key_id="")
 
 

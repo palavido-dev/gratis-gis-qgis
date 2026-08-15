@@ -118,6 +118,38 @@ def make_token_storage(authcfg_id: str | None) -> TokenStorage:
 _API_HEADER_METHOD_KEY = "APIHeader"
 
 
+def forget_cached_authcfg(authcfg_id: str) -> bool:
+    """Make QGIS drop whatever it has cached for this auth config.
+
+    Storing a config writes the auth database. It does NOT reach the
+    auth METHOD, which keeps the resolved header in memory keyed by
+    authcfg id and consults that cache, not the database, when it
+    stamps a header onto an outgoing request. So without this the
+    database and the wire disagree for the rest of the session.
+
+    Both directions are wrong, and both were. Signing out emptied the
+    stored credential while every layer carried on sending the old key
+    until QGIS restarted, which is the reported bug. Signing back in
+    stored a freshly minted key that nothing used, because the cache
+    still held the previous one, and re-sign-in reuses the same
+    authcfg id precisely so existing layers pick the new key up.
+
+    Never raises: every caller is finishing a sign-in or a sign-out
+    that has already happened.
+    """
+    if not authcfg_id:
+        return False
+    try:
+        from qgis.core import QgsApplication  # type: ignore[import-not-found]
+
+        QgsApplication.authManager().clearCachedConfig(authcfg_id)
+    except Exception:
+        _log.exception("could not clear the cached authcfg %s", authcfg_id)
+        return False
+    _log.debug("cleared QGIS's cached copy of authcfg %s", authcfg_id)
+    return True
+
+
 def find_api_header_method() -> str | None:
     """The runtime key of QGIS's core API Header auth method, or None.
 
@@ -178,10 +210,18 @@ def store_api_header_authcfg(
         cfg.setMethod(method_key)
         for header, value in headers.items():
             cfg.setConfig(header, value)
-        return bool(QgsApplication.authManager().storeAuthenticationConfig(cfg, True))
+        stored = bool(
+            QgsApplication.authManager().storeAuthenticationConfig(cfg, True)
+        )
     except Exception:
         _log.exception("Failed to store API Header authcfg %s", authcfg_id)
         return False
+    if stored:
+        # The database now says one thing and the auth method's cache
+        # another. Until this runs, requests keep carrying whatever
+        # header this id resolved to the first time it was used.
+        forget_cached_authcfg(authcfg_id)
+    return stored
 
 
 def read_api_header(authcfg_id: str) -> tuple[str, str] | None:
@@ -293,3 +333,7 @@ def remove_authcfg(authcfg_id: str) -> None:
         QgsApplication.authManager().removeAuthenticationConfig(authcfg_id)
     except Exception:
         _log.exception("Failed to remove authcfg %s", authcfg_id)
+    # Even after the entry is gone, the method's cached copy answers
+    # for it. Deleting a credential that keeps being sent is the worst
+    # of the two failures, so this runs whether the removal worked.
+    forget_cached_authcfg(authcfg_id)

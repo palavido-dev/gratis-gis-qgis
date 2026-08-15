@@ -1262,6 +1262,40 @@ def _check_signed_out_authcfg() -> None:
                 f"a credential header survived sign-out: {after!r}",
             ),
         )
+
+        # Writing the database is not the same as changing what goes on
+        # the wire. The auth method caches the resolved header per
+        # authcfg id, so without a cache clear every layer kept sending
+        # the old key until QGIS restarted. That this build even offers
+        # the call is worth asserting: without it there is no way to
+        # make a sign-out take effect in the running session.
+        from qgis.core import QgsApplication as _QgsApp
+
+        from gratisgis_qgis.auth_bridge import forget_cached_authcfg
+
+        check(
+            "this QGIS can be told to forget a cached auth config",
+            lambda: _assert(
+                hasattr(_QgsApp.authManager(), "clearCachedConfig"),
+                "no clearCachedConfig(); a signed-out session would keep "
+                "sending the old key until QGIS is restarted",
+            ),
+        )
+        check(
+            "forget_cached_authcfg() against the real auth manager",
+            lambda: _assert(
+                forget_cached_authcfg(authcfg_id) is True,
+                "the cache clear did not report success",
+            ),
+        )
+        check(
+            "and the entry still reads back afterwards",
+            lambda: _assert(
+                read_api_header(authcfg_id) == SIGNED_OUT_HEADER,
+                "clearing the cache damaged the stored entry: "
+                f"{read_api_header(authcfg_id)!r}",
+            ),
+        )
     finally:
         with contextlib.suppress(Exception):
             remove_authcfg(authcfg_id)

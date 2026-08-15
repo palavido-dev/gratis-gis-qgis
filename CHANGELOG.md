@@ -7,6 +7,28 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.9.4] - 2026-08-15
+
+### Fixed
+
+- **Signing out did not stop layers already on the canvas from
+  drawing.** The connection showed as signed out and the Browser panel
+  behaved, but every portal layer already added kept loading until QGIS
+  was restarted.
+
+  Emptying the stored credential updates QGIS's password store; it does
+  not reach the copy QGIS is already holding in memory for the session.
+  Nothing was telling QGIS to forget that copy, so it carried on
+  sending the old key.
+
+  This was wrong in both directions. Signing back in also reused the
+  key QGIS had cached rather than the fresh one it had just been given.
+
+  Sign-out and sign-in also now leave a line in the log. A successful
+  sign-out previously recorded nothing at all, which made "I signed out
+  and my layers still draw" impossible to tell apart from "sign-out
+  never ran".
+
 ## [0.9.3] - 2026-08-15
 
 ### Fixed
