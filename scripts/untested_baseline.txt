@@ -16,5 +16,4 @@ src/gratisgis_qgis/publish/source.py::RasterSource
 src/gratisgis_qgis/tasks.py::TaskController
 src/gratisgis_qgis/ui/connection_dialog.py::ConnectionManagerDialog
 src/gratisgis_qgis/ui/item_properties_dialog.py::ItemPropertiesDialog
-src/gratisgis_qgis/ui/publish_project_dialog.py::PublishProjectDialog
 src/gratisgis_qgis/ui/search_dock.py::GratisGISSearchDock

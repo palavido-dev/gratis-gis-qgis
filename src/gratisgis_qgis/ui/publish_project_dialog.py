@@ -50,6 +50,7 @@ from ..publish.project_to_map import (
     ProjectSnapshot,
     SkippedLayer,
     translate,
+    zoom_for_scale,
 )
 from ..publish.source import PUBLISHED_ITEM_PROPERTY, PUBLISHED_LAYER_PROPERTY
 from ..settings import ConnectionProfile, ConnectionStore
@@ -865,22 +866,18 @@ def _build_snapshot(iface: QgisInterface, title: str) -> ProjectSnapshot:
         transform = QgsCoordinateTransform(src_crs, crs84, project)
         center = transform.transform(center)
 
-    # Approximate zoom from scale. QGIS doesn't expose a tile-zoom
-    # value directly; the conventional conversion is
-    #   zoom = log2(559082264 / scale)
-    # using the OGC WebMercatorQuad zoom-0 scale denominator.
-    scale = canvas.scale()
-    import math
-
-    zoom = math.log2(559082264.0287178 / scale) if scale > 0 else 0.0
-
+    # QGIS exposes no tile-zoom value, so it is derived from the scale
+    # denominator. The latitude is needed as well as the scale, because
+    # Mercator stretches by 1/cos(latitude); see zoom_for_scale. The
+    # centre is already in lon/lat by this point, which is why the
+    # conversion happens here rather than above.
     return ProjectSnapshot(
         title=title,
         layers=layers,
         viewport=CanvasViewport(
             center_lng=center.x(),
             center_lat=center.y(),
-            zoom=max(0.0, min(22.0, zoom)),
+            zoom=zoom_for_scale(canvas.scale(), center.y()),
         ),
     )
 

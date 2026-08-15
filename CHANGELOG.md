@@ -7,6 +7,17 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.9.0] - 2026-08-15
+
+### Fixed
+
+- **A published map opened slightly too far zoomed in.** The zoom was
+  worked out using a figure that is only correct on the equator, so
+  every map was off, always in the same direction, and more so the
+  further from the equator you are. At Randolph County it was about a
+  third of a zoom level. Now correct wherever you are, and a project in
+  a polar projection no longer produces a nonsense view.
+
 ## [0.8.1] - 2026-08-14
 
 ### Changed

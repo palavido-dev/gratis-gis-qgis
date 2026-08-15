@@ -30,6 +30,7 @@ The output dict is the `data` payload that ships in
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -354,6 +355,59 @@ def translate(
     return MapTranslation(
         data=data, skipped=skipped, included_layer_ids=included_ids
     )
+
+
+#: Web Mercator scale denominator at zoom 0, ON THE EQUATOR.
+#:
+#: The qualifier is the whole point. This is the OGC WebMercatorQuad
+#: zoom-0 denominator, and Mercator scale grows with 1/cos(latitude),
+#: so it describes zoom 0 only where the projection touches the globe.
+WEB_MERCATOR_SCALE_Z0 = 559082264.0287178
+
+#: Zoom levels the portal's map viewer accepts.
+MIN_ZOOM = 0.0
+MAX_ZOOM = 22.0
+
+#: Where the Web Mercator tile grid stops, in degrees.
+#:
+#: The projection runs to infinity at the poles, so every tiled map
+#: cuts it off at the latitude that makes the world square. A canvas
+#: can legitimately sit past this (a polar projection reprojected to
+#: lon/lat), and the honest answer there is the edge of the grid.
+MERCATOR_MAX_LAT = 85.051129
+
+
+def zoom_for_scale(scale: float, latitude_deg: float) -> float:
+    """Tile zoom matching a QGIS scale denominator at this latitude.
+
+    Mercator stretches by 1/cos(latitude), so the scale denominator at
+    a given zoom depends on where you are:
+
+        scale = SCALE_Z0 * cos(latitude) / 2**zoom
+
+    The published map used to invert that without the cosine, which is
+    correct only on the equator. At Randolph County, 38.9N, cos is
+    0.778 and the result was about 0.36 zoom levels too far in, every
+    time, in the same direction. Small, consistent, and easy to read as
+    "the extent is just a bit off" rather than as a bug.
+
+    A zero or negative scale gives ``MIN_ZOOM``; log2 of it would be a
+    crash on Publish rather than a bad map.
+
+    Latitude is range-checked rather than left to ``cos`` to reject.
+    ``cos`` is periodic, so a nonsense value like 1e6 degrees comes
+    back as an ordinary cosine and yields a confident, meaningless
+    zoom. Anything outside a real latitude is treated as no answer;
+    anything inside it is clamped to the edge of the tile grid.
+    """
+    if scale <= 0:
+        return MIN_ZOOM
+    if not -90.0 <= latitude_deg <= 90.0 or latitude_deg != latitude_deg:
+        return MIN_ZOOM
+    clamped = max(-MERCATOR_MAX_LAT, min(MERCATOR_MAX_LAT, latitude_deg))
+    cos_lat = math.cos(math.radians(clamped))
+    zoom = math.log2(WEB_MERCATOR_SCALE_Z0 * cos_lat / scale)
+    return max(MIN_ZOOM, min(MAX_ZOOM, zoom))
 
 
 def _emit_layer(lyr: CanvasLayer, *, source: dict[str, Any]) -> dict[str, Any]:
