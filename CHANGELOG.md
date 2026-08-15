@@ -7,6 +7,35 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.10.0] - 2026-08-15
+
+### Fixed
+
+- **Opening a project with a portal raster in it froze QGIS.** This is
+  the hang that needed Task Manager.
+
+  Portal rasters could be added two ways: read directly from the file
+  by GDAL, or drawn as map tiles. The direct route is what froze it. A
+  layer of that kind in a saved project deadlocks QGIS while it opens,
+  every time, and nothing the plugin can do reaches it.
+
+  Portal rasters now always draw as map tiles, which is the same
+  imagery and cannot hang. The direct route is gone.
+
+  Two other things went with it. Those layers had also started
+  returning "not found" from the portal, so they were drawing from
+  cache and would have stopped anyway. And they needed the portal key
+  handed to a separate part of QGIS that ignores signing out, which is
+  why a private raster kept drawing after sign-out.
+
+- **Repairing a project you already have.** An existing project still
+  contains the old kind of layer and will still freeze. To fix one:
+
+      python scripts/repair_project.py "path\to\project.qgz"
+
+  It repoints those layers at the tile route and keeps the original
+  alongside as `.qgz.bak`. Add `--dry-run` to see what it would change.
+
 ## [0.9.4] - 2026-08-15
 
 ### Fixed

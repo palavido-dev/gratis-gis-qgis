@@ -397,33 +397,47 @@ class TestMimeUris:
             None, profile_factory(), _summary(type="tile_layer", title="Tiles")
         )
         [mime] = node.mimeUris()
-        # A tile_layer is a RASTER pyramid (COG), not vector tiles.
-        # This asserted vector-tile until 0.2.3, which is exactly why
-        # every tile_layer added a layer that drew nothing: the
-        # vector-tile collection it named does not exist for these
-        # items.
+        # A tile_layer is a RASTER pyramid, not vector tiles. This
+        # asserted vector-tile until 0.2.3, which is exactly why every
+        # tile_layer added a layer that drew nothing: the vector-tile
+        # collection it named does not exist for these items.
         assert mime.layerType == "raster"
-        assert mime.providerKey == "gdal"
+        # wms, which is what QGIS calls its XYZ raster provider. It was
+        # gdal until 0.9.5; see test_tile_layer_uri_is_never_vsicurl.
+        assert mime.providerKey == "wms"
         assert mime.name == "Tiles"
         # The historical drop bug: path() in the mime payload reads
         # as "not a valid or recognized data source" in QGIS.
         assert mime.uri == node.uri()
         assert mime.uri != node.path()
 
-    def test_tile_layer_uri_is_a_vsicurl_cog(
+    def test_tile_layer_uri_is_never_vsicurl(
         self,
         items_mod: ModuleType,
         profile_factory: ProfileFactory,
     ) -> None:
+        """A /vsicurl layer in a saved project deadlocks QGIS on open.
+
+        QGIS builds providers on a worker pool during project read and
+        blocks the GUI thread until they finish; a /vsicurl provider
+        never finishes. Measured: a local GeoTIFF reads in 0.2s, one
+        /vsicurl raster hangs for good, and it hangs identically with
+        an unresolvable host and with GDAL_HTTP_TIMEOUT set, so it is a
+        deadlock and no timeout reaches it. Not handing QGIS such a
+        layer is the only fix available from here.
+        """
         profile = profile_factory(portal_url="https://portal.test")
         node = items_mod.TileLayerItem(
             None, profile, _summary(type="tile_layer", title="Tiles")
         )
-        assert node.uri().startswith("/vsicurl/https://portal.test/api/tile-layer/")
-        assert node.uri().endswith("/file.cog")
+        uri = node.uri()
+        assert "/vsicurl/" not in uri
+        assert not uri.endswith("/file.cog")
+        assert uri.startswith("type=xyz&url=")
+        assert quote("/api/tile-layer/", safe="") in uri
         # The portal's own cog:// protocol is a browser-side handler;
         # letting it reach QGIS is what produced the silent empty layer.
-        assert "cog://" not in node.uri()
+        assert "cog://" not in uri
 
 
 class TestProviderCapabilities:
@@ -463,7 +477,12 @@ class TestTileLayerRouting:
         )
         child = items_mod._make_item(None, profile_factory(), self._item())
         assert isinstance(child, items_mod.TileLayerItem)
-        assert child.uri().endswith("/file.cog")
+        # A COG-backed item goes through the tile route too. The live
+        # portal serves tiles for these and 404s /file.cog, and a
+        # /vsicurl layer deadlocks project load, so there is no reason
+        # left to treat the two storage formats differently.
+        assert "/vsicurl/" not in child.uri()
+        assert child.uri().startswith("type=xyz&url=")
 
     def test_pmtiles_uses_the_portal_xyz_route(
         self,
@@ -491,7 +510,7 @@ class TestTileLayerRouting:
             portal_url="https://portal.test", layer_authcfg_id="lyr1234"
         )
         child = items_mod._make_item(None, profile, self._item())
-        assert isinstance(child, items_mod.PmtilesTileLayerItem)
+        assert isinstance(child, items_mod.TileLayerItem)
         uri = child.uri()
         assert uri.startswith("type=xyz&url=")
         assert quote("/api/tile-layer/tl-1/tiles/{z}/{x}/{y}.png", safe="") in uri
@@ -540,7 +559,7 @@ class TestTileLayerRouting:
             # pyramid reports 'pmtiles-ready', not 'ready', and an
             # earlier readiness gate on state == 'ready' therefore
             # routed all six of them to the "still preparing" row.
-            ("pmtiles", "pmtiles-ready", "PmtilesTileLayerItem"),
+            ("pmtiles", "pmtiles-ready", "TileLayerItem"),
             ("cog", "ready", "TileLayerItem"),
             # Every other state still serves a file per the portal's
             # own state machine, so none of them may block adding.
@@ -548,10 +567,10 @@ class TestTileLayerRouting:
             ("cog", "tiling", "TileLayerItem"),
             ("cog", "tiling-failed", "TileLayerItem"),
             ("cog", "building", "TileLayerItem"),
-            ("pmtiles", "failed", "PmtilesTileLayerItem"),
+            ("pmtiles", "failed", "TileLayerItem"),
         ],
     )
-    def test_format_decides_the_provider_not_the_state(
+    def test_a_served_format_is_drawable_whatever_the_state(
         self,
         items_mod: ModuleType,
         profile_factory: ProfileFactory,

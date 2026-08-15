@@ -43,7 +43,6 @@ from gratisgis_client.models.item import ItemSummary
 from ..log import get_logger
 from ..portal import get_item, list_items
 from ..qgis_compat import resolve_enum
-from ..raster_auth import configure_gdal_auth
 from ..settings import ConnectionProfile, ConnectionStore
 from .buckets import (
     BucketKind,
@@ -54,7 +53,6 @@ from .buckets import (
 from .uris import (
     authed_vector_tile_uri,
     oapif_uri,
-    tile_layer_cog_uri,
     tile_layer_xyz_uri,
     vector_tile_uri,
 )
@@ -687,70 +685,33 @@ class _DataLayerSublayerItem(QgsLayerItem):
 class TileLayerItem(QgsLayerItem):
     """A ``tile_layer`` item: a RASTER published as a tile pyramid.
 
-    This used to build the portal's public vector-tile URI, which was
-    simply the wrong surface: a tile_layer is imagery or a derived
-    elevation product (a COG or a PMTiles archive, always
-    ``kind: raster``), and the vector-tile collection it pointed at
-    does not exist for these items. Every tile_layer therefore added a
-    layer that drew nothing, with no error to explain it.
+    Always the portal's XYZ tile route, whatever the item is stored as.
+    There used to be a second path for COG-backed items that opened the
+    file directly through GDAL's ``/vsicurl``, and it had to go.
 
-    COG-backed items open through GDAL's ``/vsicurl`` (range requests
-    are supported end to end, so only the needed overview tiles are
-    fetched). PMTiles-backed items are NOT constructed as layers at
-    all; see ``UnsupportedTileLayerItem`` for why.
-    """
+    A ``/vsicurl`` layer sitting in a saved project deadlocks QGIS on
+    open, permanently. QGIS builds providers on a worker thread pool
+    during project read and blocks the GUI thread until they all
+    finish; a ``/vsicurl`` provider never finishes. Measured, and
+    narrow: a local GeoTIFF reads in 0.2s, one ``/vsicurl`` raster
+    hangs for good, and it hangs just the same when the host does not
+    resolve and when GDAL_HTTP_TIMEOUT is set, so it is a deadlock
+    rather than a slow fetch and nothing this plugin does can time it
+    out. The only fix available here is to never hand QGIS such a
+    layer.
 
-    def __init__(
-        self,
-        parent: QgsDataItem,
-        profile: ConnectionProfile,
-        item: ItemSummary,
-        *,
-        data: dict[str, object] | None = None,
-    ) -> None:
-        uri = tile_layer_cog_uri(profile.portal_url, item.id)
-        super().__init__(
-            parent,
-            item.title,
-            f"gratisgis-tile-layer:/{profile.name}/{item.id}",
-            uri,
-            _LAYER_TYPE_RASTER,
-            "gdal",
-        )
-        self._item = item
-        self._data = data or {}
-        # The credential has to reach GDAL before QGIS opens the
-        # dataset, and the drop happens outside our code, so register
-        # it as the node is built rather than at drop time.
-        configure_gdal_auth(profile)
+    Two other things fall out of dropping it. The COG route was also
+    404ing on the live portal, which serves tiles for every raster
+    including the ones stored as COG, so the layers it produced were
+    already dead. And GDAL cannot use a QGIS ``authcfg``, so the COG
+    path needed the credential installed as a GDAL config option
+    instead: a process-wide setting that outlived sign-out and would
+    have been sent to any host if its path scoping were ever wrong.
+    XYZ goes through QNetworkRequest, so ``authcfg`` just works.
 
-    @property
-    def item(self) -> ItemSummary:
-        return self._item
-
-    def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
-        u = QgsMimeDataUtils.Uri()
-        u.layerType = "raster"
-        u.providerKey = "gdal"
-        u.name = self._item.title
-        # self.uri(), never self.path(): the default payload can carry
-        # the tree-node identifier and the drop then fails with "not a
-        # valid or recognized data source". Same trap BasemapItem hit.
-        u.uri = self.uri()
-        return [u]
-
-
-class PmtilesTileLayerItem(QgsLayerItem):
-    """A PMTiles-backed tile_layer, drawn through the portal's XYZ route.
-
-    The archive itself is unopenable by GDAL when it holds raster tiles
-    (its PMTiles driver is vector only), so the portal unpacks tiles
-    server-side and this points at that route instead of the file.
-
-    Unlike its COG sibling this needs no GDAL header plumbing: XYZ
-    requests go through QNetworkRequest, so a plain ``authcfg`` on the
-    URI is applied by QGIS and private and org layers authenticate on
-    their own.
+    The efficiency argument for COG was real: range requests fetch only
+    the overviews in view. It is worth nothing on a layer that 404s and
+    freezes the application.
     """
 
     def __init__(
@@ -1196,11 +1157,12 @@ def _make_item(
         # than `ready`. Gating on state == 'ready' therefore hid every
         # PMTiles layer behind a "still being prepared" row while the
         # tiles were sitting there ready to serve.
+        # The format no longer picks a provider: everything served goes
+        # through the XYZ route. It still gates readiness, because an
+        # item with no format has no file to serve yet.
         fmt = str(data.get("format") or "").lower()
-        if fmt == "cog":
+        if fmt in ("cog", "pmtiles"):
             return TileLayerItem(parent, profile, item, data=data)
-        if fmt == "pmtiles":
-            return PmtilesTileLayerItem(parent, profile, item, data=data)
         # No format means nothing is being served yet, which is the one
         # case worth blocking on. Name the state when we have it so the
         # row says "still uploading" rather than something cryptic.
