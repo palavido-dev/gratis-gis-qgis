@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import sys
 import traceback
 from pathlib import Path
@@ -814,6 +815,101 @@ def _run_checks() -> None:
 
     print("\n[17] splitting a feature in a clone sends both halves")
     _check_split_feature()
+
+    print("\n[18] portal layers stay recognised after a project round trip")
+    _check_uri_survives_reload()
+
+
+def _check_uri_survives_reload() -> None:
+    """Is a portal layer still ours after QGIS has rewritten its URI?
+
+    A provider URI is an unordered parameter bag and QGIS spells it
+    back its own way. Recognition used to key off the string starting
+    with ``type=xyz``, so a reordered URI made a portal layer invisible
+    to publish-as-map, the clone picker, the sync picker and the load
+    trace. The layer still drew, which is why it read as "the publish
+    dialog is broken" rather than as a parsing bug.
+
+    Asked of a real save-and-reload rather than of a string written
+    here, because the whole failure was a guess about how QGIS spells
+    these and the guess matched our own builders.
+    """
+    import os
+    import tempfile
+
+    from qgis.core import QgsProject, QgsRasterLayer, QgsVectorTileLayer
+
+    from gratisgis_qgis.browser.uris import (
+        authed_vector_tile_uri,
+        parse_portal_layer_source,
+        parse_tile_layer_uri,
+        tile_layer_xyz_uri,
+    )
+
+    portal = "https://gratisgis.org"
+    raster_item = "ed98bb41-053d-4317-897d-bf124d6a9dcd"
+    vector_item = "71ec2071-1243-4621-a0cb-623edfebd467"
+    layer_key = "lyr_1ch2vc9x"
+
+    work = tempfile.mkdtemp(prefix="gg-uri-")
+    project_path = os.path.join(work, "round-trip.qgz")
+    try:
+        raster = QgsRasterLayer(
+            tile_layer_xyz_uri(portal, raster_item, authcfg_id="e53df68"),
+            "hillshade",
+            "wms",
+        )
+        vector = QgsVectorTileLayer(
+            authed_vector_tile_uri(
+                portal, vector_item, layer_key, authcfg_id="e53df68"
+            ),
+            "buildings",
+        )
+        project = QgsProject.instance()
+        project.addMapLayer(raster)
+        project.addMapLayer(vector)
+        check("save the project", lambda: project.write(project_path))
+        project.clear()
+        check("reload it", lambda: project.read(project_path))
+
+        reloaded = list(project.mapLayers().values())
+        check(
+            "both layers came back",
+            lambda: _assert(
+                len(reloaded) == 2, f"got {len(reloaded)} layers back"
+            ),
+        )
+
+        by_name = {lyr.name(): lyr for lyr in reloaded}
+        hillshade = by_name.get("hillshade")
+        buildings = by_name.get("buildings")
+
+        check(
+            "the reloaded raster is still recognised as a portal tile layer",
+            lambda: _assert(
+                hillshade is not None
+                and parse_tile_layer_uri(hillshade.source())
+                == (portal, raster_item),
+                "publish-as-map would offer this as an outside service: "
+                f"{hillshade.source() if hillshade else None!r}",
+            ),
+        )
+        check(
+            "the reloaded vector tile layer is still recognised",
+            lambda: _assert(
+                buildings is not None
+                and parse_portal_layer_source(buildings.source()) is not None,
+                "the clone and sync pickers would stop offering this: "
+                f"{buildings.source() if buildings else None!r}",
+            ),
+        )
+        # Report what QGIS actually did, so a future reader does not
+        # have to rediscover it from a user's screenshot.
+        if hillshade is not None:
+            print(f"    QGIS stores it as: {hillshade.source()[:100]}")
+    finally:
+        QgsProject.instance().clear()
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _check_split_feature() -> None:

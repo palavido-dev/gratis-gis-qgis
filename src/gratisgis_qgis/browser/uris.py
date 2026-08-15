@@ -16,7 +16,6 @@ and the Search dock's add-to-canvas action (ui/search_dock.py).
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from urllib.parse import quote, unquote
 
@@ -268,6 +267,34 @@ def authed_vector_tile_uri(
 # -----------------------------------------------------------
 
 
+def uri_param(uri: str, key: str) -> str | None:
+    """One ``key=value`` out of a provider URI, wherever it sits.
+
+    Provider URIs are an unordered parameter bag and QGIS rewrites them
+    to suit itself. A layer built as
+    ``type=xyz&url=...&authcfg=ab12cd3`` comes back from a reloaded
+    project as ``authcfg=ab12cd3&type=xyz&url=...``, with the same
+    meaning and a different spelling.
+
+    Both parsers below used to key off the string STARTING with
+    ``type=xyz``, so a reordered URI stopped being recognised as a
+    portal layer at all. The layer still drew; it simply became
+    invisible to everything that asks "is this ours", which is
+    publish-as-map, the clone picker, the sync picker and the load
+    trace. Reported as publish-as-map not recognising a hillshade that
+    was plainly sitting in the portal's own tree.
+
+    The value is unquoted, because the URL inside is percent-encoded
+    (``quote(safe='')``) precisely so it carries no bare ``&`` and this
+    split stays sound.
+    """
+    for part in uri.split("&"):
+        name, sep, value = part.partition("=")
+        if sep and name.strip() == key:
+            return unquote(value)
+    return None
+
+
 def parse_tile_layer_uri(uri: str) -> tuple[str, str] | None:
     """Recover (portal_url, item_id) from a tile_layer source.
 
@@ -288,12 +315,13 @@ def parse_tile_layer_uri(uri: str) -> tuple[str, str] | None:
         return None
     text = uri.strip()
 
-    # XYZ shape: pull the template out of the parameter string first.
-    if text.startswith("type=xyz"):
-        match = re.search(r"url=([^&]+)", text)
-        if match is None:
-            return None
-        text = unquote(match.group(1))
+    # XYZ shape: pull the template out of the parameter bag first,
+    # by name rather than by position. Anything without a url
+    # parameter is a plain path (the GDAL/vsicurl shape) and is
+    # searched as-is.
+    from_param = uri_param(text, "url")
+    if from_param is not None:
+        text = from_param
 
     # GDAL prefixes stack, and in either order (/vsizip//vsicurl/...),
     # so strip until none is left rather than walking a fixed list
@@ -350,9 +378,9 @@ def parse_vector_tile_uri(uri: str) -> tuple[str, str] | None:
     (publish-project's layer recognizer) treat both shapes alike.
     Returns None when the URI shape doesn't match either.
     """
-    if not uri.startswith("type=xyz&url="):
+    template = uri_param(uri, "url")
+    if template is None:
         return None
-    template = uri[len("type=xyz&url=") :]
     marker = "/api/public/ogc/collections/"
     idx = template.find(marker)
     if idx >= 0:

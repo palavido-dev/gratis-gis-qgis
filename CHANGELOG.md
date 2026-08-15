@@ -7,6 +7,25 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.9.3] - 2026-08-15
+
+### Fixed
+
+- **Portal layers stopped being recognised as portal layers.** The
+  publish-as-map dialog listed a raster sitting in your own portal tree
+  as "an outside service the portal does not know about", and offered
+  to add it as though it were somebody else's.
+
+  QGIS writes a layer's address in whatever order it likes, and reorders
+  it when a project is saved and reopened. The plugin was reading that
+  address by position rather than by name, so a reordered one no longer
+  looked like a portal layer. The layer still drew perfectly, which is
+  why nothing seemed wrong until you tried to publish.
+
+  It now reads the address by name, in any order. This also affected the
+  clone and sync pickers, which would have quietly stopped offering
+  layers after a project reload.
+
 ## [0.9.2] - 2026-08-15
 
 ### Fixed

@@ -9,4 +9,4 @@ via hatch's version plugin, and ``__init__.py`` re-exports it, so
 there is exactly one place to bump.
 """
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"
