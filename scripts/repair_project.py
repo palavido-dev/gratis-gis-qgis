@@ -35,6 +35,13 @@ _COG = re.compile(
     r"(?P<item>[0-9a-fA-F-]+)/file\.cog"
 )
 
+#: One ``<maplayer>`` block, so the provider swap below can be confined
+#: to the layers that actually changed.
+_MAPLAYER = re.compile(r"<maplayer\b.*?</maplayer>", re.DOTALL)
+
+#: The provider element inside such a block.
+_GDAL_PROVIDER = re.compile(r"(<provider[^>]*>)\s*gdal\s*(</provider>)")
+
 
 def xyz_uri(portal: str, item_id: str) -> str:
     """The tile route for the same item.
@@ -51,22 +58,51 @@ def xyz_uri(portal: str, item_id: str) -> str:
 def repair_xml(xml: str) -> tuple[str, list[str]]:
     """Return the rewritten XML and the item ids that were changed.
 
+    Two edits per layer, and the second is easy to miss. The data
+    source becomes the tile URI, AND the layer's provider changes from
+    ``gdal`` to ``wms``, which is what QGIS calls its XYZ raster
+    provider. Swapping only the source leaves QGIS handing an XYZ
+    parameter string to GDAL, and the project then opens promptly with
+    that layer marked invalid: better than the hang it replaces, and
+    still broken.
+
     The replacement is XML-escaped on the way in. A ``/vsicurl`` path
     contains no ``&``, an XYZ URI is nothing but ``&``-separated
     parameters, and dropping those in raw produces a project file QGIS
     refuses to parse: "Expected ';', but got '='". The first version of
     this did exactly that, and the repaired project opened instantly
     with zero layers, which reads like success unless you count them.
+
+    Edited as text rather than through an XML parser on purpose. This
+    rewrites somebody's project, and a parse-and-serialise round trip
+    would reformat every line of a file the user may still want to
+    diff against their backup.
     """
+    # A project names the same layer more than once: the maplayer
+    # entry, the layer tree, sometimes a saved canvas. All of them get
+    # rewritten, but the user is told about LAYERS, so counting
+    # occurrences reports "2 layers" for one raster and reads like the
+    # script found something it did not.
     changed: list[str] = []
 
     def swap(match: re.Match[str]) -> str:
-        changed.append(match.group("item"))
-        return xyz_uri(
-            match.group("portal"), match.group("item")
-        ).replace("&", "&amp;")
+        item = match.group("item")
+        if item not in changed:
+            changed.append(item)
+        return xyz_uri(match.group("portal"), item).replace("&", "&amp;")
 
-    return _COG.sub(swap, xml), changed
+    def fix_block(match: re.Match[str]) -> str:
+        """One ``<maplayer>``: source and provider together."""
+        block = match.group(0)
+        if not _COG.search(block):
+            return block
+        # Confined to this block, so a GDAL layer elsewhere in the
+        # project keeps its provider.
+        return _GDAL_PROVIDER.sub(r"\1wms\2", _COG.sub(swap, block))
+
+    # Layer blocks first, then anything left over: the layer tree and
+    # saved canvases repeat the source without a provider beside it.
+    return _COG.sub(swap, _MAPLAYER.sub(fix_block, xml)), changed
 
 
 def repair_file(path: Path, *, dry_run: bool) -> list[str]:

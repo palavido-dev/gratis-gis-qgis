@@ -24,11 +24,28 @@ _COG = f"/vsicurl/{_PORTAL}/api/tile-layer/{_ITEM}/file.cog"
 
 
 def _project_xml(*sources: str) -> str:
+    """A project skeleton: one maplayer per source, with its provider.
+
+    The provider element is what a real project carries and what the
+    repair has to change alongside the source; a fixture without one
+    would let a half-repair pass.
+    """
     layers = "\n".join(
-        f'    <maplayer><datasource>{s}</datasource></maplayer>'
+        f"    <maplayer><datasource>{s}</datasource>"
+        f"<provider>{_provider_for(s)}</provider></maplayer>"
         for s in sources
     )
     return f'<?xml version="1.0"?>\n<qgis>\n{layers}\n</qgis>\n'
+
+
+def _provider_for(source: str) -> str:
+    if source.startswith("type=xyz"):
+        return "wms"
+    # A raster is gdal whether it is local or /vsicurl, which is the
+    # point of the "leave other gdal layers alone" test.
+    if source.startswith("/vsicurl/") or source.endswith((".tif", ".tiff")):
+        return "gdal"
+    return "ogr"
 
 
 class TestRepairXml:
@@ -89,6 +106,44 @@ class TestRepairXml:
         second = f"/vsicurl/{_PORTAL}/api/tile-layer/aaaa-bbbb/file.cog"
         _fixed, changed = repair_xml(_project_xml(_COG, second))
         assert changed == [_ITEM, "aaaa-bbbb"]
+
+    def test_the_provider_changes_with_the_source(self) -> None:
+        """Both edits, or the layer loads invalid instead of hanging.
+
+        QGIS calls its XYZ raster provider "wms". Leaving the provider
+        as gdal hands an XYZ parameter string to GDAL, and the project
+        opens promptly with the layer marked invalid. Caught by opening
+        a really repaired project and reading isValid(), not by the
+        project opening at all.
+        """
+        fixed, _ = repair_xml(_project_xml(_COG))
+        assert "<provider>wms</provider>" in fixed
+        assert "<provider>gdal</provider>" not in fixed
+
+    def test_a_gdal_layer_that_is_not_ours_keeps_its_provider(self) -> None:
+        """The provider swap is confined to the layers being rewritten.
+
+        A project can hold an ordinary GeoTIFF, and turning that into a
+        wms layer would break something the script was not asked to
+        touch.
+        """
+        fixed, _ = repair_xml(_project_xml("C:/data/local.tif", _COG))
+        assert fixed.count("<provider>gdal</provider>") == 1
+        assert fixed.count("<provider>wms</provider>") == 1
+        assert "C:/data/local.tif" in fixed
+
+    def test_one_layer_named_twice_is_reported_once(self) -> None:
+        """A project names a layer in several places.
+
+        The maplayer entry, the layer tree, sometimes a saved canvas.
+        All are rewritten, but the user is told about LAYERS, and
+        "repaired 2 layers" for a project with one raster reads like
+        the script found something that is not there.
+        """
+        fixed, changed = repair_xml(_project_xml(_COG, _COG, _COG))
+        assert changed == [_ITEM]
+        assert "/vsicurl/" not in fixed, "every occurrence is still rewritten"
+        assert fixed.count("type=xyz&amp;url=") == 3
 
     def test_a_project_with_nothing_to_fix_is_reported_as_such(self) -> None:
         fixed, changed = repair_xml(_project_xml("C:/data/x.gpkg"))
