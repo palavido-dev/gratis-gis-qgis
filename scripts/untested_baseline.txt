@@ -7,12 +7,7 @@
 #
 # Regenerate with: python scripts/untested_audit.py --update-baseline
 src/gratisgis_qgis/auth_bridge.py::QgisAuthManagerTokenStorage
-src/gratisgis_qgis/browser/items.py::GenericItem
-src/gratisgis_qgis/browser/items.py::RootItem
-src/gratisgis_qgis/browser/items.py::ServiceItem
-src/gratisgis_qgis/plugin.py::GratisGISPlugin
 src/gratisgis_qgis/publish/source.py::PublishChoice
 src/gratisgis_qgis/publish/source.py::RasterSource
 src/gratisgis_qgis/tasks.py::TaskController
 src/gratisgis_qgis/ui/connection_dialog.py::ConnectionManagerDialog
-src/gratisgis_qgis/ui/item_properties_dialog.py::ItemPropertiesDialog
