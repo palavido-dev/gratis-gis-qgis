@@ -11,6 +11,13 @@ for the client library; the QGIS plugin uses its own version line in
 
 ### Fixed
 
+- **Publishing a big layer no longer freezes QGIS while it starts.**
+  The layer was written out to a file before anything showed progress,
+  on the same thread that draws the window, so a large layer left QGIS
+  unresponsive from the moment you pressed Publish until the upload
+  began. It now happens in the background with the rest of the job, and
+  the window says "Preparing the layer..." while it does.
+
 - **Overwriting an offline clone no longer throws away its styling.**
   Replacing a clone had to remove the old layer to release the file,
   and what came back was a plain new layer: default symbology, dropped

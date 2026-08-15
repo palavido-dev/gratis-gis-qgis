@@ -62,7 +62,11 @@ from ..publish.source import (
     resolve_raster_source,
 )
 from ..publish.vector import LayerSummary, validate_layer
-from ..publish.vector_pipeline import PCT_UPLOAD_DONE, run_vector_pipeline
+from ..publish.vector_pipeline import (
+    PCT_EXPORT_DONE,
+    PCT_UPLOAD_DONE,
+    run_vector_pipeline,
+)
 from ..qgis_compat import resolve_enum
 from ..settings import ConnectionStore
 from ..tasks import format_error, run_in_task
@@ -550,24 +554,15 @@ class PublishLayerDialog(QDialog):
         description: str | None,
         access: str,
     ) -> None:
-        """Export the layer, then hand the file to the pipeline.
+        """Hand the whole publish to the pipeline, export included.
 
-        The export stays here, on the GUI thread, because it needs QGIS
-        and because that is where it has always run. Everything after it
-        is one call into ``run_vector_pipeline``: what used to be two
-        tasks with a GUI hop between them, where the interesting half
-        (probe the staged file, build the envelope, create, enqueue,
-        clean up an orphan) sat in a method nothing could reach.
+        The export runs on the worker, not here. Writing a large layer
+        to a GeoPackage takes seconds to minutes, and doing it on the
+        GUI thread froze the window between pressing Publish and the
+        first sign of anything happening, which is the worst possible
+        moment to look hung.
         """
-        try:
-            gpkg_path = _export_to_geopackage(layer)
-        except Exception as e:  # pragma: no cover - defensive
-            _log.exception("export-to-geopackage failed")
-            QMessageBox.critical(self, "Export failed", str(e))
-            self._set_busy(False)
-            return
-
-        self._progress_label.setText("Uploading to portal...")
+        self._progress_label.setText("Preparing the layer...")
 
         # Filled by the worker when a post-create failure triggered
         # orphan cleanup; read by the error callback so the user
@@ -578,7 +573,7 @@ class PublishLayerDialog(QDialog):
             return run_vector_pipeline(
                 handle,
                 profile=profile,
-                gpkg_path=gpkg_path,
+                export=lambda: _export_to_geopackage(layer),
                 title=title,
                 description=description,
                 access=access,
@@ -615,12 +610,15 @@ class PublishLayerDialog(QDialog):
         def progress(pct: float) -> None:
             # The label is the only progress signal until the import
             # job starts reporting its own; the bar stays hidden until
-            # then because staging cannot say how far along it is.
-            self._progress_label.setText(
-                "Uploading to portal..."
-                if pct <= PCT_UPLOAD_DONE
-                else "Creating portal item..."
-            )
+            # then because neither the export nor staging can say how
+            # far along it is.
+            if pct <= PCT_EXPORT_DONE:
+                text = "Preparing the layer..."
+            elif pct <= PCT_UPLOAD_DONE:
+                text = "Uploading to portal..."
+            else:
+                text = "Creating portal item..."
+            self._progress_label.setText(text)
 
         run_in_task(
             "GratisGIS publish: vector layer",

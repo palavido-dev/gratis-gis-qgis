@@ -121,7 +121,7 @@ def _run(
     monkeypatch.setattr(mod, "get_client", lambda _p: client)
     kwargs: dict[str, Any] = {
         "profile": SimpleNamespace(name="demo"),
-        "gpkg_path": gpkg_path,
+        "export": lambda: gpkg_path,
         "title": "Parcels",
         "description": None,
         "access": "private",
@@ -201,6 +201,98 @@ class TestHappyPath:
         outcome = _run(monkeypatch, client, gpkg)
         [layer] = client.items.created[0]["data"]["layers"]
         assert outcome.layer_id == layer["id"]
+
+
+class TestTheExportRunsOnTheWorker:
+    """Writing the GeoPackage is part of the job, not a prelude to it.
+
+    It used to run on the GUI thread before the task was scheduled, so
+    a large layer froze the QGIS window between pressing Publish and
+    the first sign of anything happening: the worst possible moment to
+    look hung, because the user cannot tell it from a crash.
+    """
+
+    def test_the_export_is_called_by_the_pipeline(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        calls: list[str] = []
+
+        def export() -> str:
+            calls.append("exported")
+            return gpkg
+
+        _run(monkeypatch, _FakeClient(), gpkg, export=export)
+        assert calls == ["exported"]
+
+    def test_nothing_is_staged_before_the_export_returns(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        """Order, pinned: the file has to exist before it is uploaded."""
+        order: list[str] = []
+        client = _FakeClient()
+        real_stage = client.ingest.stage
+
+        def stage(*, file_path: str) -> Any:
+            order.append("staged")
+            return real_stage(file_path=file_path)
+
+        client.ingest.stage = stage  # type: ignore[method-assign]
+
+        def export() -> str:
+            order.append("exported")
+            return gpkg
+
+        _run(monkeypatch, client, gpkg, export=export)
+        assert order == ["exported", "staged"]
+
+    def test_an_export_failure_reaches_the_error_callback(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        """It used to be caught inline and shown in its own message box.
+
+        On the worker it is an ordinary task failure, so the message
+        has to survive the trip rather than being swallowed.
+        """
+        def export() -> str:
+            raise RuntimeError("GeoPackage write failed: disk full")
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            _run(monkeypatch, _FakeClient(), gpkg, export=export)
+
+    def test_a_failed_export_uploads_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        client = _FakeClient()
+
+        def export() -> str:
+            raise RuntimeError("no")
+
+        with pytest.raises(RuntimeError):
+            _run(monkeypatch, client, gpkg, export=export)
+        assert client.staged_paths == []
+        assert client.items.created == []
+
+    def test_a_cancel_before_the_export_does_not_write_the_file(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        """Cancelling should stop the expensive part, not just skip it.
+
+        Exporting a 1.4M-feature layer and then throwing it away is the
+        whole cost of the operation for no result.
+        """
+        handle = InlineTaskHandle()
+        handle.cancel()
+        calls: list[str] = []
+
+        def export() -> str:
+            calls.append("exported")
+            return gpkg
+
+        with pytest.raises(TaskCancelledError):
+            _run(
+                monkeypatch, _FakeClient(), gpkg, handle=handle, export=export
+            )
+        assert calls == []
 
 
 class TestTheLocalExport:

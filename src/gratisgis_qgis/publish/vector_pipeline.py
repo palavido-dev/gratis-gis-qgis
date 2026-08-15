@@ -18,21 +18,20 @@ holds the schema translation and imports no QGIS; this holds the
 sequence of portal calls and imports no Qt. What is left in the dialog
 is widgets, which is what a dialog should be.
 
-The GeoPackage export stays with the caller rather than moving in here.
-It needs QGIS on the calling thread and it is the one step that differs
-between callers, and keeping it out means this module can be tested
-against a fake client with no QGIS anywhere.
-
-Deliberately NOT changed while extracting: the export still runs on the
-GUI thread before this is called, exactly as before. Moving it onto the
-worker would stop a large layer freezing the window during the write,
-which is worth doing and is a behaviour change, not a refactor. It
-belongs in its own commit with its own test.
+The export is passed in as a callable rather than performed here. It
+needs QGIS, and this module is deliberately QGIS-free so it can be
+tested against a fake client with nothing installed. Passing it in also
+means it runs on the worker thread with everything else: writing a
+1.4M-feature layer to a GeoPackage takes long enough to freeze the QGIS
+window, and it used to do exactly that before the first progress bar
+appeared, so the plugin looked hung at the moment the user pressed the
+button.
 """
 from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -46,17 +45,21 @@ if TYPE_CHECKING:
 
 _log = get_logger(__name__)
 
-# Progress budget. Staging is the file upload and is where the
-# wall-clock goes, so it gets the wide band; the two metadata calls
-# after it are quick and mostly exist to move the label on.
+# Progress budget. Exporting and staging are where the wall-clock
+# goes, so they take the wide bands; the two metadata calls after
+# them are quick and mostly exist to move the label on.
+PCT_EXPORTED = 30.0
 PCT_STAGED = 70.0
 PCT_ITEM_CREATED = 85.0
 PCT_ENQUEUED = 100.0
 
-#: Progress at or below which the caller should still say "uploading".
-#: Exported so the dialog's label and this module's bands cannot drift
+#: Progress at or below which the caller should still say "exporting".
+#: Exported so the dialog's labels and this module's bands cannot drift
 #: apart silently, which is the usual fate of a magic number copied
 #: into a second file.
+PCT_EXPORT_DONE = PCT_EXPORTED
+
+#: And the same for the upload.
 PCT_UPLOAD_DONE = PCT_STAGED
 
 
@@ -84,33 +87,45 @@ def run_vector_pipeline(
     handle: TaskHandle,
     *,
     profile: Any,
-    gpkg_path: str,
+    export: Callable[[], str],
     title: str,
     description: str | None,
     access: str,
     cleanup_notes: list[str],
     delete_gpkg: bool = True,
 ) -> VectorPublishOutcome:
-    """Stage, probe, create the item, enqueue its import. In order.
+    """Export, stage, probe, create the item, enqueue. In order.
 
     Raises on any hard failure; the caller's error callback renders it.
     ``cleanup_notes`` is filled when a post-create failure triggered
     orphan cleanup, so the error surface can say what happened to the
     half-created item either way.
 
-    ``delete_gpkg`` removes the local export once staging has finished
-    with it, success or failure, which is what the dialog has always
-    done: the portal keeps its own copy under ``/tmp/gg-staging/<id>/``
-    and the local tempfile has no further use. Callers that did not
-    create the file should pass False.
+    ``export`` returns the path of a GeoPackage it has just written. It
+    is a callable rather than a path because it has to run HERE, on the
+    worker: writing a large layer takes seconds to minutes, and doing
+    it on the GUI thread froze the window between pressing Publish and
+    the first sign of progress.
+
+    ``delete_gpkg`` removes that export once staging has finished with
+    it, success or failure: the portal keeps its own copy under
+    ``/tmp/gg-staging/<id>/`` and the local tempfile has no further
+    use. Callers handing over a file they did not create should pass
+    False.
     """
     client = get_client(profile)
 
+    _raise_if_canceled(handle)
+    gpkg_path = export()
+    handle.set_progress(PCT_EXPORTED)
+
     try:
+        _raise_if_canceled(handle)
         staged = client.ingest.stage(file_path=gpkg_path)
     finally:
-        # After staging either way. The portal has its copy on success,
-        # and on failure there is nothing to keep.
+        # After staging either way, and after a cancel that lands
+        # between the two. The portal has its copy on success, and on
+        # failure there is nothing to keep.
         if delete_gpkg:
             _safe_unlink(gpkg_path)
     handle.set_progress(PCT_STAGED)
