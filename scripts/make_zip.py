@@ -217,7 +217,11 @@ def _write_changelog_into(metadata_path: Path) -> None:
     pattern = re.compile(r"^changelog\s*=.*?(?=^\w+\s*=|\Z)", re.MULTILINE | re.DOTALL)
     replacement = f"changelog={field}\n"
     if pattern.search(text):
-        text = pattern.sub(replacement, text, count=1)
+        # A function, not a string: re.sub reads escapes in a
+        # replacement string, so a changelog entry containing a Windows
+        # path ("path\to\project.qgz") failed the build with "bad
+        # escape \p". The changelog is prose and must never be parsed.
+        text = pattern.sub(lambda _m: replacement, text, count=1)
     else:
         text = text.rstrip("\n") + "\n" + replacement
     metadata_path.write_text(text, encoding="utf-8")
