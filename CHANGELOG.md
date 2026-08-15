@@ -7,34 +7,27 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
-## [0.10.0] - 2026-08-15
+## [0.10.1] - 2026-08-15
 
 ### Fixed
 
-- **Opening a project with a portal raster in it froze QGIS.** This is
-  the hang that needed Task Manager.
+- **Reverted 0.10.0.** Portal rasters read directly from their file
+  (COG) work again. 0.10.0 sent them to a tile route the portal does
+  not serve for that kind of layer, so three of your rasters drew
+  nothing.
 
-  Portal rasters could be added two ways: read directly from the file
-  by GDAL, or drawn as map tiles. The direct route is what froze it. A
-  layer of that kind in a saved project deadlocks QGIS while it opens,
-  every time, and nothing the plugin can do reaches it.
+  The reason 0.10.0 existed is unchanged and still real: a project
+  saved with one of those layers freezes QGIS when you reopen it. That
+  is issue #24 and it is not fixed. Until it is, use
+  `scripts/repair_project.py` on a project that will not open, and
+  expect to need it again after saving a project containing a portal
+  raster.
 
-  Portal rasters now always draw as map tiles, which is the same
-  imagery and cannot hang. The direct route is gone.
-
-  Two other things went with it. Those layers had also started
-  returning "not found" from the portal, so they were drawing from
-  cache and would have stopped anyway. And they needed the portal key
-  handed to a separate part of QGIS that ignores signing out, which is
-  why a private raster kept drawing after sign-out.
-
-- **Repairing a project you already have.** An existing project still
-  contains the old kind of layer and will still freeze. To fix one:
-
-      python scripts/repair_project.py "path\to\project.qgz"
-
-  It repoints those layers at the tile route and keeps the original
-  alongside as `.qgz.bak`. Add `--dry-run` to see what it would change.
+  Why this cannot be fixed in the plugin: the portal serves
+  photographic COGs directly on purpose, because baking them into
+  tiles produced the black border you reported. So there is no tile
+  route to point at, and the direct route is the one QGIS deadlocks on.
+  The fix belongs on the portal: a tile route for COG-backed items.
 
 ## [0.9.4] - 2026-08-15
 
