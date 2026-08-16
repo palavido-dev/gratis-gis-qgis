@@ -72,6 +72,14 @@ class CanvasLayer:
     layer object in the project. Optional because tests don't
     need it."""
 
+    portal_style: dict[str, Any] | None = None
+    """Portal MapLayerStyle captured from the QGIS renderer, or None
+    to let the portal apply its defaults. Captured at snapshot time
+    (the live layer is needed) and merely carried here."""
+
+    portal_renderer: dict[str, Any] | None = None
+    """Portal MapLayerRenderer captured alongside ``portal_style``."""
+
     portal_item_id: str | None = None
     """The portal item this layer already stands for, when that is
     known from something other than the source URI.
@@ -411,13 +419,21 @@ def zoom_for_scale(scale: float, latitude_deg: float) -> float:
 
 
 def _emit_layer(lyr: CanvasLayer, *, source: dict[str, Any]) -> dict[str, Any]:
-    return {
+    entry: dict[str, Any] = {
         "id": f"qgis-{lyr.name}",
         "title": lyr.name,
         "visible": lyr.visible,
         "opacity": _clamp_unit(lyr.opacity),
         "source": source,
     }
+    # Captured QGIS symbology (#26). Written only when present so a
+    # layer whose renderer had no portal equivalent takes the portal's
+    # defaults server-side, exactly as before this existed.
+    if lyr.portal_style:
+        entry["style"] = lyr.portal_style
+    if lyr.portal_renderer:
+        entry["renderer"] = lyr.portal_renderer
+    return entry
 
 
 # -----------------------------------------------------------

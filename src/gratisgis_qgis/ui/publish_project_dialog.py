@@ -843,6 +843,18 @@ def _build_snapshot(iface: QgisInterface, title: str) -> ProjectSnapshot:
             continue
         provider = ml.providerType() if hasattr(ml, "providerType") else ""
         item_id, layer_key = _known_portal_origin(ml)
+        # Symbology capture (#26): read the live renderer here, while
+        # the layer object is in hand; everything downstream of the
+        # snapshot is pure and never sees QGIS objects. Never let a
+        # renderer surprise abort the publish: a layer that cannot be
+        # captured publishes unstyled, as every layer did before.
+        style, renderer = (None, None)
+        try:
+            from ..symbology import capture_layer_symbology
+
+            style, renderer = capture_layer_symbology(ml)
+        except Exception:
+            _log.debug("symbology capture failed for %s", ml.name(), exc_info=True)
         layers.append(
             CanvasLayer(
                 name=ml.name(),
@@ -851,6 +863,8 @@ def _build_snapshot(iface: QgisInterface, title: str) -> ProjectSnapshot:
                 visible=bool(tree_layer.isVisible()),
                 opacity=_layer_opacity(ml),
                 qgis_layer_id=ml.id() if hasattr(ml, "id") else None,
+                portal_style=style,
+                portal_renderer=renderer,
                 portal_item_id=item_id,
                 portal_layer_key=layer_key,
             )

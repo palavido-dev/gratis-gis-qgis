@@ -54,6 +54,29 @@ def _tile_layer(item_id: str, name: str = "Parcels MVT", **kw: Any) -> CanvasLay
     )
 
 
+class TestCapturedSymbologyRidesAlong:
+    """#26: the snapshot carries captured style; translate writes it."""
+
+    def test_a_captured_style_and_renderer_are_emitted(self) -> None:
+        layer = _oapif_layer("abc-123")
+        styled = CanvasLayer(
+            name=layer.name, source_uri=layer.source_uri,
+            provider=layer.provider, visible=True, opacity=1.0,
+            portal_style={"polygon": {"fillColor": "#639922"}},
+            portal_renderer={"kind": "simple"},
+        )
+        emitted = translate(_snapshot(styled)).data["layers"][0]
+        assert emitted["style"] == {"polygon": {"fillColor": "#639922"}}
+        assert emitted["renderer"] == {"kind": "simple"}
+
+    def test_no_capture_means_no_style_key_at_all(self) -> None:
+        """Absent, not null: the portal merges defaults for a missing
+        key, and a null would be a schema violation."""
+        emitted = translate(_snapshot(_oapif_layer("abc-123"))).data["layers"][0]
+        assert "style" not in emitted
+        assert "renderer" not in emitted
+
+
 class TestRecognizedLayers:
     def test_oapif_layer_resolves_to_data_layer_source(self) -> None:
         # OAPIF is the canonical provider for portal data_layer items,
