@@ -722,3 +722,31 @@ class TestLayerTargetResolution:
         assert target is not None
         assert not target.uri
         assert "uploading" in target.message
+
+
+class TestMapItem:
+    """A map item is a launcher, not a layer (#23)."""
+
+    def test_a_map_routes_to_the_map_item(
+        self, items_mod: ModuleType, profile_factory: ProfileFactory
+    ) -> None:
+        child = items_mod._make_item(
+            None, profile_factory(), _summary(type="map", id="m-1", title="WV")
+        )
+        assert isinstance(child, items_mod.MapItem)
+
+    def test_double_click_launches_the_open_flow(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Returning True is load bearing: it tells QGIS the click was
+        handled, so the default no-op expansion does not swallow it."""
+        child = items_mod._make_item(
+            None, profile_factory(), _summary(type="map", id="m-1")
+        )
+        launched: list[str] = []
+        monkeypatch.setattr(child, "_launch", lambda: launched.append("go"))
+        assert child.handleDoubleClick() is True
+        assert launched == ["go"]

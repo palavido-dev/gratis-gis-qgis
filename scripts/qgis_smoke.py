@@ -825,6 +825,9 @@ def _run_checks() -> None:
         ),
     )
 
+    print("\n[12b] open a portal map against real bindings")
+    _check_open_map()
+
     print("\n[13] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
@@ -1211,6 +1214,161 @@ def _check_layer_placement() -> None:
     finally:
         QgsProject.instance().clear()
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _check_open_map() -> None:
+    """A whole portal map built into a real project, offline.
+
+    The planner is unit-tested; what only a real QGIS can answer is
+    whether the plan EXECUTES: vector tile and XYZ layers built from
+    portal URIs, portal symbology turned into a vector tile renderer
+    QGIS accepts, group nesting, visibility, and the stacking order.
+    No tile is fetched; construction is lazy.
+    """
+    from qgis.core import QgsProject, QgsVectorTileLayer
+
+    from gratisgis_qgis.open_map import open_map_in_project, plan_map_open
+    from gratisgis_qgis.symbology import apply_portal_style
+
+    portal = "https://gratisgis.org"
+    item = {
+        "id": "d1",
+        "access": "private",
+        "bbox": [-80.1, 38.7, -80.0, 38.8],
+        "data": {
+            "version": 3,
+            "layers": [
+                {"id": "parcels", "label": "Parcels", "geometryType": "Polygon"}
+            ],
+        },
+    }
+    map_data = {
+        "version": 1,
+        "basemap": "bm1",
+        "center": [-80.06, 38.74],
+        "zoom": 12,
+        "layers": [
+            {"id": "g", "title": "Overlays", "source": {"kind": "group"}},
+            {
+                "id": "a",
+                "title": "Parcels",
+                "visible": False,
+                "opacity": 0.6,
+                "groupId": "g",
+                "source": {"kind": "data-layer", "itemId": "d1",
+                           "layerKey": "parcels"},
+                "style": {"polygon": {"fillColor": "#639922",
+                                      "fillOpacity": 0.4,
+                                      "strokeColor": "#27500a",
+                                      "strokeWidth": 1.5}},
+                "renderer": {"kind": "unique-values", "field": "class",
+                             "categories": [
+                                 {"value": "res", "color": "#7f77dd"}]},
+            },
+            {
+                "id": "b",
+                "title": "Feed",
+                "source": {"kind": "geojson-url", "url": "https://x/f.json"},
+            },
+        ],
+    }
+    referenced = {
+        "d1": item,
+        "bm1": {"id": "bm1", "title": "Streets", "access": "public",
+                "data": {"tileUrl": "https://tile.example/{z}/{x}/{y}.png"}},
+    }
+    plan = check(
+        "plan a realistic map",
+        lambda: plan_map_open(
+            "Smoke map", map_data, referenced,
+            portal_url=portal, layer_authcfg_id="e53df68",
+        ),
+    )
+    if plan is None:
+        return
+    check(
+        "the plan has one layer, one skip, and a basemap",
+        lambda: _assert(
+            len(plan.layers) == 1 and len(plan.skipped) == 1
+            and plan.basemap is not None,
+            f"unexpected plan shape: {plan!r}",
+        ),
+    )
+
+    project = QgsProject.instance()
+    project.clear()
+    try:
+        result = check(
+            "execute the plan into a real project",
+            lambda: open_map_in_project(plan, None),
+        )
+        if result is None:
+            return
+        added, problems = result
+        check(
+            "both buildable layers were added",
+            lambda: _assert(added == 2, f"added {added}, problems {problems!r}"),
+        )
+        check(
+            "the skip reason survived to the report",
+            lambda: _assert(
+                any("Feed" in p for p in problems),
+                f"no line about the skipped layer: {problems!r}",
+            ),
+        )
+        root = project.layerTreeRoot()
+        group = root.findGroup("Smoke map")
+        check(
+            "the map became a group named after itself",
+            lambda: _assert(group is not None, "no group node"),
+        )
+        subgroup = group.findGroup("Overlays") if group else None
+        check(
+            "the portal group became a nested QGIS group",
+            lambda: _assert(subgroup is not None, "no Overlays subgroup"),
+        )
+        if subgroup is not None:
+            nodes = subgroup.findLayers()
+            check(
+                "the layer sits inside its group, visibility applied",
+                lambda: _assert(
+                    len(nodes) == 1
+                    and nodes[0].layer().name() == "Parcels"
+                    and not nodes[0].isVisible(),
+                    "layer missing from group or still visible",
+                ),
+            )
+            layer = nodes[0].layer()
+            check(
+                "the portal layer is a real vector tile layer",
+                lambda: _assert(
+                    isinstance(layer, QgsVectorTileLayer),
+                    f"unexpected type {type(layer).__name__}",
+                ),
+            )
+            check(
+                "portal symbology produced a categorised tile renderer",
+                lambda: _assert(
+                    len(layer.renderer().styles()) >= 6,
+                    "expected category styles plus base styles",
+                ),
+            )
+            check(
+                "opacity carried through",
+                lambda: _assert(
+                    abs(layer.opacity() - 0.6) < 0.001,
+                    f"opacity {layer.opacity()}",
+                ),
+            )
+        check(
+            "re-applying styles to a raster reports False, not a crash",
+            lambda: _assert(
+                apply_portal_style(object(), None, None) is False,
+                "expected a calm refusal",
+            ),
+        )
+    finally:
+        project.clear()
 
 
 def _check_signed_out_authcfg() -> None:

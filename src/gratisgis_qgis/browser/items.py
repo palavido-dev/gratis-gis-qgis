@@ -1094,6 +1094,60 @@ class GenericItem(QgsDataItem):
         self.setState(_POPULATED_STATE)
 
 
+class MapItem(QgsDataItem):
+    """A portal ``map`` item, openable as a full QGIS layer stack.
+
+    Not a QgsLayerItem, because a map is not one layer: opening it
+    resolves every reference in the map document and builds a group.
+    Double-click and a context-menu action both run the same flow,
+    which lives in ``open_map`` (fetch and plan on a worker, build on
+    the GUI thread).
+    """
+
+    def __init__(
+        self,
+        parent: QgsDataItem,
+        profile: ConnectionProfile,
+        item: ItemSummary,
+    ) -> None:
+        super().__init__(
+            _BROWSER_TYPE_NO_TYPE,
+            parent,
+            item.title,
+            f"gratisgis-map:/{profile.name}/{item.id}",
+        )
+        self._profile_name = profile.name
+        self._item = item
+        self.setToolTip("Map. Double-click to open it in QGIS.")
+        self.setState(_POPULATED_STATE)
+
+    def _launch(self) -> None:
+        # Read the profile fresh rather than holding a snapshot: the
+        # credential may have changed since the tree was built, and a
+        # stale snapshot is the bug the whole tree was cured of once.
+        from qgis.utils import iface  # type: ignore[import-not-found]
+
+        from ..open_map import launch_open_map
+        from ..settings import ConnectionStore
+
+        profile = ConnectionStore().get(self._profile_name)
+        if profile is None:
+            _log.warning("map open: connection %r is gone", self._profile_name)
+            return
+        launch_open_map(profile, self._item.id, self._item.title, iface)
+
+    def handleDoubleClick(self) -> bool:  # QGIS API name
+        self._launch()
+        return True
+
+    def actions(self, parent: QgsDataItem) -> list:  # QGIS API name
+        from qgis.PyQt.QtWidgets import QAction  # type: ignore[import-not-found]
+
+        action = QAction("Open map in QGIS", parent)
+        action.triggered.connect(lambda _checked=False: self._launch())
+        return [action]
+
+
 class _MessageItem(QgsDataItem):
     """Static informational row in the tree. Not draggable, not
     expandable. Used for empty states + load errors.
@@ -1196,6 +1250,8 @@ def _make_item(
     # MapServer vs FeatureServer via the URL suffix.
     if t in ("service", "arcgis_service", "wms_service", "wfs_service"):
         return ServiceItem(parent, profile, item)
+    if t == "map":
+        return MapItem(parent, profile, item)
     # Generic display for every other type the portal returns. The
     # Browser tree shows them with a default icon; double-click goes
     # to the item-properties dialog instead of an add-to-canvas
