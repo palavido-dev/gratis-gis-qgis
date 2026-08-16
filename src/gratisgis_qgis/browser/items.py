@@ -240,6 +240,41 @@ class ConnectionItem(QgsDataCollectionItem):
         ]
 
 
+def sharing_action(
+    profile_name: str, item: ItemSummary, parent: object
+) -> object:
+    """The "Sharing..." context-menu QAction every portal leaf offers.
+
+    One builder rather than one per class, so the menu wording and the
+    fresh-profile rule cannot drift between item types. The profile is
+    read from the store at CLICK time, not captured at tree-build
+    time: the tree outlives sign-ins and sign-outs.
+    """
+    from qgis.PyQt.QtWidgets import QAction  # type: ignore[import-not-found]
+
+    action = QAction("Sharing...", parent)
+
+    def launch(_checked: bool = False) -> None:
+        from qgis.utils import iface  # type: ignore[import-not-found]
+
+        from ..ui.sharing_dialog import SharingDialog
+
+        profile = ConnectionStore().get(profile_name)
+        if profile is None or not profile.authcfg_id:
+            _log.info("sharing: not signed in to %r", profile_name)
+            return
+        SharingDialog(
+            profile,
+            item.id,
+            item.title,
+            item.access or "private",
+            iface.mainWindow() if iface else None,
+        ).exec()
+
+    action.triggered.connect(launch)
+    return action
+
+
 def _droppable_layer_id(mime_data: object) -> str | None:
     """The project layer id a drop resolves to, or None to refuse.
 
@@ -551,6 +586,9 @@ class DataLayerItem(QgsDataCollectionItem):
     def item(self) -> ItemSummary:
         return self._item
 
+    def actions(self, parent: QgsDataItem) -> list:  # QGIS API name
+        return [sharing_action(self._profile.name, self._item, parent)]
+
     def createChildren(self) -> list[QgsDataItem]:
         full = get_item(self._profile, self._item.id) or {}
         layers = _extract_v3_layers(full)
@@ -820,10 +858,14 @@ class TileLayerItem(QgsLayerItem):
             "wms",
         )
         self._item = item
+        self._profile_name = profile.name
 
     @property
     def item(self) -> ItemSummary:
         return self._item
+
+    def actions(self, parent: QgsDataItem) -> list:  # QGIS API name
+        return [sharing_action(self._profile_name, self._item, parent)]
 
     def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
         u = QgsMimeDataUtils.Uri()
@@ -929,10 +971,14 @@ class BasemapItem(QgsLayerItem):
             "wms",
         )
         self._item = item
+        self._profile_name = profile.name
 
     @property
     def item(self) -> ItemSummary:
         return self._item
+
+    def actions(self, parent: QgsDataItem) -> list:  # QGIS API name
+        return [sharing_action(self._profile_name, self._item, parent)]
 
     def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
         u = QgsMimeDataUtils.Uri()
@@ -989,6 +1035,9 @@ class ServiceItem(QgsDataCollectionItem):
     @property
     def item(self) -> ItemSummary:
         return self._item
+
+    def actions(self, parent: QgsDataItem) -> list:  # QGIS API name
+        return [sharing_action(self._profile.name, self._item, parent)]
 
     def createChildren(self) -> list[QgsDataItem]:
         full = get_item(self._profile, self._item.id) or {}
@@ -1167,7 +1216,11 @@ class GenericItem(QgsDataItem):
             f"gratisgis-item:/{profile.name}/{item.id}",
         )
         self._item = item
+        self._profile_name = profile.name
         self.setState(_POPULATED_STATE)
+
+    def actions(self, parent: QgsDataItem) -> list:  # QGIS API name
+        return [sharing_action(self._profile_name, self._item, parent)]
 
 
 class MapItem(QgsDataItem):
@@ -1221,7 +1274,7 @@ class MapItem(QgsDataItem):
 
         action = QAction("Open map in QGIS", parent)
         action.triggered.connect(lambda _checked=False: self._launch())
-        return [action]
+        return [action, sharing_action(self._profile_name, self._item, parent)]
 
 
 class _MessageItem(QgsDataItem):
