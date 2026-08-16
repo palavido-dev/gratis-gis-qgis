@@ -240,6 +240,48 @@ class ConnectionItem(QgsDataCollectionItem):
         ]
 
 
+def _droppable_layer_id(mime_data: object) -> str | None:
+    """The project layer id a drop resolves to, or None to refuse.
+
+    A drag from the Layers panel carries QGIS layer URIs whose
+    ``layerId`` names the project layer directly. A drag from
+    elsewhere in the Browser carries URIs without one; those match
+    back to a project layer by source. Only vector layers publish, so
+    everything else refuses and QGIS shows the no-drop cursor.
+    """
+    try:
+        uris = QgsMimeDataUtils.decodeUriList(mime_data)
+    except Exception:
+        _log.debug("undecodable drop", exc_info=True)
+        return None
+    for uri in uris or []:
+        layer_type = str(getattr(uri, "layerType", "") or "")
+        if layer_type not in ("", "vector"):
+            continue
+        layer_id = str(getattr(uri, "layerId", "") or "")
+        if layer_id:
+            return layer_id
+        source = str(getattr(uri, "uri", "") or "")
+        if not source:
+            continue
+        match = _project_vector_layer_by_source(source)
+        if match:
+            return match
+    return None
+
+
+def _project_vector_layer_by_source(source: str) -> str | None:
+    try:
+        from qgis.core import QgsProject  # type: ignore[import-not-found]
+
+        for layer in QgsProject.instance().mapLayers().values():
+            if layer.source() == source and hasattr(layer, "getFeatures"):
+                return str(layer.id())
+    except Exception:
+        _log.debug("project lookup failed for a drop", exc_info=True)
+    return None
+
+
 class BucketItem(QgsDataCollectionItem):
     """A per-scope folder under a connection. Lazily fetches the
     matching items the first time it expands.
@@ -268,6 +310,40 @@ class BucketItem(QgsDataCollectionItem):
         self._name = name
         self._kind = kind
         self.setCapabilitiesV2(_BROWSER_CAP_FERTILE)
+
+    # ----- drop-to-publish (My Content only) -----
+    #
+    # Dropping a local vector layer on My Content opens the publish
+    # dialog with that layer preselected. The gesture people try
+    # first, wired to the flow that already exists; the dialog still
+    # owns naming, access, and the actual upload.
+
+    def acceptDrop(self) -> bool:  # QGIS API name
+        return self._kind == BucketKind.MINE
+
+    def handleDrop(self, mime_data, _action) -> bool:  # QGIS API name
+        if self._kind != BucketKind.MINE:
+            return False
+        layer_id = _droppable_layer_id(mime_data)
+        if layer_id is None:
+            return False
+        # A drop event runs on the GUI thread, so opening the dialog
+        # here is exactly like opening it from the toolbar.
+        try:
+            from qgis.utils import iface  # type: ignore[import-not-found]
+
+            from ..ui.publish_vector_dialog import PublishLayerDialog
+
+            dlg = PublishLayerDialog(
+                iface,
+                iface.mainWindow() if iface else None,
+                preselect_layer_id=layer_id,
+            )
+            dlg.exec()
+        except Exception:
+            _log.exception("drop-to-publish failed to open the dialog")
+            return False
+        return True
 
     def createChildren(self) -> list[QgsDataItem]:
         # Bucket discriminator -> list-call shape. The portal's

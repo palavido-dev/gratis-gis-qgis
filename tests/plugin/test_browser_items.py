@@ -121,6 +121,10 @@ class _StubMimeUri:
 class _StubMimeDataUtils:
     Uri = _StubMimeUri
 
+    @staticmethod
+    def decodeUriList(_mime: Any) -> list[Any]:  # QGIS API name
+        return []
+
 
 class _StubQgsDataItemProvider:
     def __init__(self) -> None:
@@ -750,3 +754,85 @@ class TestMapItem:
         monkeypatch.setattr(child, "_launch", lambda: launched.append("go"))
         assert child.handleDoubleClick() is True
         assert launched == ["go"]
+
+
+class TestDropToPublish:
+    """Dropping a local layer on My Content opens publish, prefilled.
+
+    The decode half is what is testable without a real drag: which
+    drops resolve to a layer, which refuse, and that only the My
+    Content bucket accepts at all.
+    """
+
+    class _Uri:
+        def __init__(self, layer_type: str = "vector",
+                     layer_id: str = "", uri: str = "") -> None:
+            self.layerType = layer_type
+            self.layerId = layer_id
+            self.uri = uri
+
+    def _bucket(self, items_mod: ModuleType, kind: str) -> Any:
+        from gratisgis_qgis.settings import ConnectionStore
+
+        return items_mod.BucketItem(
+            None, ConnectionStore(), "demo", kind=kind
+        )
+
+    def test_only_my_content_accepts_drops(
+        self, items_mod: ModuleType
+    ) -> None:
+        """Publishing lands in My Content; a drop on Public would
+        promise a sharing outcome the dialog does not deliver."""
+        assert self._bucket(items_mod, items_mod.BucketKind.MINE).acceptDrop()
+        for kind in (items_mod.BucketKind.PUBLIC, items_mod.BucketKind.ORG,
+                     items_mod.BucketKind.SHARED):
+            assert not self._bucket(items_mod, kind).acceptDrop()
+
+    def test_a_layers_panel_drag_resolves_by_layer_id(
+        self, items_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod.QgsMimeDataUtils,
+            "decodeUriList",
+            staticmethod(lambda _m: [self._Uri(layer_id="lyr-42")]),
+        )
+        assert items_mod._droppable_layer_id(object()) == "lyr-42"
+
+    def test_a_raster_drag_is_refused(
+        self, items_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only vectors publish through this dialog; accepting the
+        drop and then erroring would be worse than the no-drop cursor."""
+        monkeypatch.setattr(
+            items_mod.QgsMimeDataUtils,
+            "decodeUriList",
+            staticmethod(
+                lambda _m: [self._Uri(layer_type="raster", layer_id="r-1")]
+            ),
+        )
+        assert items_mod._droppable_layer_id(object()) is None
+
+    def test_an_undecodable_drop_is_refused_quietly(
+        self, items_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            items_mod.QgsMimeDataUtils,
+            "decodeUriList",
+            staticmethod(
+                lambda _m: (_ for _ in ()).throw(RuntimeError("bad mime"))
+            ),
+        )
+        assert items_mod._droppable_layer_id(object()) is None
+
+    def test_a_drop_that_resolves_nothing_reports_unhandled(
+        self, items_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """handleDrop must return False so QGIS can tell the user the
+        drop did nothing, rather than swallowing it."""
+        monkeypatch.setattr(
+            items_mod.QgsMimeDataUtils,
+            "decodeUriList",
+            staticmethod(lambda _m: []),
+        )
+        bucket = self._bucket(items_mod, items_mod.BucketKind.MINE)
+        assert bucket.handleDrop(object(), None) is False

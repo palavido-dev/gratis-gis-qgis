@@ -828,6 +828,30 @@ def _run_checks() -> None:
     print("\n[12b] open a portal map against real bindings")
     _check_open_map()
 
+    print("\n[12c] drop-to-publish still has its QGIS seams")
+    # The drop path rides two APIs a stub cannot vouch for: the
+    # virtual acceptDrop/handleDrop pair on data items, and the mime
+    # decoder. If either leaves the API, the gesture dies silently.
+    from qgis.core import QgsDataItem as _QgsDataItem
+    from qgis.core import QgsMimeDataUtils as _MimeUtils
+
+    for name in ("acceptDrop", "handleDrop"):
+        check(
+            f"QgsDataItem.{name} exists on this build",
+            lambda n=name: _assert(
+                callable(getattr(_QgsDataItem, n, None)),
+                f"QgsDataItem.{n} is gone; drop-to-publish needs a "
+                "QgsDataItemGuiProvider port",
+            ),
+        )
+    check(
+        "QgsMimeDataUtils.decodeUriList exists",
+        lambda: _assert(
+            callable(getattr(_MimeUtils, "decodeUriList", None)),
+            "decodeUriList is gone",
+        ),
+    )
+
     print("\n[13] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
