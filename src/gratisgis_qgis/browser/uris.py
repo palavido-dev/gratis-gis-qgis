@@ -116,19 +116,20 @@ def tile_layer_xyz_uri(
     max_zoom: int = 18,
     extent: tuple[float, float, float, float] | None = None,
 ) -> str:
-    """Build the XYZ raster URI for a PMTiles-backed tile_layer item.
+    """Build the XYZ raster URI for a tile_layer item, whatever backs it.
 
-    PMTiles archives cannot be opened by GDAL when they hold raster
-    tiles (its PMTiles driver is vector only), so the portal unpacks
-    them server-side and serves individual tiles at
-    ``/api/tile-layer/:id/tiles/{z}/{x}/{y}.png``.
+    The portal serves individual tiles for every raster at
+    ``/api/tile-layer/:id/tiles/{z}/{x}/{y}.png`` (portal 0.9.27 and
+    newer), unrolling PMTiles archives and warping COGs server-side.
+    Which one backs an item is the portal's business; this builder does
+    not need to know.
 
-    XYZ is deliberately the right shape here rather than a GDAL source:
-    QGIS's XYZ tiles go through QNetworkRequest, which is exactly where
-    an ``authcfg`` is applied, so private and org layers authenticate
-    with no special handling. A GDAL source ignores authcfg entirely,
-    which is why COG layers need the separate header plumbing in
-    ``raster_auth``.
+    XYZ is deliberately the right shape rather than a GDAL source, and
+    not only for the auth: QGIS's XYZ tiles go through QNetworkRequest,
+    which is where an ``authcfg`` is applied, so private and org layers
+    authenticate with no special handling. A GDAL ``/vsicurl`` source
+    ignores authcfg entirely AND deadlocks QGIS during project load
+    (#24), which is why the plugin no longer builds one.
     """
     template = (
         f"{tile_layer_file_root(portal_url)}/{item_id}/tiles/{{z}}/{{x}}/{{y}}.png"
@@ -140,22 +141,18 @@ def tile_layer_xyz_uri(
 
 
 def tile_layer_cog_uri(portal_url: str, item_id: str) -> str:
-    """Build a GDAL raster URI for a COG-backed tile_layer item.
+    """The LEGACY ``/vsicurl`` source shape. Nothing builds it any more.
 
-    tile_layer items are RASTERS (a Cloud Optimized GeoTIFF or a
-    PMTiles archive), not the portal's vector tiles. The portal's own
-    web map reads them through a ``cog://`` MapLibre protocol handler,
-    which is a browser-side invention QGIS knows nothing about; handing
-    QGIS that string produces a layer that silently draws nothing.
+    Plugin versions up to 0.10.x added COG-backed rasters this way, so
+    the shape survives in saved projects and on canvases, and two
+    things still have to recognise it: ``parse_tile_layer_uri`` (so
+    publish-as-map does not report such a layer as an unpublishable
+    local file) and ``scripts/repair_project.py`` (which rewrites it
+    to the tile route, because a project holding one deadlocks QGIS on
+    open, #24). The builder is kept so their tests construct the exact
+    string the old plugin wrote rather than a hand-typed guess of it.
 
-    The portable equivalent is GDAL's ``/vsicurl/``: the endpoint
-    supports range requests (verified: HTTP 206 with Content-Range), so
-    GDAL reads a COG's overviews and only the tiles it needs rather
-    than the whole file. Private and org items additionally need an
-    Authorization header, which does NOT travel through QGIS's authcfg
-    for GDAL sources (authcfg is applied by QNetworkRequest-based
-    providers; /vsicurl uses libcurl directly). ``raster_auth`` handles
-    that with a path-scoped GDAL option.
+    Do not wire this into any layer-creation path.
     """
     return f"/vsicurl/{tile_layer_file_root(portal_url)}/{item_id}/file.cog"
 

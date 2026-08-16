@@ -224,44 +224,6 @@ def store_api_header_authcfg(
     return stored
 
 
-def read_api_header(authcfg_id: str) -> tuple[str, str] | None:
-    """Read back one stored API Header entry as (name, value).
-
-    Needed because GDAL raster sources cannot use an authcfg at all:
-    QGIS applies auth methods to QNetworkRequest, and ``/vsicurl``
-    goes through libcurl inside GDAL, so the credential has to be
-    handed to GDAL directly (see ``raster_auth``). Reading it back
-    keeps the auth database the single place the token is stored.
-
-    Returns None when the entry is missing, empty, or the auth
-    database is locked (QGIS prompts for the master password on first
-    access; if the user dismisses that, this degrades to no header
-    rather than raising into a Browser-tree refresh).
-    """
-    if not authcfg_id:
-        return None
-    try:
-        from qgis.core import (  # type: ignore[import-not-found]
-            QgsApplication,
-            QgsAuthMethodConfig,
-        )
-
-        cfg = QgsAuthMethodConfig()
-        ok = QgsApplication.authManager().loadAuthenticationConfig(
-            authcfg_id, cfg, True
-        )
-        if not ok or not cfg.isValid():
-            return None
-        for header in cfg.configMap():
-            value = cfg.config(header)
-            if value:
-                return (header, value)
-        return None
-    except Exception:
-        _log.exception("Could not read API Header authcfg %s", authcfg_id)
-        return None
-
-
 #: What a signed-out API Header authcfg carries instead of a credential.
 #:
 #: Not an empty config map: QGIS treats a config with nothing in it as
