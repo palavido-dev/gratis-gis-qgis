@@ -48,6 +48,7 @@ class GratisGISPlugin(QObject):
         self._iface = iface
         self._actions: list[QAction] = []
         self._browser_provider: QgsDataItemProvider | None = None
+        self._processing_provider: object | None = None
         self._search_dock: GratisGISSearchDock | None = None
         self._toolbar = None
         # Typed as object so the annotation needs no QGIS-only import
@@ -124,6 +125,21 @@ class GratisGISPlugin(QObject):
         self._browser_provider = GratisGISDataItemProvider()
         QgsApplication.dataItemProviderRegistry().addProvider(self._browser_provider)
 
+        # Processing provider: publish and clone as algorithms, which
+        # is what makes them batchable and Model Designer material.
+        # Guarded because a build without Processing (or an import
+        # error inside it) must cost the algorithms, not the plugin.
+        try:
+            from .processing import GratisGISProcessingProvider
+
+            self._processing_provider = GratisGISProcessingProvider()
+            QgsApplication.processingRegistry().addProvider(
+                self._processing_provider
+            )
+        except Exception:
+            self._processing_provider = None
+            _log.exception("Processing provider could not be registered")
+
         # Portal layers carry their real extent in the layer URI, but a
         # tiled layer reports the whole world until something applies
         # it. Listening on the project catches every route a layer can
@@ -186,6 +202,14 @@ class GratisGISPlugin(QObject):
         if self._browser_provider is not None:
             QgsApplication.dataItemProviderRegistry().removeProvider(self._browser_provider)
             self._browser_provider = None
+        if getattr(self, "_processing_provider", None) is not None:
+            try:
+                QgsApplication.processingRegistry().removeProvider(
+                    self._processing_provider
+                )
+            except Exception:  # pragma: no cover - defensive
+                _log.exception("Processing provider removal failed")
+            self._processing_provider = None
         if self._extent_applier is not None:
             # Must disconnect: a reload would otherwise leave this
             # instance's slot bound to a module the reload replaced.

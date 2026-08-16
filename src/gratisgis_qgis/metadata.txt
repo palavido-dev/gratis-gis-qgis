@@ -16,6 +16,6 @@ homepage=https://gratisgis.org
 category=Web
 tags=gratisgis,portal,gis,arcgis alternative,postgis,oauth,publishing
 changelog=0.12.0 (2026-08-16) - GratisGIS brand icon and a custom toolbar icon set in the portal's palette. 0.11.0 (2026-08-15) - Opening a project with a portal raster no longer freezes QGIS: all portal rasters now draw as map tiles (needs GratisGIS portal 0.9.27+), and scripts/repair_project.py fixes projects saved by older versions. Signing in or out now also applies to layers already on the canvas. 0.9.x - sign-out fixes (layers stopped drawing, credentials cleared properly), safer clone overwrite, split-feature sync fix, publish and search extracted and tested. 0.2.0 - first zip that installs on stock QGIS; background tasks with progress and cancel; private layers render via a portal API key. Full history in CHANGELOG.md.
-hasProcessingProvider=False
+hasProcessingProvider=True
 server=False
 supportsQt6=True

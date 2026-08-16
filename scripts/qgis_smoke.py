@@ -852,6 +852,51 @@ def _run_checks() -> None:
         ),
     )
 
+    print("\n[12d] Processing provider against the real registry")
+    # The provider and algorithms inherit Processing base classes that
+    # only exist here. Registration is the crash surface: a bad
+    # parameter definition or a missing virtual aborts addProvider.
+    from qgis.core import QgsApplication as _QgsApp2
+
+    from gratisgis_qgis.processing import GratisGISProcessingProvider
+    from gratisgis_qgis.processing.provider import (
+        CloneLayerAlgorithm,
+        PublishVectorLayerAlgorithm,
+    )
+
+    check("construct PublishVectorLayerAlgorithm", PublishVectorLayerAlgorithm)
+    check("construct CloneLayerAlgorithm", CloneLayerAlgorithm)
+    provider2 = check("construct the provider", GratisGISProcessingProvider)
+    if provider2 is not None:
+        registry = _QgsApp2.processingRegistry()
+        check(
+            "register with the real Processing registry",
+            lambda: _assert(
+                registry.addProvider(provider2),
+                "addProvider returned False",
+            ),
+        )
+        try:
+            algs = provider2.algorithms()
+            check(
+                "both algorithms loaded",
+                lambda: _assert(
+                    sorted(a.name() for a in algs)
+                    == ["clonelayer", "publishvectorlayer"],
+                    f"algorithms: {[a.name() for a in algs]!r}",
+                ),
+            )
+            for alg in algs:
+                check(
+                    f"algorithm {alg.name()} declares its parameters",
+                    lambda a=alg: _assert(
+                        len(a.parameterDefinitions()) >= 3,
+                        f"{a.name()} has {len(a.parameterDefinitions())} params",
+                    ),
+                )
+        finally:
+            registry.removeProvider(provider2.id())
+
     print("\n[13] auth: the API Header method private layers depend on")
     from gratisgis_qgis.auth_bridge import find_api_header_method
 
