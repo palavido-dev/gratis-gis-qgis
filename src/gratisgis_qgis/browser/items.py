@@ -49,6 +49,7 @@ from .buckets import (
     all_buckets,
     filter_for_bucket,
     is_qgis_consumable,
+    item_tooltip,
 )
 from .uris import (
     authed_vector_tile_uri,
@@ -1247,7 +1248,9 @@ class MapItem(QgsDataItem):
         )
         self._profile_name = profile.name
         self._item = item
-        self.setToolTip("Map. Double-click to open it in QGIS.")
+        self.setToolTip(
+            item_tooltip(item, "Double-click to open this map in QGIS.")
+        )
         self.setState(_POPULATED_STATE)
 
     def _launch(self) -> None:
@@ -1321,6 +1324,22 @@ def _make_item(
     # Normalize hyphens to underscores so a single comparison
     # handles both shapes.
     t = (item.type or "").replace("-", "_")
+    node = _routed_item(parent, profile, item, t)
+    # One tooltip rule for the whole tree: leaves that set their own
+    # (the map's double-click hint, an unready tile layer's reason)
+    # keep it; everything else gets the metadata card. hasattr guard
+    # because _make_item also returns None for hidden types.
+    if node is not None and hasattr(node, "toolTip") and not node.toolTip():
+        node.setToolTip(item_tooltip(item))
+    return node
+
+
+def _routed_item(
+    parent: QgsDataItem,
+    profile: ConnectionProfile,
+    item: ItemSummary,
+    t: str,
+) -> QgsDataItem | None:
     if t == "data_layer":
         return DataLayerItem(parent, profile, item)
     if t == "tile_layer":

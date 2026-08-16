@@ -7,6 +7,48 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.13.0] - 2026-08-16
+
+### Added
+
+- **Open a portal map in QGIS.** Double-click a map in the Browser
+  panel (or right-click it and choose Open map in QGIS) and the whole
+  map opens: its layers in order, its groups as QGIS groups, its
+  basemap underneath, and the view set to where the map was looking.
+  Portal styling comes along, including one-color-per-value and
+  class-break coloring, so the map arrives looking like itself.
+  Anything that cannot be opened in QGIS says so afterwards, by name,
+  with a reason in plain words.
+
+- **Published maps keep your QGIS styling.** Publishing a project as
+  a map now carries each layer's colors to the portal: single-symbol,
+  categorized, and graduated renderers all translate. Together with
+  the map opening above, styling now survives the round trip.
+
+- **Drag a layer onto My Content to publish it.** Dropping a vector
+  layer from the Layers panel onto a connection's My Content in the
+  Browser opens the publish window with that layer already picked.
+
+- **Sharing without leaving QGIS.** Right-click any portal item in
+  the Browser and choose Sharing... to switch it between Only me, My
+  organization, and Everyone. The portal still enforces who may
+  change what; the plugin just stops that being a trip to the website.
+
+- **A GratisGIS section in the Processing Toolbox.** Two algorithms:
+  Publish vector layer to GratisGIS (waits for the portal to finish
+  and returns the new item id) and Clone GratisGIS layer for offline
+  use (item id in, ready GeoPackage out). Both work in batch mode and
+  in Model Designer, so "publish this folder of shapefiles" is now
+  one batch run.
+
+- **Hover cards in the Browser.** Hovering a portal item now shows
+  what it is, who can see it, when it last changed, and its item id,
+  which is the id the clone algorithm asks for.
+
+- **A first-run hint.** The connections window now says what to do
+  when it is empty, with an example address, instead of showing a
+  blank list and grey buttons.
+
 ## [0.12.0] - 2026-08-16
 
 ### Changed

@@ -128,3 +128,53 @@ def test_shared_with_caller_id_works_without_private_items() -> None:
     ]
     out = filter_for_bucket(items, BucketKind.SHARED, caller_id="matt")
     assert {i.title for i in out} == {"other"}
+
+
+class TestItemTooltip:
+    """The hover card: metadata, not mystery (and never a fetch)."""
+
+    def test_it_names_kind_audience_date_and_id(self) -> None:
+        from gratisgis_qgis.browser.buckets import item_tooltip
+
+        text = item_tooltip(
+            _item(id="i-1", title="Parcels", access="org", owner="u1")
+        )
+        assert "Data layer" in text
+        assert "My organization" in text
+        assert "Updated 2026-" in text
+        assert "Item id: " in text, (
+            "the clone Processing algorithm takes an item id; the "
+            "tooltip is where you copy it from"
+        )
+
+    def test_a_leafs_own_lead_line_comes_first(self) -> None:
+        from gratisgis_qgis.browser.buckets import item_tooltip
+
+        text = item_tooltip(
+            _item(id="i-2", title="WV", access="private", owner="u1",
+                  type="map"),
+            "Double-click to open.",
+        )
+        assert text.splitlines()[0] == "Double-click to open."
+        assert "Map" in text
+
+    def test_an_unknown_type_reads_as_words(self) -> None:
+        from gratisgis_qgis.browser.buckets import item_tooltip
+
+        text = item_tooltip(
+            _item(id="i-3", title="X", access="private", owner="u1",
+                  type="widget_package")
+        )
+        assert "Widget package" in text
+
+    def test_the_access_labels_agree_with_the_sharing_dialog(self) -> None:
+        """Two surfaces name the same audiences; drift here would show
+        one wording on hover and another in the dialog."""
+        from gratisgis_qgis.browser.buckets import ACCESS_LABELS
+
+        labels = {
+            "private": "Only me",
+            "org": "My organization",
+            "public": "Everyone",
+        }
+        assert labels == ACCESS_LABELS

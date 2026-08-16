@@ -13,6 +13,7 @@ four buckets the user sees, based on access + ownership.
 """
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable
 
 from gratisgis_client.models.item import ItemSummary
@@ -160,3 +161,59 @@ def _infer_caller_id(items: list[ItemSummary]) -> str | None:
     # max() with a tie-breaker (newer items_first) avoids
     # nondeterministic results across runs.
     return max(counts.keys(), key=lambda oid: counts[oid])
+
+
+#: Plain words for the access values, shared vocabulary with the
+#: sharing dialog (a test pins the two against each other).
+ACCESS_LABELS: dict[str, str] = {
+    "private": "Only me",
+    "org": "My organization",
+    "public": "Everyone",
+}
+
+#: Plain words for the item types a tooltip names. Anything absent
+#: falls back to a tidied version of the raw type, so a new portal
+#: type reads as words rather than an identifier.
+_TYPE_LABELS: dict[str, str] = {
+    "data_layer": "Data layer",
+    "tile_layer": "Tile layer",
+    "map": "Map",
+    "basemap": "Basemap",
+    "service": "Connected service",
+    "arcgis_service": "Connected service",
+    "wms_service": "Connected service",
+    "wfs_service": "Connected service",
+    "web_app": "Web app",
+    "form": "Form",
+    "geo_boundary": "Boundary",
+    "pick_list": "Pick list",
+    "derived_layer": "Derived layer",
+}
+
+
+def item_tooltip(item: ItemSummary, first_line: str = "") -> str:
+    """The Browser-tree tooltip for one item, metadata not mystery.
+
+    What someone hovering actually wants to know: what kind of thing
+    this is, who can see it, when it last changed, and the id (which
+    the clone Processing algorithm takes as input, so the tooltip is
+    where you copy it from). ``first_line`` lets a leaf keep its own
+    lead sentence, like the map item's double-click hint.
+
+    Deliberately text-only. Thumbnails would mean a network fetch per
+    hovered row on the Browser thread, and slow trees are how this
+    plugin's worst bug started.
+    """
+    kind = (item.type or "").replace("-", "_")
+    label = _TYPE_LABELS.get(kind) or kind.replace("_", " ").capitalize()
+    lines = [first_line] if first_line else []
+    lines.append(label)
+    access_label = ACCESS_LABELS.get(item.access or "")
+    if access_label:
+        lines.append(f"Shared with: {access_label}")
+    updated = getattr(item, "updated_at", None)
+    if updated is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            lines.append(f"Updated {updated:%Y-%m-%d}")
+    lines.append(f"Item id: {item.id}")
+    return "\n".join(lines)

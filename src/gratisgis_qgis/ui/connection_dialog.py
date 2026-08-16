@@ -113,6 +113,17 @@ class ConnectionManagerDialog(QDialog):
         row.addLayout(side, stretch=1)
         outer.addLayout(row)
 
+        # First-run hint. A fresh install opens this dialog to an
+        # empty list and a row of grey buttons; the hint is the one
+        # sentence that turns that into a next step. Hidden the moment
+        # a connection exists.
+        self._hint = QLabel(
+            "No portals yet. Click New... and enter your portal's web "
+            "address, for example https://gratisgis.org"
+        )
+        self._hint.setWordWrap(True)
+        outer.addWidget(self._hint)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
@@ -130,6 +141,8 @@ class ConnectionManagerDialog(QDialog):
             if profile.authcfg_id:
                 label = f"{label}  [signed in]"
             self._list.addItem(label)
+        if hasattr(self, "_hint"):
+            self._hint.setVisible(self._list.count() == 0)
         self._update_button_state()
 
     def _selected_name(self) -> str | None:
