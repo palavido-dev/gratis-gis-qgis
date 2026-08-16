@@ -756,38 +756,72 @@ def _run_checks() -> None:
         shutil.rmtree(raster_dir, ignore_errors=True)
 
     print("\n[12] every toolbar icon still resolves")
-    # Theme icon names are not API. A renamed one yields a null icon,
-    # which ships as an invisible toolbar button rather than an error,
-    # so the only way to know is to ask a real QGIS.
+    # The toolbar uses the plugin's own branded SVGs, each backed by a
+    # QGIS theme icon as its fallback. Both halves are checked: a
+    # bundled file that is missing or unloadable ships as a stock
+    # button (wrong look), and a retired theme name would make that
+    # degradation a BLANK button. Only a real QGIS can answer either.
     import re as _re
 
     from qgis.core import QgsApplication
+    from qgis.PyQt.QtGui import QIcon
 
     from gratisgis_qgis import plugin as plugin_mod
 
+    plugin_dir = os.path.dirname(os.path.abspath(plugin_mod.__file__))
     with open(plugin_mod.__file__, encoding="utf-8") as fh:
         source = fh.read()
-    icon_names = _re.findall(r'"(/m[A-Za-z0-9]+\.svg|/search\.svg)"', source)
+    brand_names = [
+        n for n in _re.findall(r'"([a-z-]+\.svg)"', source)
+        # icon.svg is the plugin logo, loaded by a different helper
+        # and checked separately below.
+        if n != "icon.svg"
+    ]
+    theme_names = _re.findall(r'"(/m[A-Za-z0-9]+\.svg|/search\.svg)"', source)
     check(
-        "the toolbar names some icons at all",
+        "the toolbar names six branded icons",
         lambda: _assert(
-            len(icon_names) >= 6,
-            f"expected at least 6 icon names, found {icon_names!r}",
+            len(brand_names) == 6,
+            f"expected 6 brand icon names, found {brand_names!r}",
         ),
     )
-    for icon_name in icon_names:
+    for name in brand_names:
+        path = os.path.join(plugin_dir, "resources", "icons", name)
         check(
-            f"theme icon {icon_name}",
-            lambda n=icon_name: _assert(
-                not QgsApplication.getThemeIcon(n).isNull(),
-                f"QGIS has no theme icon named {n}; the button would be blank",
+            f"brand icon {name} is bundled",
+            lambda p=path, n=name: _assert(
+                os.path.isfile(p), f"resources/icons/{n} is not in the package"
+            ),
+        )
+        check(
+            f"brand icon {name} loads",
+            lambda p=path, n=name: _assert(
+                not QIcon(p).pixmap(24, 24).isNull(),
+                f"{n} exists but renders to a null pixmap",
             ),
         )
     check(
-        "the icons are not all the same one",
+        "the brand icons are not all the same one",
         lambda: _assert(
-            len(set(icon_names)) == len(icon_names),
-            f"duplicate icons would make the buttons indistinguishable: {icon_names!r}",
+            len(set(brand_names)) == len(brand_names),
+            f"duplicate icons would make the buttons indistinguishable: {brand_names!r}",
+        ),
+    )
+    for icon_name in theme_names:
+        check(
+            f"fallback theme icon {icon_name}",
+            lambda n=icon_name: _assert(
+                not QgsApplication.getThemeIcon(n).isNull(),
+                f"QGIS has no theme icon named {n}; the fallback would be blank",
+            ),
+        )
+    check(
+        "the plugin logo is the portal mark and loads",
+        lambda: _assert(
+            not QIcon(
+                os.path.join(plugin_dir, "resources", "icon.svg")
+            ).pixmap(24, 24).isNull(),
+            "resources/icon.svg renders to a null pixmap",
         ),
     )
 
@@ -1194,10 +1228,31 @@ def _check_signed_out_authcfg() -> None:
         SIGNED_OUT_HEADER,
         clear_api_header_credential,
         find_api_header_method,
-        read_api_header,
         remove_authcfg,
         store_api_header_authcfg,
     )
+
+    def read_api_header(cfg_id: str) -> tuple[str, str] | None:
+        """Read back one stored API Header entry as (name, value).
+
+        Local to the smoke test on purpose: production code stopped
+        reading headers back when the GDAL path was removed, so the
+        plugin-side helper was deleted as dead code, but THIS check
+        still has to observe what a real auth manager stored.
+        """
+        from qgis.core import QgsApplication, QgsAuthMethodConfig
+
+        cfg = QgsAuthMethodConfig()
+        ok = QgsApplication.authManager().loadAuthenticationConfig(
+            cfg_id, cfg, True
+        )
+        if not ok or not cfg.isValid():
+            return None
+        for header in cfg.configMap():
+            value = cfg.config(header)
+            if value:
+                return (header, value)
+        return None
 
     method = find_api_header_method()
     if method is None:

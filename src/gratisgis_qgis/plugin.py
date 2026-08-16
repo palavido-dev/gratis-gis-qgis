@@ -79,28 +79,39 @@ class GratisGISPlugin(QObject):
         # on it. The separators group those three phases.
         #
         # A distinct icon each, because six copies of the plugin logo
-        # is a row of identical buttons and no toolbar at all. They are
-        # QGIS's own, so they read the way the rest of QGIS reads and
-        # follow the user's theme, including Night Mapping.
-        for label, handler, icon_name in (
+        # is a row of identical buttons and no toolbar at all. The
+        # icons are the plugin's own, drawn in the portal's palette so
+        # the toolbar reads as GratisGIS rather than as six borrowed
+        # QGIS buttons. The trade, accepted deliberately: unlike theme
+        # icons they do not recolor under Night Mapping. Each carries a
+        # theme-icon name as its fallback so a file missing from a
+        # stripped install degrades to a visible stock button, never a
+        # blank one.
+        for label, handler, brand_name, theme_name in (
             ("Manage GratisGIS connections...", self._on_manage_connections,
-             "/mIconConnect.svg"),
-            ("Open GratisGIS search...", self._on_open_search, "/search.svg"),
-            (None, None, None),
+             "connect.svg", "/mIconConnect.svg"),
+            ("Open GratisGIS search...", self._on_open_search,
+             "search.svg", "/search.svg"),
+            (None, None, None, None),
             ("Publish layer to GratisGIS...", self._on_publish_vector,
-             "/mActionSharingExport.svg"),
+             "publish-layer.svg", "/mActionSharingExport.svg"),
             ("Publish current project as GratisGIS map...",
-             self._on_publish_project, "/mActionSaveMapAsImage.svg"),
-            (None, None, None),
+             self._on_publish_project,
+             "publish-map.svg", "/mActionSaveMapAsImage.svg"),
+            (None, None, None, None),
             ("Clone layer for offline use...", self._on_clone_offline,
-             "/mActionDuplicateLayer.svg"),
+             "clone.svg", "/mActionDuplicateLayer.svg"),
             ("Sync layer with GratisGIS...", self._on_push_edits,
-             "/mActionRefresh.svg"),
+             "sync.svg", "/mActionRefresh.svg"),
         ):
             if label is None:
                 self._toolbar.addSeparator()
                 continue
-            self._add_action(_theme_icon(icon_name, icon), label, handler)
+            self._add_action(
+                _brand_icon(brand_name, _theme_icon(theme_name, icon)),
+                label,
+                handler,
+            )
 
         # Phase 1: register the Browser-panel data item provider so
         # configured connections show up as a "GratisGIS" subtree
@@ -256,6 +267,28 @@ class GratisGISPlugin(QObject):
 
         dlg = CloneToGeoPackageDialog(self._iface, self._iface.mainWindow())
         dlg.exec()
+
+
+def _brand_icon(filename: str, fallback: QIcon) -> QIcon:
+    """One of the plugin's own toolbar icons, or the fallback.
+
+    The set lives in ``resources/icons/`` and is drawn in the portal's
+    palette (deep sage + tan on a 24 grid) so the toolbar reads as
+    GratisGIS. The fallback is the matching QGIS theme icon, so an
+    icon missing from a stripped install degrades to a visible stock
+    button rather than a blank one; the smoke test asserts every
+    bundled file exists and loads, so the fallback stays theoretical.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    svg_path = os.path.join(here, "resources", "icons", filename)
+    if not os.path.isfile(svg_path):
+        _log.info("brand icon %s is missing; using the theme icon", filename)
+        return fallback
+    icon = QIcon(svg_path)
+    if icon.isNull():  # pragma: no cover - defensive
+        _log.info("brand icon %s did not load; using the theme icon", filename)
+        return fallback
+    return icon
 
 
 def _theme_icon(name: str, fallback: QIcon) -> QIcon:

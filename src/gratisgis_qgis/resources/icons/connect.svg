@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Manage connections: two chain links, the far one in tan.
+     House toolbar set: 24 grid, 1.8 stroke, round caps, deep sage
+     #5c6b58 primary + tan #c2a26e accent, transparent ground. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+  <path stroke="#c2a26e" d="M14.5 7H17a5 5 0 0 1 0 10h-2.5"/>
+  <path stroke="#5c6b58" d="M9.5 17H7A5 5 0 0 1 7 7h2.5"/>
+  <line stroke="#5c6b58" x1="8.5" y1="12" x2="15.5" y2="12"/>
+</svg>

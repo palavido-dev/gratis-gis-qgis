@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Clone for offline: a copy taken downward; the original sits
+     behind in tan, the local copy in sage with a down arrow. Same
+     grid and palette as the rest of the set. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+  <path stroke="#c2a26e" d="M5 15V6a2 2 0 0 1 2-2h9"/>
+  <rect stroke="#5c6b58" x="9" y="8" width="11.5" height="12" rx="2"/>
+  <line stroke="#5c6b58" x1="14.75" y1="11.2" x2="14.75" y2="16.4"/>
+  <path stroke="#5c6b58" d="M12.6 14.4l2.15 2.15 2.15-2.15"/>
+</svg>

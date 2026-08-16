@@ -7,6 +7,22 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.12.0] - 2026-08-16
+
+### Changed
+
+- **The plugin now looks like GratisGIS.** The Plugin Manager and
+  Plugins menu show the portal's own mark (the sage G) instead of the
+  old placeholder pin, and the six toolbar buttons use a custom icon
+  set drawn in the portal's palette: deep sage with a tan accent, one
+  consistent grid and stroke across the set, with a light contour
+  motif carried over from the portal's branding.
+
+  Each toolbar icon keeps a stock QGIS icon as its fallback, so a
+  broken install shows a recognizable button rather than a blank one.
+  One trade-off: unlike stock icons, the set does not recolor under
+  QGIS's Night Mapping theme.
+
 ## [0.11.0] - 2026-08-15
 
 Needs GratisGIS portal 0.9.27 or newer.

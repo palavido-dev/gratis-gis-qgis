@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Sync with the portal: two half-circle arrows, up in sage, back
+     down in tan. Same grid and palette as the rest of the set. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+  <path stroke="#5c6b58" d="M4.3 10.2A8 8 0 0 1 18.6 6.5L20.5 8.7"/>
+  <path stroke="#5c6b58" d="M20.5 3.9v4.8h-4.8"/>
+  <path stroke="#c2a26e" d="M19.7 13.8A8 8 0 0 1 5.4 17.5L3.5 15.3"/>
+  <path stroke="#c2a26e" d="M3.5 20.1v-4.8h4.8"/>
+</svg>

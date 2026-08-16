@@ -310,6 +310,94 @@ class TestUnloadGivesEverythingBack:
         plugin.unload()
 
 
+class TestBrandIcons:
+    """The plugin's own toolbar icons, and the discipline of the set.
+
+    The look itself needs eyes, but two properties are checkable: the
+    files the toolbar names actually ship, and the set stays a SET.
+    One icon drawn on a different grid or in different colours reads
+    as a bug in a toolbar, and nothing else would catch it.
+    """
+
+    NAMES = (
+        "connect.svg", "search.svg", "publish-layer.svg",
+        "publish-map.svg", "clone.svg", "sync.svg",
+    )
+    BRAND_STROKES = frozenset({"#5c6b58", "#c2a26e"})
+
+    def _icons_dir(self) -> Any:
+        from pathlib import Path
+
+        import gratisgis_qgis
+
+        return Path(gratisgis_qgis.__file__).parent / "resources" / "icons"
+
+    def test_every_icon_the_toolbar_names_is_bundled(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        """A missing file degrades to a stock button, silently."""
+        import re
+        from pathlib import Path
+
+        assert plugin_mod.__file__ is not None
+        source = Path(plugin_mod.__file__).read_text(encoding="utf-8")
+        named = set(re.findall(r'"([a-z-]+\.svg)"', source))
+        # icon.svg is the plugin logo, loaded by a different helper.
+        named.discard("icon.svg")
+        assert named == set(self.NAMES)
+        for name in self.NAMES:
+            assert (self._icons_dir() / name).is_file(), name
+
+    def test_the_set_shares_one_grid_and_one_palette(self) -> None:
+        """What makes six drawings a set rather than six icons.
+
+        Every file is on the 24 grid and strokes only in the two brand
+        colours. A third colour or a different viewBox is how a later
+        icon quietly stops matching, and no other check would say so.
+        """
+        for name in self.NAMES:
+            svg = (self._icons_dir() / name).read_text(encoding="utf-8")
+            assert 'viewBox="0 0 24 24"' in svg, name
+            import re
+
+            strokes = set(re.findall(r'stroke="(#[0-9a-fA-F]{6})"', svg))
+            assert strokes, f"{name} has no stroked geometry"
+            assert strokes <= self.BRAND_STROKES, (
+                f"{name} strays from the brand palette: {strokes}"
+            )
+
+    def test_the_plugin_logo_is_the_portal_mark(self) -> None:
+        """The mark is a copy; this pins what makes it the SAME mark.
+
+        The sage ground and the G stroke are the recognisable parts.
+        If the portal rebrands, apps/portal-web/public/icon.svg gets
+        re-copied here and these constants move with it.
+        """
+        from pathlib import Path
+
+        import gratisgis_qgis
+
+        svg = (
+            Path(gratisgis_qgis.__file__).parent / "resources" / "icon.svg"
+        ).read_text(encoding="utf-8")
+        assert 'fill="#5c6b58"' in svg, "the sage ground is gone"
+        assert "M272 88" in svg, "the G stroke is not the portal's"
+
+    def test_a_bundled_icon_is_preferred_over_the_fallback(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        fallback = _Icon()
+        got = plugin_mod._brand_icon("connect.svg", fallback)
+        assert got is not fallback
+        assert got.path.endswith("connect.svg")
+
+    def test_a_missing_file_falls_back_to_the_theme_icon(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        fallback = _Icon()
+        assert plugin_mod._brand_icon("gone.svg", fallback) is fallback
+
+
 class TestThemeIcons:
     def test_a_missing_theme_icon_falls_back_instead_of_vanishing(
         self, plugin_mod: ModuleType

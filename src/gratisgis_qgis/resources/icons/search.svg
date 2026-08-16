@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Portal search: magnifier over two tan contour lines (the brand's
+     contour motif). Same grid and palette as the rest of the set. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+  <circle stroke="#5c6b58" cx="10.5" cy="10.5" r="6"/>
+  <line stroke="#5c6b58" x1="15.2" y1="15.2" x2="20.5" y2="20.5"/>
+  <path stroke="#c2a26e" stroke-width="1.5" d="M7.6 9.4c1.2-1.1 4.6-1.1 5.8 0"/>
+  <path stroke="#c2a26e" stroke-width="1.5" d="M8.4 12.3c0.9-0.8 3.3-0.8 4.2 0"/>
+</svg>
