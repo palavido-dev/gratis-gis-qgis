@@ -556,12 +556,11 @@ class TestAddWithAttributes:
         iface.layerTreeView = (  # type: ignore[attr-defined]
             lambda: SimpleNamespace(currentLayer=lambda: layer)
         )
-        iface.addVectorLayer = (  # type: ignore[attr-defined]
-            lambda uri, label, provider: added.append(
-                (uri, label, provider)
-            )
-            or SimpleNamespace(isValid=lambda: True)
-        )
+        def add_vector_layer(uri: str, label: str, provider: str) -> Any:
+            added.append((uri, label, provider))
+            return SimpleNamespace(isValid=lambda: True)
+
+        iface.addVectorLayer = add_vector_layer  # type: ignore[attr-defined]
         iface.messageBar = (  # type: ignore[attr-defined]
             lambda: SimpleNamespace(
                 pushWarning=lambda _t, msg: warned.append(msg)
