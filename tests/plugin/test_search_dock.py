@@ -402,3 +402,38 @@ class TestSearchPreconditions:
         dock._on_search()
         assert dock.scheduled == []
         assert "sign" in dock._status.text.lower()
+
+
+class TestMapDoubleClick:
+    """A map in the results opens the whole stack, not a single layer.
+
+    Routed before leaf resolution, which only knows how to add one
+    layer and would otherwise show the map's tooltip in a message box.
+    """
+
+    def test_a_map_row_launches_the_open_flow(
+        self, mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launched: list[tuple[str, str]] = []
+        import gratisgis_qgis.open_map as open_map_mod
+
+        monkeypatch.setattr(
+            open_map_mod,
+            "launch_open_map",
+            lambda _p, item_id, title, _i: launched.append((item_id, title)),
+        )
+        resolved: list[Any] = []
+        monkeypatch.setattr(
+            mod, "run_in_task", lambda *a, **k: resolved.append(a)
+        )
+        profile = SimpleNamespace(name="demo")
+        dock = mod.GratisGISSearchDock.__new__(mod.GratisGISSearchDock)
+        dock._store = SimpleNamespace(get=lambda _n: profile)
+        dock._connection_combo = SimpleNamespace(currentData=lambda: "demo")
+        dock._iface = SimpleNamespace()
+
+        payload = _item(id="map-7", type="map", title="WV overview").to_api_dict()
+        row = SimpleNamespace(data=lambda _role: payload)
+        dock._on_double_click(row)
+        assert launched == [("map-7", "WV overview")]
+        assert not resolved, "no leaf resolution task for a map"

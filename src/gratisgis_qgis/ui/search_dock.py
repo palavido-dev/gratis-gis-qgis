@@ -59,6 +59,7 @@ _log = get_logger(__name__)
 # results would be a footgun.
 _TYPE_FILTERS: list[tuple[str, ItemType | None]] = [
     ("Any type", None),
+    ("Map", "map"),
     ("Data layer", "data_layer"),
     ("Derived layer", "derived_layer"),
     ("Tile layer", "tile_layer"),
@@ -254,6 +255,16 @@ class GratisGISSearchDock(QDockWidget):
             return
         profile = self._store.get(profile_name)
         if profile is None:
+            return
+
+        # A map is not one layer; double-click opens the whole stack,
+        # the same flow the Browser tree runs (#23). Routed before the
+        # leaf resolution below, which only knows how to add single
+        # layers.
+        if (summary.type or "").replace("-", "_") == "map":
+            from ..open_map import launch_open_map
+
+            launch_open_map(profile, summary.id, summary.title, self._iface)
             return
 
         # Resolving a leaf fetches the item envelope, so it belongs off

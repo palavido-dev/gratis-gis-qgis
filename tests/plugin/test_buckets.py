@@ -178,3 +178,16 @@ class TestItemTooltip:
             "public": "Everyone",
         }
         assert labels == ACCESS_LABELS
+
+
+class TestMapsAreConsumable:
+    def test_a_map_survives_the_browser_filter(self) -> None:
+        """The bug that shipped map opening with no map visible
+        anywhere to open it: the type was filtered out before the
+        tree's dispatch ever saw it."""
+        from gratisgis_qgis.browser.buckets import is_qgis_consumable
+
+        assert is_qgis_consumable(
+            _item(id="m-1", title="WV", access="private", owner="u1",
+                  type="map")
+        )

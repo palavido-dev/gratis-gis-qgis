@@ -459,6 +459,7 @@ def _normalize_type(t: str | None) -> str:
 # Falls back to a title-cased version of the type for any new type
 # the portal grows that we haven't labelled here yet.
 _TYPE_GROUP_LABELS: dict[str, str] = {
+    "map": "Maps",
     "data_layer": "Data layers",
     "derived_layer": "Derived layers",
     "tile_layer": "Tile layers",
@@ -474,6 +475,7 @@ _TYPE_GROUP_LABELS: dict[str, str] = {
 # top. Anything not in this map sorts after the named entries,
 # alphabetically.
 _TYPE_GROUP_ORDER: dict[str, int] = {
+    "map": 5,
     "data_layer": 10,
     "derived_layer": 20,
     "tile_layer": 30,

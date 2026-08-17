@@ -109,6 +109,11 @@ def filter_for_bucket(
 # it belongs here too. Both spellings (kebab + snake) accepted
 # defensively even though current portal API serializes snake.
 QGIS_CONSUMABLE_TYPES: frozenset[str] = frozenset({
+    # A map is not a single layer but it absolutely has a canvas
+    # action: double-click opens the whole stack (#23). Its absence
+    # from this set was the bug that shipped map opening with no map
+    # visible anywhere to open.
+    "map",
     "data_layer",
     "data-layer",
     "derived_layer",
