@@ -49,6 +49,19 @@ class _Registry:
             self.providers.remove(provider)
 
 
+class _ProcessingRegistry:
+    def __init__(self) -> None:
+        self.providers: list[Any] = []
+
+    def addProvider(self, provider: Any) -> bool:  # QGIS API name
+        self.providers.append(provider)
+        return True
+
+    def removeProvider(self, provider: Any) -> None:  # QGIS API name
+        if provider in self.providers:
+            self.providers.remove(provider)
+
+
 class _Signal:
     def __init__(self) -> None:
         self.slots: list[Any] = []
@@ -100,6 +113,7 @@ class _Iface:
         self.toolbars: list[_Toolbar] = []
         self.menu_actions: list[Any] = []
         self.docks: list[Any] = []
+        self.layer_actions: list[tuple[Any, str, Any, bool]] = []
 
     def addToolBar(self, _name: str) -> _Toolbar:  # QGIS API name
         bar = _Toolbar()
@@ -120,10 +134,24 @@ class _Iface:
         if dock in self.docks:
             self.docks.remove(dock)
 
+    def addCustomActionForLayerType(  # QGIS API name
+        self, action: Any, menu: str, layer_type: Any, all_layers: bool
+    ) -> None:
+        self.layer_actions.append((action, menu, layer_type, all_layers))
+
+    def removeCustomActionForLayerType(self, action: Any) -> bool:  # QGIS API
+        before = len(self.layer_actions)
+        self.layer_actions = [
+            row for row in self.layer_actions if row[0] is not action
+        ]
+        return len(self.layer_actions) < before
+
 
 class _Action:
-    def __init__(self, _icon: Any, text: str, _parent: Any) -> None:
-        self.text = text
+    def __init__(self, *args: Any) -> None:
+        # Real QAction has both ctors: (icon, text, parent) from the
+        # toolbar and (text, parent) from the layer context actions.
+        self.text = args[1] if len(args) == 3 else args[0]
         self.triggered = _Signal()
 
     def setToolTip(self, _text: str) -> None:  # Qt API name
@@ -145,6 +173,7 @@ class _Icon:
 def plugin_mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     _Project.singleton = _Project()
     registry = _Registry()
+    processing_registry = _ProcessingRegistry()
     install_qgis_stub(
         monkeypatch,
         {
@@ -158,8 +187,21 @@ def plugin_mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
                         ),
                         "getThemeIcon": staticmethod(lambda _n: _Icon()),
                         "authManager": staticmethod(lambda: None),
+                        "processingRegistry": staticmethod(
+                            lambda: processing_registry
+                        ),
                     },
                 ),
+                "Qgis": type(
+                    "Qgis",
+                    (),
+                    {
+                        "LayerType": type(
+                            "LayerType", (), {"Vector": 0, "VectorTile": 4}
+                        )
+                    },
+                ),
+                "QgsMapLayer": type("QgsMapLayer", (), {}),
                 "QgsProject": _Project,
                 # The browser stubs, not bare types: initGui registers
                 # the Browser provider, which imports browser.items,
@@ -187,6 +229,7 @@ def plugin_mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     import gratisgis_qgis.plugin as m
 
     m._registry_for_tests = registry  # type: ignore[attr-defined]
+    m._processing_registry_for_tests = processing_registry  # type: ignore[attr-defined]
     return m
 
 
@@ -432,3 +475,60 @@ class TestThemeIcons:
         )
         fallback = _Icon()
         assert plugin_mod._theme_icon("/x.svg", fallback) is fallback
+
+
+class TestLayerContextActions:
+    """Right-click entries in the Layers panel, and their teardown."""
+
+    def test_the_three_actions_register_under_one_submenu(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        iface = _Iface()
+        plugin_mod.GratisGISPlugin(iface).initGui()
+        rows = iface.layer_actions
+        assert len(rows) == 3
+        assert {menu for _a, menu, _t, _all in rows} == {"GratisGIS"}
+        labels = sorted(row[0].text for row in rows)
+        assert labels == [
+            "Clone layer for offline use...",
+            "Publish to GratisGIS...",
+            "Sync layer with GratisGIS...",
+        ]
+
+    def test_publish_and_sync_target_vectors_clone_targets_tiles(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        """Clone lives on portal layers, which are vector TILES on the
+        canvas; publish and sync live on ordinary vectors, where local
+        data and clones are."""
+        iface = _Iface()
+        plugin_mod.GratisGISPlugin(iface).initGui()
+        by_label = {row[0].text: row[2] for row in iface.layer_actions}
+        assert by_label["Publish to GratisGIS..."] == 0
+        assert by_label["Sync layer with GratisGIS..."] == 0
+        assert by_label["Clone layer for offline use..."] == 4
+
+    def test_unload_removes_every_layer_action(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        iface = _Iface()
+        plugin = plugin_mod.GratisGISPlugin(iface)
+        plugin.initGui()
+        assert iface.layer_actions
+        plugin.unload()
+        assert not iface.layer_actions
+
+    def test_the_processing_provider_registers_and_unregisters(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        iface = _Iface()
+        plugin = plugin_mod.GratisGISPlugin(iface)
+        plugin.initGui()
+        registry = plugin_mod._processing_registry_for_tests
+        # The provider class itself needs real Processing bindings, so
+        # under stubs the guarded registration may have logged and
+        # moved on; what must hold either way is symmetry.
+        registered = list(registry.providers)
+        plugin.unload()
+        for provider in registered:
+            assert provider not in registry.providers

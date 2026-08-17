@@ -49,6 +49,7 @@ class GratisGISPlugin(QObject):
         self._actions: list[QAction] = []
         self._browser_provider: QgsDataItemProvider | None = None
         self._processing_provider: object | None = None
+        self._layer_actions: list = []
         self._search_dock: GratisGISSearchDock | None = None
         self._toolbar = None
         # Typed as object so the annotation needs no QGIS-only import
@@ -140,6 +141,16 @@ class GratisGISPlugin(QObject):
             self._processing_provider = None
             _log.exception("Processing provider could not be registered")
 
+        # Layers-panel context menu: the portal actions on the object
+        # people actually right-click. Grouped under one GratisGIS
+        # submenu so three entries do not sprawl across the menu.
+        # Guarded like the Processing provider: a QGIS build where the
+        # custom-action API moved costs the menu, never the plugin.
+        try:
+            self._register_layer_actions()
+        except Exception:
+            _log.exception("layer context actions could not be registered")
+
         # Portal layers carry their real extent in the layer URI, but a
         # tiled layer reports the whole world until something applies
         # it. Listening on the project catches every route a layer can
@@ -202,6 +213,12 @@ class GratisGISPlugin(QObject):
         if self._browser_provider is not None:
             QgsApplication.dataItemProviderRegistry().removeProvider(self._browser_provider)
             self._browser_provider = None
+        for action in getattr(self, "_layer_actions", []):
+            try:
+                self._iface.removeCustomActionForLayerType(action)
+            except Exception:  # pragma: no cover - defensive
+                _log.debug("layer action removal failed", exc_info=True)
+        self._layer_actions = []
         if getattr(self, "_processing_provider", None) is not None:
             try:
                 QgsApplication.processingRegistry().removeProvider(
@@ -269,6 +286,71 @@ class GratisGISPlugin(QObject):
         from .ui.publish_project_dialog import PublishProjectDialog
 
         dlg = PublishProjectDialog(self._iface, self._iface.mainWindow())
+        dlg.exec()
+
+    def _register_layer_actions(self) -> None:
+        """Right-click entries in the Layers panel, per layer type.
+
+        Publish and Sync go on ordinary vector layers (a clone is an
+        OGR vector, so Sync lands where clones live). Clone goes on
+        vector tile layers, which is what portal layers on the canvas
+        are. Each entry opens the flow's existing dialog; the dialogs
+        keep owning validation, so a right-click on an unsuitable
+        layer gets the dialog's own explanation rather than a dead
+        menu entry.
+        """
+        from qgis.core import Qgis, QgsMapLayer  # type: ignore[import-not-found]
+        from qgis.PyQt.QtWidgets import QAction  # type: ignore[import-not-found]
+
+        from .qgis_compat import resolve_enum
+
+        scoped = getattr(Qgis, "LayerType", None)
+        vector_type = resolve_enum(
+            (scoped, "Vector"), (QgsMapLayer, "VectorLayer")
+        )
+        vector_tile_type = resolve_enum(
+            (scoped, "VectorTile"), (QgsMapLayer, "VectorTileLayer")
+        )
+        main_window = self._iface.mainWindow()
+        for label, handler, layer_types in (
+            ("Publish to GratisGIS...", self._on_publish_current_layer,
+             (vector_type,)),
+            ("Sync layer with GratisGIS...", self._on_push_edits,
+             (vector_type,)),
+            ("Clone layer for offline use...", self._on_clone_offline,
+             (vector_tile_type,)),
+        ):
+            action = QAction(label, main_window)
+            action.triggered.connect(handler)
+            for layer_type in layer_types:
+                self._iface.addCustomActionForLayerType(
+                    action, "GratisGIS", layer_type, True
+                )
+            self._layer_actions.append(action)
+
+    def _on_publish_current_layer(self) -> None:
+        """Publish, preselecting the layer that was right-clicked.
+
+        Right-clicking a layer makes it current in the tree view, so
+        the current layer IS the clicked one. Falling back to no
+        preselection (the dialog's own picker) rather than failing:
+        the menu entry must work even if the view API shifts.
+        """
+        layer_id: str | None = None
+        try:
+            view = self._iface.layerTreeView()
+            current = view.currentLayer() if view is not None else None
+            if current is not None:
+                layer_id = current.id()
+        except Exception:  # pragma: no cover - defensive
+            _log.debug("no current layer for publish", exc_info=True)
+        from .ui.publish_vector_dialog import PublishLayerDialog
+
+        dlg = PublishLayerDialog(
+            self._iface,
+            self._iface.mainWindow(),
+            preselect_layer_id=layer_id,
+        )
         dlg.exec()
 
     def _on_publish_vector(self) -> None:
