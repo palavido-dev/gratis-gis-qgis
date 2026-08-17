@@ -7,6 +7,19 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [1.0.2] - 2026-08-17
+
+### Fixed
+
+- **QGIS plugin repository Qt6 check.** The repository's checker is a
+  text scan and flagged the Processing provider's guarded fallback to
+  the unscoped `TypeVectorAnyGeometry` spelling, even though it only
+  ran on builds without the scoped enum. The value now resolves
+  through `resolve_enum`, the same pattern the rest of the plugin
+  uses for migrated QGIS enums. No functional changes; the smoke
+  suite registers the provider against a real QGIS registry either
+  way.
+
 ## [1.0.1] - 2026-08-17
 
 ### Fixed
