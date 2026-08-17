@@ -125,12 +125,46 @@ class TestConnectionList:
         return dlg
 
     def test_a_signed_in_connection_is_marked(
-        self, dialog_mod: Any, profile_factory: ProfileFactory
+        self, dialog_mod: Any, profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(
+            dialog_mod, "stored_session_state", lambda _p: "signed-in"
+        )
         store = _Store({"demo": profile_factory(authcfg_id="auth-1")})
         dlg = self._dialog(dialog_mod, store)
         dlg._reload()
         assert "[signed in]" in dlg._list.items[0]
+
+    def test_an_expired_session_says_so(
+        self, dialog_mod: Any, profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The label that used to lie. The profile still points at an
+        authcfg, but the stored tokens have lapsed (or vanished, as
+        found on a real machine), and every portal call would demand a
+        fresh sign-in. Saying "[signed in]" there is worse than saying
+        nothing."""
+        monkeypatch.setattr(
+            dialog_mod, "stored_session_state", lambda _p: "expired"
+        )
+        store = _Store({"demo": profile_factory(authcfg_id="auth-1")})
+        dlg = self._dialog(dialog_mod, store)
+        dlg._reload()
+        assert "[sign-in expired]" in dlg._list.items[0]
+        assert "[signed in]" not in dlg._list.items[0]
+
+    def test_a_dangling_authcfg_pointer_reads_as_signed_out(
+        self, dialog_mod: Any, profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            dialog_mod, "stored_session_state", lambda _p: "signed-out"
+        )
+        store = _Store({"demo": profile_factory(authcfg_id="ghost-1")})
+        dlg = self._dialog(dialog_mod, store)
+        dlg._reload()
+        assert "signed" not in dlg._list.items[0]
 
     def test_a_signed_out_connection_is_not(
         self, dialog_mod: Any, profile_factory: ProfileFactory

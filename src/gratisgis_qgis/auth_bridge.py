@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict
+from typing import Any
 
 from gratisgis_client.auth.storage import InMemoryTokenStorage, TokenStorage
 from gratisgis_client.auth.tokens import TokenSet
@@ -222,6 +223,40 @@ def store_api_header_authcfg(
         # header this id resolved to the first time it was used.
         forget_cached_authcfg(authcfg_id)
     return stored
+
+
+def stored_session_state(profile: Any) -> str:
+    """What the stored credentials actually say: ``signed-in``,
+    ``expired``, or ``signed-out``.
+
+    The connection list used to print "[signed in]" off nothing but
+    ``profile.authcfg_id`` being set, which is a POINTER, not a
+    session: found on a real machine pointing at an auth config that
+    no longer existed, so the label promised a session while every
+    portal call demanded a fresh sign-in. Reading the tokens back is
+    the only honest source.
+
+    ``expired`` means tokens exist but their refresh token has lapsed;
+    interactive sign-in is required and the UI should say so rather
+    than just failing requests. Missing tokens read as ``signed-out``,
+    which also quietly covers the dangling-pointer case.
+    """
+    authcfg_id = getattr(profile, "authcfg_id", "")
+    if not authcfg_id:
+        return "signed-out"
+    try:
+        tokens = make_token_storage(authcfg_id).load()
+    except Exception:
+        _log.debug("token read failed for %s", authcfg_id, exc_info=True)
+        return "signed-out"
+    if tokens is None:
+        return "signed-out"
+    try:
+        if tokens.refresh_is_stale():
+            return "expired"
+    except Exception:  # pragma: no cover - malformed stored blob
+        return "signed-out"
+    return "signed-in"
 
 
 #: What a signed-out API Header authcfg carries instead of a credential.

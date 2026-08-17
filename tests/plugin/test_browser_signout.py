@@ -187,6 +187,11 @@ class TestBucketItemAfterSignOut:
             return []
 
         monkeypatch.setattr(items_mod, "list_items", record)
+        # Stored-token liveness is its own concern with its own tests;
+        # this one is about the profile POINTER going away.
+        monkeypatch.setattr(
+            items_mod, "stored_session_state", lambda _p: "signed-in"
+        )
 
         node.createChildren()
         assert called, "signed in: the bucket queries the portal"
@@ -237,3 +242,30 @@ class TestBucketItemAfterSignOut:
             lambda _p: (_ for _ in ()).throw(AssertionError("must not query")),
         )
         assert _labels(node.createChildren()) == ["Not signed in."]
+
+    def test_an_expired_session_reads_as_a_sentence_with_a_next_step(
+        self,
+        items_mod: ModuleType,
+        monkeypatch: pytest.MonkeyPatch,
+        profile_factory: ProfileFactory,
+    ) -> None:
+        """Tokens lapsed (or the authcfg pointer dangles, as found on
+        a real machine): the bucket must say what to do, not throw a
+        red Failed-to-load at the user, and must not query the portal
+        with credentials it knows are dead."""
+        store = FakeStore({"demo": profile_factory(authcfg_id="auth-1")})
+        node = items_mod.BucketItem(None, store, "demo", kind="mine")
+        called: list[Any] = []
+
+        def record(profile: Any) -> list[Any]:
+            called.append(profile)
+            return []
+
+        monkeypatch.setattr(items_mod, "list_items", record)
+        monkeypatch.setattr(
+            items_mod, "stored_session_state", lambda _p: "expired"
+        )
+        children = node.createChildren()
+        assert not called
+        assert "expired" in _labels(children)[0]
+        assert "Manage GratisGIS connections" in _labels(children)[0]

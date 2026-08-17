@@ -40,6 +40,7 @@ from qgis.core import (  # type: ignore[import-not-found]
 
 from gratisgis_client.models.item import ItemSummary
 
+from ..auth_bridge import stored_session_state
 from ..log import get_logger
 from ..portal import get_item, list_items
 from ..qgis_compat import resolve_enum
@@ -430,6 +431,18 @@ class BucketItem(QgsDataCollectionItem):
         # is what a signed-out tree is supposed to look like.
         if profile is None or not profile.authcfg_id:
             return [_MessageItem(self, "Not signed in.")]
+        # The stored tokens, not the pointer (see stored_session_state):
+        # an expired or vanished session should read as a sentence with
+        # a next step, not as a failed request.
+        state = stored_session_state(profile)
+        if state != "signed-in":
+            return [
+                _MessageItem(
+                    self,
+                    "Your sign-in has expired. Sign in again from "
+                    "Manage GratisGIS connections.",
+                )
+            ]
 
         try:
             items = list_items(profile)

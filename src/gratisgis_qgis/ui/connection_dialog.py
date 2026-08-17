@@ -53,6 +53,7 @@ from ..auth_bridge import (
     make_token_storage,
     remove_authcfg,
     store_api_header_authcfg,
+    stored_session_state,
 )
 from ..browser.refresh import refresh_browser_tree
 from ..layer_auth import mint_layer_key, revoke_layer_key
@@ -138,8 +139,15 @@ class ConnectionManagerDialog(QDialog):
             label = profile.display_label
             if label != name:
                 label = f"{label}  ({name})"
-            if profile.authcfg_id:
+            # From the stored TOKENS, not the profile's authcfg
+            # pointer: the pointer once outlived its auth config on a
+            # real machine, and the label promised a session while
+            # every call demanded a fresh sign-in.
+            state = stored_session_state(profile)
+            if state == "signed-in":
                 label = f"{label}  [signed in]"
+            elif state == "expired":
+                label = f"{label}  [sign-in expired]"
             self._list.addItem(label)
         if hasattr(self, "_hint"):
             self._hint.setVisible(self._list.count() == 0)

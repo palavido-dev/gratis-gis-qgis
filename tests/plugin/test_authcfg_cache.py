@@ -227,3 +227,83 @@ class TestForgetCachedAuthcfg:
         mod = _install(monkeypatch, manager)
         assert mod.forget_cached_authcfg("") is False
         assert manager.cleared == []
+
+
+class TestStoredSessionState:
+    """The truth behind the "[signed in]" label.
+
+    Found live: a profile whose authcfg pointer named a config that no
+    longer existed in the auth database, so the label promised a
+    session while every portal call demanded a fresh sign-in.
+    """
+
+    class _Storage:
+        def __init__(self, tokens: Any) -> None:
+            self._tokens = tokens
+
+        def load(self) -> Any:
+            return self._tokens
+
+    def _state(
+        self, monkeypatch: pytest.MonkeyPatch, tokens: Any
+    ) -> str:
+        from types import SimpleNamespace
+
+        mod = _install(monkeypatch, _Manager())
+        monkeypatch.setattr(
+            mod, "make_token_storage", lambda _id: self._Storage(tokens)
+        )
+        return str(
+            mod.stored_session_state(SimpleNamespace(authcfg_id="cfg-1"))
+        )
+
+    def test_live_tokens_read_as_signed_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        tokens = SimpleNamespace(refresh_is_stale=lambda: False)
+        assert self._state(monkeypatch, tokens) == "signed-in"
+
+    def test_a_lapsed_refresh_token_reads_as_expired(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        tokens = SimpleNamespace(refresh_is_stale=lambda: True)
+        assert self._state(monkeypatch, tokens) == "expired"
+
+    def test_missing_tokens_read_as_signed_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The dangling-pointer case: authcfg id set, config gone."""
+        assert self._state(monkeypatch, None) == "signed-out"
+
+    def test_no_pointer_at_all_is_signed_out_without_a_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        mod = _install(monkeypatch, _Manager())
+
+        def explode(_id: str) -> Any:
+            raise AssertionError("must not touch storage")
+
+        monkeypatch.setattr(mod, "make_token_storage", explode)
+        state = mod.stored_session_state(SimpleNamespace(authcfg_id=""))
+        assert state == "signed-out"
+
+    def test_a_storage_error_degrades_to_signed_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A locked auth database must not crash a list render."""
+        from types import SimpleNamespace
+
+        mod = _install(monkeypatch, _Manager())
+
+        def boom(_id: str) -> Any:
+            raise RuntimeError("auth db locked")
+
+        monkeypatch.setattr(mod, "make_token_storage", boom)
+        state = mod.stored_session_state(SimpleNamespace(authcfg_id="cfg-1"))
+        assert state == "signed-out"
