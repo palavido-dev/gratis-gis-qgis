@@ -281,24 +281,25 @@ class TestSublayerUriSelection:
         assert "/api/public/ogc/collections/item-1/" in child.uri()
         assert "authcfg" not in child.uri()
 
-    def test_private_table_lists_with_clone_tooltip(
+    def test_private_table_loads_through_the_signed_in_surface(
         self,
         items_mod: ModuleType,
         monkeypatch: pytest.MonkeyPatch,
         profile_factory: ProfileFactory,
     ) -> None:
-        # No authed OAPIF surface exists server-side (documented
-        # portal follow-up); the table stays listed but tells the
-        # user which flow actually works.
+        """Formerly the dead end with the Clone tooltip: a private
+        table listed but loaded empty, because the only Features
+        surface was public. It now reads through /api/ogc."""
         [child] = self._children(
             items_mod,
             monkeypatch,
             profile=profile_factory(layer_authcfg_id="lyr1234"),
             item=_summary(access="private"),
-            envelope=_v3_envelope({"id": "lookup", "geometryType": None}),
+            envelope=_v3_envelope({"id": "notes", "geometryType": None}),
         )
         assert child.provider_key == "OAPIF"
-        assert "Clone" in child.tooltip
+        assert "/api/ogc'" in child.uri()
+        assert "authcfg='lyr1234'" in child.uri()
 
     def test_public_table_has_no_tooltip(
         self,
@@ -836,3 +837,102 @@ class TestDropToPublish:
         )
         bucket = self._bucket(items_mod, items_mod.BucketKind.MINE)
         assert bucket.handleDrop(object(), None) is False
+
+
+class TestFeatureSurfaceRouting:
+    """Which OGC Features root a collection reads from (#attr tables).
+
+    The portal grew a signed-in Features surface (/api/ogc, portal
+    0.9.28) precisely so private layers could be true feature layers;
+    the tree must route non-public collections there and leave public
+    ones on the anonymous surface so saved projects keep working for
+    viewers who never sign in.
+    """
+
+    def test_a_public_table_stays_on_the_public_surface(
+        self, items_mod: ModuleType, profile_factory: ProfileFactory
+    ) -> None:
+        uri = items_mod._features_uri(
+            profile_factory(layer_authcfg_id="lay1234"),
+            _summary(access="public"),
+            "col-1",
+        )
+        assert "/api/public/ogc" in uri
+        assert "authcfg" not in uri
+
+    def test_a_private_table_uses_the_signed_in_surface(
+        self, items_mod: ModuleType, profile_factory: ProfileFactory
+    ) -> None:
+        """The old dead end: private tables listed with a tooltip
+        saying they would load empty. Now they load."""
+        uri = items_mod._features_uri(
+            profile_factory(layer_authcfg_id="lay1234"),
+            _summary(access="private"),
+            "col-1",
+        )
+        assert "/api/ogc'" in uri
+        assert "/api/public/ogc" not in uri
+        assert "authcfg='lay1234'" in uri
+
+    def test_no_layer_key_degrades_to_the_public_surface(
+        self, items_mod: ModuleType, profile_factory: ProfileFactory
+    ) -> None:
+        """Sign-in without a minted layer key behaves exactly as the
+        world did before the signed-in surface existed."""
+        uri = items_mod._features_uri(
+            profile_factory(layer_authcfg_id=""),
+            _summary(access="private"),
+            "col-1",
+        )
+        assert "/api/public/ogc" in uri
+
+    def test_a_private_table_sublayer_builds_on_the_signed_in_surface(
+        self, items_mod: ModuleType, profile_factory: ProfileFactory
+    ) -> None:
+        leaf = items_mod._DataLayerSublayerItem(
+            None,
+            profile_factory(layer_authcfg_id="lay1234"),
+            _summary(access="org"),
+            collection_id="item-1__summary",
+            label="Summary",
+            has_geometry=False,
+            layer_id="summary",
+        )
+        assert "authcfg='lay1234'" in leaf.uri()
+        assert "/api/ogc'" in leaf.uri()
+
+    def test_spatial_sublayers_offer_add_with_full_attributes(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        recorded: list[str] = []
+
+        class _Action:
+            def __init__(self, text: str, _parent: Any) -> None:
+                recorded.append(text)
+                self.triggered = type(
+                    "S", (), {"connect": staticmethod(lambda _s: None)}
+                )()
+
+        monkeypatch.setitem(
+            __import__("sys").modules,
+            "qgis.PyQt.QtWidgets",
+            type("M", (), {"QAction": _Action}),
+        )
+        spatial = items_mod._DataLayerSublayerItem(
+            None, profile_factory(), _summary(),
+            collection_id="c", label="Parcels",
+            has_geometry=True, layer_id="parcels",
+        )
+        spatial.actions(None)
+        assert "Add with full attributes" in recorded
+
+        recorded.clear()
+        table = items_mod._DataLayerSublayerItem(
+            None, profile_factory(), _summary(),
+            collection_id="c2", label="Summary",
+            has_geometry=False, layer_id="summary",
+        )
+        assert table.actions(None) == []

@@ -191,6 +191,39 @@ def oapif_uri(portal_url: str, item_id: str) -> str:
     )
 
 
+def authed_ogc_root(portal_url: str) -> str:
+    """The signed-in OGC API Features root (portal 0.9.28+).
+
+    Serves every data layer the caller can read, clipped by their
+    share geo limits and row scope server-side; the public root only
+    serves public items.
+    """
+    return f"{portal_url.rstrip('/')}/api/ogc"
+
+
+def authed_oapif_uri(
+    portal_url: str, collection_id: str, *, authcfg_id: str
+) -> str:
+    """The OGC API Features URI for a NON-public data_layer.
+
+    Same shape and same paging discipline as ``oapif_uri`` (see its
+    docstring for why restrictToRequestBBOX and pageSize are load
+    bearing), pointed at the signed-in surface with the connection's
+    layer authcfg attached. The OAPIF provider is QNetworkRequest
+    based, so the authcfg travels on every request, exactly like the
+    vector tile and XYZ paths. This is what turns a private layer
+    into a TRUE feature layer in QGIS: attribute table, selection,
+    the works, not just drawn tiles.
+    """
+    return (
+        f"url='{authed_ogc_root(portal_url)}' "
+        f"typename='{collection_id}' "
+        f"restrictToRequestBBOX='1' "
+        f"pageSize='1000' "
+        f"authcfg='{authcfg_id}'"
+    )
+
+
 def vector_tile_uri(
     portal_url: str,
     item_id: str,

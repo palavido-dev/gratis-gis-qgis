@@ -206,10 +206,41 @@ def _run_checks() -> None:
         ),
     )
     check("oapif uri builds", lambda: uris.oapif_uri("https://example.test", "item-1"))
+    check(
+        "authed oapif uri builds",
+        lambda: uris.authed_oapif_uri(
+            "https://example.test", "item-1__roads", authcfg_id="abc123"
+        ),
+    )
 
     # A URI the provider cannot decode yields an empty layer with no
     # error dialog, which is the failure mode this whole authed-tile
     # path exists to remove. Decoding is offline: no tile is fetched.
+
+    def _oapif_keeps_authcfg() -> None:
+        uri = uris.authed_oapif_uri(
+            "https://example.test", "i", authcfg_id="abc123"
+        )
+        _assert("authcfg='abc123'" in uri, "authcfg missing from the uri")
+        # Where this build exposes decodeUri for the provider, ask it
+        # too: a decoder that drops the authcfg would silently turn
+        # private feature layers into anonymous requests.
+        for key in ("OAPIF", "oapif"):
+            meta = registry.providerMetadata(key)
+            if meta is None:
+                continue
+            decoded = meta.decodeUri(uri)
+            if decoded:
+                _assert(
+                    "abc123" in str(decoded),
+                    f"decodeUri dropped the authcfg: {decoded!r}",
+                )
+            break
+
+    check(
+        "OAPIF provider keeps the authcfg on the signed-in uri",
+        _oapif_keeps_authcfg,
+    )
     check(
         "vectortile provider decodes the public uri",
         lambda: _assert_decodes(

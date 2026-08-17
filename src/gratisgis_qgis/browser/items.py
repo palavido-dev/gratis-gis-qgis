@@ -24,8 +24,8 @@ OGC Tiles surface (so a saved project keeps working for anonymous
 viewers), while private and org items point at the portal's authed
 per-layer MVT route with the connection's layer authcfg attached,
 which is what makes non-public layers actually draw. Non-spatial
-sublayers fall through to OAPIF, a public-only surface; private
-tables therefore list with a tooltip pointing at the Clone flow.
+sublayers ride OGC API Features: the public surface for public
+items, the signed-in surface (/api/ogc) for everything else.
 """
 from __future__ import annotations
 
@@ -53,6 +53,7 @@ from .buckets import (
     item_tooltip,
 )
 from .uris import (
+    authed_oapif_uri,
     authed_vector_tile_uri,
     oapif_uri,
     tile_layer_xyz_uri,
@@ -712,6 +713,33 @@ def _extract_v3_layers(full_item: dict[str, object]) -> list[dict[str, object]]:
     return out
 
 
+def _features_uri(
+    profile: ConnectionProfile,
+    item: ItemSummary,
+    collection_id: str,
+) -> str:
+    """Pick the OGC API Features endpoint for a collection.
+
+    The same public-vs-signed-in rule every other surface applies:
+    public items stay on the public root so saved projects keep
+    working for anonymous viewers; everything else uses the signed-in
+    root with the connection's layer key attached, which is what
+    makes a private layer readable as true features at all (portal
+    0.9.28+). No key on the profile degrades to the public root,
+    where a non-public layer behaves exactly as it did before the
+    signed-in surface existed.
+    """
+    if item.access == "public":
+        return oapif_uri(profile.portal_url, collection_id)
+    if profile.layer_authcfg_id:
+        return authed_oapif_uri(
+            profile.portal_url,
+            collection_id,
+            authcfg_id=profile.layer_authcfg_id,
+        )
+    return oapif_uri(profile.portal_url, collection_id)
+
+
 def _spatial_sublayer_uri(
     profile: ConnectionProfile,
     item: ItemSummary,
@@ -766,17 +794,17 @@ class _DataLayerSublayerItem(QgsLayerItem):
     see ``_spatial_sublayer_uri``.
 
     Non-spatial sublayers (tables, ``has_geometry=False``) can't
-    render as MVT -- ST_AsMVTGeom skips them. They fall through
-    to OAPIF so QGIS can still pull rows into an attribute table.
-    OAPIF is the PUBLIC surface, and no authed table endpoint
-    exists server-side (a documented portal follow-up), so private
-    tables stay listed but get a tooltip pointing at the Clone
-    flow, which reads them through the authed session.
+    render as MVT -- ST_AsMVTGeom skips them. They ride OGC API
+    Features instead, so QGIS pulls rows into a real attribute
+    table: public items on the public surface, everything else on
+    the signed-in surface (/api/ogc, portal 0.9.28+) with the
+    connection's layer key attached. The old private-table dead end
+    ("this layer will load empty") is gone with it.
 
-    Editing isn't supported on MVT layers (they're a read-only
-    rendering format). The Editor menu's "Add as editable
-    features" action is the OAPIF escape hatch for users who
-    actually need to edit features on the canvas.
+    Spatial sublayers also carry an "Add with full attributes"
+    context action that adds the same collection as an OAPIF
+    feature layer, for when the attribute table matters more than
+    tile rendering speed.
     """
 
     def __init__(
@@ -797,7 +825,7 @@ class _DataLayerSublayerItem(QgsLayerItem):
             layer_type = _LAYER_TYPE_VECTOR_TILE
             provider_key = "vectortile"
         else:
-            uri = oapif_uri(profile.portal_url, collection_id)
+            uri = _features_uri(profile, item, collection_id)
             layer_type = _LAYER_TYPE_VECTOR
             provider_key = "OAPIF"
         super().__init__(
@@ -814,12 +842,6 @@ class _DataLayerSublayerItem(QgsLayerItem):
         self._label = label
         self._has_geometry = has_geometry
         self._provider_key = provider_key
-        if not has_geometry and item.access != "public":
-            self.setToolTip(
-                "Private table: rows are not readable through the public "
-                "OGC surface, so this layer will load empty. Use 'Clone "
-                "layer for offline use' to work with private tables."
-            )
 
     @property
     def item(self) -> ItemSummary:
@@ -828,6 +850,32 @@ class _DataLayerSublayerItem(QgsLayerItem):
     @property
     def collection_id(self) -> str:
         return self._collection_id
+
+    def actions(self, parent: QgsDataItem) -> list:  # QGIS API name
+        # No sharing entry here: sharing acts on the whole ITEM, and
+        # offering it per sublayer would read as per-layer sharing,
+        # which the portal does not model. The parent node has it.
+        if not self._has_geometry:
+            return []
+        from qgis.PyQt.QtWidgets import QAction  # type: ignore[import-not-found]
+        # Vector tiles draw fast but have no attribute table (a QGIS
+        # limitation of the layer type). This is the escape hatch:
+        # the same collection as a true feature layer through OGC API
+        # Features, with the signed-in surface carrying private items.
+        add = QAction("Add with full attributes", parent)
+
+        def launch(_checked: bool = False) -> None:
+            from qgis.utils import iface  # type: ignore[import-not-found]
+
+            if iface is None:
+                return
+            uri = _features_uri(
+                self._profile, self._item, self._collection_id
+            )
+            iface.addVectorLayer(uri, self._label, "OAPIF")
+
+        add.triggered.connect(launch)
+        return [add]
 
     def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
         u = QgsMimeDataUtils.Uri()

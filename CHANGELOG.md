@@ -7,6 +7,22 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.15.0] - 2026-08-17
+
+Needs GratisGIS portal 0.9.28 or newer for the private-layer parts.
+
+### Added
+
+- **Private layers as real feature layers.** The portal grew a
+  signed-in data feed, and the plugin now uses it everywhere it
+  matters. Private and organization tables load their rows instead
+  of listing with a "this will load empty" warning. And every
+  spatial portal layer in the Browser gains a right-click "Add with
+  full attributes" that adds it as a true feature layer: working
+  attribute table, selection, everything the fast tile rendering
+  cannot do. Public layers keep using the public feed so shared
+  projects keep working for people who never sign in.
+
 ## [0.14.0] - 2026-08-16
 
 ### Fixed
