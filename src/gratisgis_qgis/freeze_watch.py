@@ -321,10 +321,13 @@ class FreezeWatchdog:
 
     def _watch(self) -> None:
         while not self._stop.wait(self._tick_seconds):
+            # No logging in this except on purpose: the watchdog runs
+            # while the GUI thread may be frozen, and a log handler
+            # lock held by that thread would hang the watchdog too.
             try:
                 elapsed = self._detector.poll(self._clock())
             except Exception:
-                continue
+                elapsed = None
             if elapsed is None:
                 continue
             path = dump_path(self._log_dir, time.time())

@@ -39,6 +39,7 @@ def layers_using_authcfg(layers: Any, authcfg_id: str) -> list[Any]:
         try:
             source = layer.source()
         except Exception:  # pragma: no cover - defensive
+            _log.debug("layer source read failed", exc_info=True)
             continue
         if not isinstance(source, str) or not source:
             continue

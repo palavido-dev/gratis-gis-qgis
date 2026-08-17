@@ -264,6 +264,7 @@ def _cancel_flags(qgs_task_cls: Any, cancelable: bool) -> Any:
         try:
             return build()
         except Exception:  # pragma: no cover - binding-specific
+            _log.debug("task flag constructor failed", exc_info=True)
             continue
     return 0  # pragma: no cover - no known binding reaches this
 

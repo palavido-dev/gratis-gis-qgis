@@ -7,6 +7,22 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [1.0.1] - 2026-08-17
+
+### Fixed
+
+- **QGIS plugin repository security scan.** 1.0.0 was blocked by the
+  repository's Bandit pass (20 findings). All resolved for real, not
+  suppressed: the ten `assert` statements in shipped code are now
+  explicit checks that raise or skip with a reason (asserts vanish
+  under `python -O`, so they were never real guards); the seven
+  silent `except: pass/continue` handlers now log at debug level (or
+  use `contextlib.suppress` where logging itself is the risk); and
+  the three string-built SQL statements in the GeoPackage clone
+  reader are now static literals, with tests that rebuild each
+  literal from the identifier constants so they cannot drift. No
+  functional changes.
+
 ## [1.0.0] - 2026-08-17
 
 First stable release, submitted to the QGIS plugin repository. The

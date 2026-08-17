@@ -173,7 +173,8 @@ def build_sync_plan(edits: Iterable[EditedFeature]) -> SyncPlan:
             continue
 
         if e.kind == "update":
-            assert e.portal_id is not None  # for type-checker
+            if e.portal_id is None:  # excluded above; narrows the type
+                continue
             if e.geometry is None and not e.properties:
                 # An update entry with neither delta is a no-op edit;
                 # the QGIS buffer occasionally produces these during
@@ -209,7 +210,8 @@ def build_sync_plan(edits: Iterable[EditedFeature]) -> SyncPlan:
             continue
 
         if e.kind == "delete":
-            assert e.portal_id is not None  # for type-checker
+            if e.portal_id is None:  # excluded above; narrows the type
+                continue
             # If we previously planned an update for this id, drop
             # the update -- the delete supersedes it. Saves one
             # round-trip and avoids a 404 on the PATCH if the user

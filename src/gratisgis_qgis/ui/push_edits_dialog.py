@@ -897,7 +897,10 @@ def _apply_op(
             return result.global_ids[0]
         return op.portal_id
     if op.kind == "update":
-        assert op.portal_id is not None
+        if op.portal_id is None:
+            # The planner never emits an update without one; failing
+            # loudly beats PATCHing an empty id and misreporting sync.
+            raise ValueError("update op without a portal id")
         client.features.update(
             item_id=item_id,
             layer_id=layer_id,
@@ -907,7 +910,8 @@ def _apply_op(
         )
         return None
     if op.kind == "delete":
-        assert op.portal_id is not None
+        if op.portal_id is None:
+            raise ValueError("delete op without a portal id")
         client.features.delete(
             item_id=item_id,
             layer_id=layer_id,

@@ -38,7 +38,6 @@ from urllib.request import pathname2url
 from ..browser.uris import PortalLayerRef
 from ..log import get_logger
 from .sync_state import (
-    BASELINE_FIELDS,
     BASELINE_TABLE,
     PORTAL_ID_FALLBACKS,
     BaselineEntry,
@@ -340,6 +339,32 @@ CLONE_SOURCE_TABLE = "gratisgis_source"
 # tuple so they cannot drift apart.
 CLONE_SOURCE_FIELDS = ("portal_url", "item_id", "layer_id", "cloned_at")
 
+# The SQL below is written out as plain literals rather than built
+# from the tuples above. Every identifier is a module constant (no
+# user input reaches a statement; values always travel as ? binds),
+# but a string-built query is indistinguishable from an injectable
+# one to a security scanner, and the QGIS plugin repository's Bandit
+# pass blocks on exactly that (B608, v1.0.0 was rejected for it).
+# The anti-drift job the tuples were doing is now done by
+# tests/plugin/test_clone_source.py, which rebuilds each literal
+# from the tuples and fails the moment they disagree.
+_SQL_READ_CLONE_SOURCE = (
+    'SELECT "portal_url", "item_id", "layer_id" '
+    'FROM "gratisgis_source" LIMIT 1'
+)
+_SQL_DROP_BASELINE = 'DROP TABLE IF EXISTS "gratisgis_baseline"'
+_SQL_CREATE_BASELINE = (
+    'CREATE TABLE "gratisgis_baseline" ("global_id" TEXT, '
+    '"attr_hash" TEXT, "geom_hash" TEXT, "portal_edited_at" TEXT)'
+)
+_SQL_INSERT_BASELINE = (
+    'INSERT INTO "gratisgis_baseline" VALUES (?, ?, ?, ?)'
+)
+_SQL_READ_BASELINE = (
+    'SELECT "global_id", "attr_hash", "geom_hash", "portal_edited_at" '
+    'FROM "gratisgis_baseline"'
+)
+
 
 def clone_timestamp() -> str:
     """ISO-8601 UTC stamp for the clone-source row."""
@@ -363,14 +388,11 @@ def read_clone_source(gpkg_path: str) -> PortalLayerRef | None:
     """
     if not gpkg_path or not os.path.isfile(gpkg_path):
         return None
-    columns = ", ".join(f'"{name}"' for name in CLONE_SOURCE_FIELDS[:3])
     try:
         uri = f"file:{pathname2url(os.path.abspath(gpkg_path))}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
         try:
-            row = conn.execute(
-                f'SELECT {columns} FROM "{CLONE_SOURCE_TABLE}" LIMIT 1'
-            ).fetchone()
+            row = conn.execute(_SQL_READ_CLONE_SOURCE).fetchone()
         finally:
             conn.close()
     except sqlite3.Error:
@@ -405,14 +427,12 @@ def write_baseline(
     should describe the new state exactly, and reconciling row by row
     would leave stale entries behind on any path that missed one.
     """
-    columns = ", ".join(f'"{name}" TEXT' for name in BASELINE_FIELDS)
-    placeholders = ", ".join("?" for _ in BASELINE_FIELDS)
     conn = sqlite3.connect(gpkg_path)
     try:
-        conn.execute(f'DROP TABLE IF EXISTS "{BASELINE_TABLE}"')
-        conn.execute(f'CREATE TABLE "{BASELINE_TABLE}" ({columns})')
+        conn.execute(_SQL_DROP_BASELINE)
+        conn.execute(_SQL_CREATE_BASELINE)
         conn.executemany(
-            f'INSERT INTO "{BASELINE_TABLE}" VALUES ({placeholders})',
+            _SQL_INSERT_BASELINE,
             [
                 (gid, entry.attr_hash, entry.geom_hash, entry.portal_edited_at)
                 for gid, entry in entries.items()
@@ -433,14 +453,11 @@ def read_baseline(gpkg_path: str) -> dict[str, BaselineEntry]:
     """
     if not gpkg_path or not os.path.isfile(gpkg_path):
         return {}
-    columns = ", ".join(f'"{name}"' for name in BASELINE_FIELDS)
     try:
         uri = f"file:{pathname2url(os.path.abspath(gpkg_path))}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
         try:
-            rows = conn.execute(
-                f'SELECT {columns} FROM "{BASELINE_TABLE}"'
-            ).fetchall()
+            rows = conn.execute(_SQL_READ_BASELINE).fetchall()
         finally:
             conn.close()
     except sqlite3.Error:

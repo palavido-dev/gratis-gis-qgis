@@ -432,3 +432,50 @@ class TestCloneValidationIssue:
     def test_is_error_flag(self) -> None:
         assert CloneValidationIssue("error", "x", "m").is_error
         assert not CloneValidationIssue("warning", "x", "m").is_error
+
+
+class TestSqlLiteralsStayInSync:
+    """The static SQL must agree with the identifier constants.
+
+    The statements were turned into plain literals because the QGIS
+    plugin repository's security scan blocks string-built queries
+    (B608), even though every identifier here is a module constant.
+    These tests take over the anti-drift job the f-strings were
+    doing: rename a table or reorder a field tuple and the literal
+    fails here instead of at a user's GeoPackage.
+    """
+
+    def test_clone_source_select(self) -> None:
+        from gratisgis_qgis.offline import clone
+
+        columns = ", ".join(
+            f'"{n}"' for n in clone.CLONE_SOURCE_FIELDS[:3]
+        )
+        expected = (
+            f"SELECT {columns} "
+            f'FROM "{clone.CLONE_SOURCE_TABLE}" LIMIT 1'
+        )
+        assert expected == clone._SQL_READ_CLONE_SOURCE
+
+    def test_baseline_statements(self) -> None:
+        from gratisgis_qgis.offline import clone
+        from gratisgis_qgis.offline.sync_state import (
+            BASELINE_FIELDS,
+            BASELINE_TABLE,
+        )
+
+        columns = ", ".join(f'"{n}" TEXT' for n in BASELINE_FIELDS)
+        placeholders = ", ".join("?" for _ in BASELINE_FIELDS)
+        select_columns = ", ".join(f'"{n}"' for n in BASELINE_FIELDS)
+        assert (
+            f'DROP TABLE IF EXISTS "{BASELINE_TABLE}"'
+        ) == clone._SQL_DROP_BASELINE
+        assert (
+            f'CREATE TABLE "{BASELINE_TABLE}" ({columns})'
+        ) == clone._SQL_CREATE_BASELINE
+        assert (
+            f'INSERT INTO "{BASELINE_TABLE}" VALUES ({placeholders})'
+        ) == clone._SQL_INSERT_BASELINE
+        assert (
+            f'SELECT {select_columns} FROM "{BASELINE_TABLE}"'
+        ) == clone._SQL_READ_BASELINE

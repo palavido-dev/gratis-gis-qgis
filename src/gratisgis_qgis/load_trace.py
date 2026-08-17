@@ -167,4 +167,4 @@ class LoadTracer:
                 source = ""
             _log.info("layer added: %s", describe_layer(str(name), source))
         except Exception:  # pragma: no cover - defensive
-            pass
+            _log.debug("layer-added trace failed", exc_info=True)

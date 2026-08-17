@@ -218,7 +218,8 @@ class AuthManager:
             if self._tokens is not None and not self._tokens.access_is_stale():
                 return self._tokens.access_token
             self._refresh_locked()
-            assert self._tokens is not None  # _refresh_locked sets it
+            if self._tokens is None:  # _refresh_locked always sets it
+                raise AuthError("Refresh completed without tokens")
             return self._tokens.access_token
 
     def force_refresh(self) -> str:
@@ -234,11 +235,15 @@ class AuthManager:
             raise AuthError("Not signed in")
         with self._refresh_lock:
             self._refresh_locked()
-            assert self._tokens is not None
+            if self._tokens is None:  # _refresh_locked always sets it
+                raise AuthError("Refresh completed without tokens")
             return self._tokens.access_token
 
     def _refresh_locked(self) -> None:
-        assert self._tokens is not None
+        if self._tokens is None:
+            # Both callers check before taking the lock; reaching here
+            # without tokens means sign-out raced the refresh.
+            raise AuthError("Not signed in")
         if self._tokens.refresh_is_stale():
             raise AuthError("Refresh token expired; interactive sign-in required")
 

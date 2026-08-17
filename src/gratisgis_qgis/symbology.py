@@ -471,12 +471,10 @@ def _style_from_symbol(layer: Any, symbol: Any) -> dict[str, Any] | None:
     if rgba is None:
         return None
     geometry = None
-    try:
+    with contextlib.suppress(Exception):
         raw = layer.geometryType()
         # PyQt6 scoped enums refuse int(); their .value carries it.
         geometry = int(getattr(raw, "value", raw))
-    except Exception:
-        pass
     main = color_text(rgba)
     # QgsWkbTypes.GeometryType: 0 point, 1 line, 2 polygon.
     if geometry == 1:

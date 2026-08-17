@@ -458,8 +458,11 @@ class PublishProjectDialog(QDialog):
     def _run_create_service(
         self, profile: ConnectionProfile, skipped: SkippedLayer
     ) -> None:
-        assert skipped.service_url is not None
-        assert skipped.service_type is not None
+        if skipped.service_url is None or skipped.service_type is None:
+            # The caller only routes service-shaped skips here; a row
+            # without a URL has nothing to create an item from.
+            _log.warning("service skip without url/type: %r", skipped.name)
+            return
         dlg = _QuickItemDialog(
             self,
             window_title="Add connected service to portal",
@@ -494,7 +497,11 @@ class PublishProjectDialog(QDialog):
     def _run_create_basemap(
         self, profile: ConnectionProfile, skipped: SkippedLayer
     ) -> None:
-        assert skipped.basemap_tile_url is not None
+        if skipped.basemap_tile_url is None:
+            # Routed here only for basemap-shaped skips; without a tile
+            # URL there is nothing to create an item from.
+            _log.warning("basemap skip without tile url: %r", skipped.name)
+            return
         dlg = _QuickItemDialog(
             self,
             window_title="Add basemap to portal",
@@ -735,6 +742,7 @@ def _tile_layer_ids_on_canvas() -> set[str]:
         try:
             source = layer.source()
         except Exception:  # pragma: no cover - defensive
+            _log.debug("layer source read failed", exc_info=True)
             continue
         if not isinstance(source, str):
             continue

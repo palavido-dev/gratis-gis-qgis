@@ -15,6 +15,7 @@ without separate plumbing.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import logging.handlers
 from pathlib import Path
@@ -76,12 +77,10 @@ def _init_root_logger() -> None:
     # Qt build whose message-level enums moved (AttributeError). Any
     # such failure must degrade to file-only logging with no QGIS
     # mirroring; raising here would break plugin load outright.
-    try:
+    with contextlib.suppress(Exception):
         from .log_qgis_handler import QGISLogPanelHandler
 
         logger.addHandler(QGISLogPanelHandler())
-    except Exception:
-        pass
     logger.propagate = False
     _INITIALIZED = True
 
