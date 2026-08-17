@@ -7,6 +7,18 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [1.0.0] - 2026-08-17
+
+First stable release, submitted to the QGIS plugin repository. The
+`experimental` flag is off as of this version. Functionally identical
+to 0.16.0; the version signals that the surface is now considered
+stable: Browser tree and search over portal content, feature-layer
+default with tile fallback for large layers, opening portal maps with
+saved styling and viewport, publishing layers and projects, edit
+sync, offline clones, sharing (including groups), and the Processing
+provider. Requires GratisGIS portal 0.9.29 or newer for feature
+counts; 0.9.28 for the signed-in features surface.
+
 ## [0.16.0] - 2026-08-17
 
 ### Changed
