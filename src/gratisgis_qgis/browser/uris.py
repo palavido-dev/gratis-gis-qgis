@@ -224,6 +224,41 @@ def authed_oapif_uri(
     )
 
 
+def feature_twin_uri(source: str) -> str | None:
+    """The OAPIF twin of a portal tile layer's source, or None.
+
+    Vector tile layers are a read-only rendering format in QGIS: no
+    attribute table, ever. The Browser tree offers "Add with full
+    attributes" on the item, but a layer that arrived on the canvas
+    through an opened map has no Browser item under the cursor, so
+    the Layers panel needs the same escape hatch resolved from the
+    layer's own source string.
+
+    Which features root to use is decided by how the TILES were
+    served: a source carrying an authcfg was built for a non-public
+    item, so its twin goes to the signed-in surface with the same
+    authcfg; a bare source was public and stays on the public root.
+    That reuses the decision the Browser already made when it built
+    the tile URI, instead of re-fetching the item to re-derive it.
+    """
+    ref = parse_portal_layer_source(source)
+    if ref is None:
+        return None
+    collection_id = (
+        ref.item_id
+        if ref.layer_id == "default"
+        else f"{ref.item_id}__{ref.layer_id}"
+    )
+    authcfg_id = _parse_quoted_kv(source, "authcfg") or uri_param(
+        source, "authcfg"
+    )
+    if authcfg_id:
+        return authed_oapif_uri(
+            ref.portal_url, collection_id, authcfg_id=authcfg_id
+        )
+    return oapif_uri(ref.portal_url, collection_id)
+
+
 def vector_tile_uri(
     portal_url: str,
     item_id: str,

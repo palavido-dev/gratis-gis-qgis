@@ -321,6 +321,8 @@ class GratisGISPlugin(QObject):
              (vector_type,)),
             ("Clone layer for offline use...", self._on_clone_offline,
              (vector_tile_type,)),
+            ("Add with full attributes", self._on_add_with_attributes,
+             (vector_tile_type,)),
         ):
             action = QAction(label, main_window)
             action.triggered.connect(handler)
@@ -382,6 +384,41 @@ class GratisGISPlugin(QObject):
 
         dlg = CloneToGeoPackageDialog(self._iface, self._iface.mainWindow())
         dlg.exec()
+
+    def _on_add_with_attributes(self) -> None:
+        """Add the clicked tile layer's true-feature twin.
+
+        Vector tile layers have no attribute table in QGIS at all, so
+        "Open Attribute Table" sits permanently greyed on every portal
+        layer, including ones an opened map put on the canvas. This is
+        the same escape hatch the Browser tree offers on the item,
+        resolved from the layer's source instead: a second, OAPIF
+        backed layer with the full table.
+        """
+        from .browser.uris import feature_twin_uri
+
+        layer = None
+        try:
+            view = self._iface.layerTreeView()
+            layer = view.currentLayer() if view is not None else None
+        except Exception:  # pragma: no cover - defensive
+            _log.debug("no current layer for attributes", exc_info=True)
+        uri = feature_twin_uri(layer.source()) if layer is not None else None
+        if uri is None:
+            self._iface.messageBar().pushWarning(
+                "GratisGIS",
+                "This layer does not come from a GratisGIS portal.",
+            )
+            return
+        added = self._iface.addVectorLayer(
+            uri, f"{layer.name()} (attributes)", "OAPIF"
+        )
+        if added is None or not added.isValid():
+            self._iface.messageBar().pushWarning(
+                "GratisGIS",
+                "QGIS could not open the feature version of this layer. "
+                "Sign in and try again if it is not a public layer.",
+            )
 
 
 def _brand_icon(filename: str, fallback: QIcon) -> QIcon:

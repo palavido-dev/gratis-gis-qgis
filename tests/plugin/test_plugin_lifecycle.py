@@ -480,16 +480,17 @@ class TestThemeIcons:
 class TestLayerContextActions:
     """Right-click entries in the Layers panel, and their teardown."""
 
-    def test_the_three_actions_register_under_one_submenu(
+    def test_the_four_actions_register_under_one_submenu(
         self, plugin_mod: ModuleType
     ) -> None:
         iface = _Iface()
         plugin_mod.GratisGISPlugin(iface).initGui()
         rows = iface.layer_actions
-        assert len(rows) == 3
+        assert len(rows) == 4
         assert {menu for _a, menu, _t, _all in rows} == {"GratisGIS"}
         labels = sorted(row[0].text for row in rows)
         assert labels == [
+            "Add with full attributes",
             "Clone layer for offline use...",
             "Publish to GratisGIS...",
             "Sync layer with GratisGIS...",
@@ -507,6 +508,7 @@ class TestLayerContextActions:
         assert by_label["Publish to GratisGIS..."] == 0
         assert by_label["Sync layer with GratisGIS..."] == 0
         assert by_label["Clone layer for offline use..."] == 4
+        assert by_label["Add with full attributes"] == 4
 
     def test_unload_removes_every_layer_action(
         self, plugin_mod: ModuleType
@@ -532,3 +534,72 @@ class TestLayerContextActions:
         plugin.unload()
         for provider in registered:
             assert provider not in registry.providers
+
+
+class TestAddWithAttributes:
+    """The Layers-panel route to an attribute table for tile layers."""
+
+    @staticmethod
+    def _plugin_with_layer(
+        plugin_mod: ModuleType, source: str | None
+    ) -> tuple[Any, list[Any], list[str]]:
+        from types import SimpleNamespace
+
+        added: list[Any] = []
+        warned: list[str] = []
+        iface = _Iface()
+        layer = (
+            SimpleNamespace(source=lambda: source, name=lambda: "Parcels")
+            if source is not None
+            else None
+        )
+        iface.layerTreeView = (  # type: ignore[attr-defined]
+            lambda: SimpleNamespace(currentLayer=lambda: layer)
+        )
+        iface.addVectorLayer = (  # type: ignore[attr-defined]
+            lambda uri, label, provider: added.append(
+                (uri, label, provider)
+            )
+            or SimpleNamespace(isValid=lambda: True)
+        )
+        iface.messageBar = (  # type: ignore[attr-defined]
+            lambda: SimpleNamespace(
+                pushWarning=lambda _t, msg: warned.append(msg)
+            )
+        )
+        return plugin_mod.GratisGISPlugin(iface), added, warned
+
+    def test_a_portal_tile_layer_gains_its_feature_twin(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        from gratisgis_qgis.browser.uris import authed_vector_tile_uri
+
+        source = authed_vector_tile_uri(
+            "https://portal.example", "item-1", "roads", authcfg_id="abc1234"
+        )
+        plugin, added, warned = self._plugin_with_layer(plugin_mod, source)
+        plugin._on_add_with_attributes()
+        assert not warned
+        (uri, label, provider), = added
+        assert provider == "OAPIF"
+        assert label == "Parcels (attributes)"
+        assert "typename='item-1__roads'" in uri
+        assert "authcfg='abc1234'" in uri
+
+    def test_an_off_portal_layer_gets_a_plain_explanation(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        plugin, added, warned = self._plugin_with_layer(
+            plugin_mod, "type=xyz&url=https://tiles.example/{z}/{x}/{y}.png"
+        )
+        plugin._on_add_with_attributes()
+        assert not added
+        assert warned and "GratisGIS portal" in warned[0]
+
+    def test_no_current_layer_is_the_same_explanation_not_a_crash(
+        self, plugin_mod: ModuleType
+    ) -> None:
+        plugin, added, warned = self._plugin_with_layer(plugin_mod, None)
+        plugin._on_add_with_attributes()
+        assert not added
+        assert warned

@@ -7,6 +7,7 @@ import pytest
 from gratisgis_qgis.browser.uris import (
     PortalLayerRef,
     authed_vector_tile_uri,
+    feature_twin_uri,
     oapif_uri,
     parse_oapif_layer_source,
     parse_portal_layer_source,
@@ -262,3 +263,41 @@ def test_both_builders_use_the_same_root(portal_url: str) -> None:
     vt = vector_tile_uri(portal_url, "abc")
     assert "/tiles/WebMercatorQuad/{z}/{y}/{x}" in vt
     assert root in vt
+
+
+class TestFeatureTwinUri:
+    """A canvas tile layer's route to a real attribute table.
+
+    Vector tile layers never have an attribute table in QGIS, so the
+    Layers panel offers "Add with full attributes", which needs to
+    rebuild the features URI from nothing but the tile layer's source
+    string. The public/signed-in choice must mirror how the tiles
+    themselves were served.
+    """
+
+    def test_public_tiles_get_the_public_features_twin(self) -> None:
+        source = vector_tile_uri("https://portal.example", "item-1__roads")
+        twin = feature_twin_uri(source)
+        assert twin == oapif_uri("https://portal.example", "item-1__roads")
+
+    def test_authed_tiles_keep_their_authcfg_on_the_signed_in_twin(
+        self,
+    ) -> None:
+        source = authed_vector_tile_uri(
+            "https://portal.example", "item-1", "roads", authcfg_id="abc1234"
+        )
+        twin = feature_twin_uri(source)
+        assert twin is not None
+        assert "/api/ogc'" in twin
+        assert "typename='item-1__roads'" in twin
+        assert "authcfg='abc1234'" in twin
+
+    def test_a_bare_item_id_stays_the_v1_alias(self) -> None:
+        # "default" is a plugin-side spelling; the portal's features
+        # surface takes the bare UUID for an item's first layer.
+        source = vector_tile_uri("https://portal.example", "item-1")
+        twin = feature_twin_uri(source)
+        assert twin == oapif_uri("https://portal.example", "item-1")
+
+    def test_off_portal_sources_have_no_twin(self) -> None:
+        assert feature_twin_uri("type=xyz&url=https://tiles.example/{z}/{x}/{y}.png") is None

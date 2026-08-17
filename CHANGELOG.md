@@ -7,6 +7,21 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.15.2] - 2026-08-17
+
+### Added
+
+- **"Add with full attributes" in the Layers panel.** QGIS has no
+  attribute table for vector tile layers at all, so "Open Attribute
+  Table" sits permanently greyed on every portal layer, including
+  ones an opened map put on the canvas where there is no Browser
+  item to right-click. The GratisGIS context menu on tile layers now
+  offers the same escape hatch the Browser has: it resolves the
+  layer's source back to its portal collection and adds the feature
+  version alongside, private layers included (their tile source
+  already names the signed-in credential, and the feature twin
+  reuses it).
+
 ## [0.15.1] - 2026-08-17
 
 ### Fixed
