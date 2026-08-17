@@ -936,3 +936,100 @@ class TestFeatureSurfaceRouting:
             has_geometry=False, layer_id="summary",
         )
         assert table.actions(None) == []
+
+
+class TestFeatureDefaultRouting:
+    """Small layers add as true feature layers by default.
+
+    Users expect an added layer to have its attribute table; tiles are
+    a scale workaround, not the product. prefers_features draws the
+    line with the portal's per-layer featureCount, and each spatial
+    leaf offers the inverse of its default as a context action.
+    """
+
+    def test_the_line_is_the_count_threshold(
+        self, items_mod: ModuleType
+    ) -> None:
+        assert items_mod.prefers_features(True, 1) is True
+        assert items_mod.prefers_features(
+            True, items_mod.FEATURE_DEFAULT_MAX_COUNT
+        ) is True
+        assert items_mod.prefers_features(
+            True, items_mod.FEATURE_DEFAULT_MAX_COUNT + 1
+        ) is False
+
+    def test_an_unknown_count_reads_as_huge(
+        self, items_mod: ModuleType
+    ) -> None:
+        """Guessing small on a legacy layer risks the exact GUI stall
+        the tile default exists to prevent."""
+        assert items_mod.prefers_features(True, None) is False
+
+    def test_tables_always_prefer_features(
+        self, items_mod: ModuleType
+    ) -> None:
+        assert items_mod.prefers_features(False, None) is True
+
+    def test_a_small_spatial_sublayer_builds_as_a_feature_layer(
+        self, items_mod: ModuleType, profile_factory: ProfileFactory
+    ) -> None:
+        leaf = items_mod._DataLayerSublayerItem(
+            None,
+            profile_factory(layer_authcfg_id="lay1234"),
+            _summary(access="org"),
+            collection_id="item-1__parcels",
+            label="Parcels",
+            has_geometry=True,
+            layer_id="parcels",
+            feature_count=1200,
+        )
+        assert "typename='item-1__parcels'" in leaf.uri()
+        assert "authcfg='lay1234'" in leaf.uri()
+        uris = leaf.mimeUris()
+        assert uris[0].layerType == "vector"
+        assert uris[0].providerKey == "OAPIF"
+
+    def test_a_huge_spatial_sublayer_stays_on_tiles(
+        self, items_mod: ModuleType, profile_factory: ProfileFactory
+    ) -> None:
+        leaf = items_mod._DataLayerSublayerItem(
+            None,
+            profile_factory(layer_authcfg_id="lay1234"),
+            _summary(access="org"),
+            collection_id="item-1__parcels",
+            label="Parcels",
+            has_geometry=True,
+            layer_id="parcels",
+            feature_count=1_400_000,
+        )
+        assert "tile" in leaf.uri()
+        assert leaf.mimeUris()[0].layerType == "vector-tile"
+
+    def test_a_feature_default_leaf_offers_fast_tiles_instead(
+        self,
+        items_mod: ModuleType,
+        profile_factory: ProfileFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        recorded: list[str] = []
+
+        class _Action:
+            def __init__(self, text: str, _parent: Any) -> None:
+                recorded.append(text)
+                self.triggered = type(
+                    "S", (), {"connect": staticmethod(lambda _s: None)}
+                )()
+
+        monkeypatch.setitem(
+            __import__("sys").modules,
+            "qgis.PyQt.QtWidgets",
+            type("M", (), {"QAction": _Action}),
+        )
+        leaf = items_mod._DataLayerSublayerItem(
+            None, profile_factory(), _summary(),
+            collection_id="c", label="Parcels",
+            has_geometry=True, layer_id="parcels",
+            feature_count=10,
+        )
+        leaf.actions(None)
+        assert recorded == ["Add as fast tiles"]

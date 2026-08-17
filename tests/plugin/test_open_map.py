@@ -94,16 +94,62 @@ class TestDataLayerReferences:
         )
         assert "authcfg" not in plan.layers[0].uri
 
-    def test_a_table_sublayer_is_skipped_with_directions(self) -> None:
-        """A geometry-less table cannot be a canvas layer."""
+    def test_a_table_sublayer_loads_its_rows_as_features(self) -> None:
+        """A geometry-less table cannot render as tiles, but it CAN be
+        an attribute-only feature layer; skipping it with 'use Clone'
+        was pre-features-surface behavior."""
         plan = _plan(
             [{"id": "a", "title": "Summary",
               "source": {"kind": "data-layer", "itemId": "item-1",
                          "layerKey": "summary"}}],
             {"item-1": _v3_item("item-1")},
         )
-        assert not plan.layers
-        assert "Clone" in plan.skipped[0].reason
+        assert not plan.skipped
+        assert plan.layers[0].provider == "OAPIF"
+        assert "typename='item-1__summary'" in plan.layers[0].uri
+        assert f"authcfg='{_CFG}'" in plan.layers[0].uri
+
+    def test_a_small_layer_defaults_to_a_true_feature_layer(self) -> None:
+        """Users expect an added layer to have its attribute table; a
+        known-small layer gets the real thing, same as the Browser."""
+        item = _v3_item("item-1")
+        item["data"]["layers"][0]["featureCount"] = 1200
+        plan = _plan(
+            [{"id": "a", "title": "Parcels",
+              "source": {"kind": "data-layer", "itemId": "item-1",
+                         "layerKey": "parcels"}}],
+            {"item-1": item},
+        )
+        assert plan.layers[0].provider == "OAPIF"
+        assert "typename='item-1__parcels'" in plan.layers[0].uri
+        assert f"authcfg='{_CFG}'" in plan.layers[0].uri
+
+    def test_a_small_public_layer_uses_the_public_features_root(
+        self,
+    ) -> None:
+        item = _v3_item("item-1", access="public")
+        item["data"]["layers"][0]["featureCount"] = 1200
+        plan = _plan(
+            [{"id": "a", "title": "Parcels",
+              "source": {"kind": "data-layer", "itemId": "item-1",
+                         "layerKey": "parcels"}}],
+            {"item-1": item},
+        )
+        assert plan.layers[0].provider == "OAPIF"
+        assert "authcfg" not in plan.layers[0].uri
+
+    def test_a_huge_layer_stays_on_tiles(self) -> None:
+        """WV Parcels scale: features would be a thousand paged
+        requests, which is the stall the tile default prevents."""
+        item = _v3_item("item-1")
+        item["data"]["layers"][0]["featureCount"] = 1_400_000
+        plan = _plan(
+            [{"id": "a", "title": "Parcels",
+              "source": {"kind": "data-layer", "itemId": "item-1",
+                         "layerKey": "parcels"}}],
+            {"item-1": item},
+        )
+        assert plan.layers[0].provider == "vectortile"
 
     def test_an_unreachable_item_is_a_skip_not_a_crash(self) -> None:
         """Deleted item, or one the viewer cannot read: same outcome,

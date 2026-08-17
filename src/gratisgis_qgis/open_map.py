@@ -31,7 +31,9 @@ from typing import Any
 from urllib.parse import quote
 
 from .browser.uris import (
+    authed_oapif_uri,
     authed_vector_tile_uri,
+    oapif_uri,
     tile_layer_xyz_uri,
     vector_tile_uri,
 )
@@ -216,20 +218,14 @@ def _plan_one(
                 "This layer's dataset is not reachable. It may have been "
                 "deleted, or your account may not have access to it.",
             )
-        uri = _data_layer_uri(
+        provider, uri = _data_layer_source(
             item_id,
             str(source.get("layerKey") or "") or None,
             item,
             portal_url=portal_url,
             layer_authcfg_id=layer_authcfg_id,
         )
-        if uri is None:
-            return SkippedMapLayer(
-                title,
-                "This is a table without geometry. Use Clone for offline "
-                "use to work with its rows in QGIS.",
-            )
-        return planned("vectortile", uri)
+        return planned(provider, uri)
 
     if kind == "tile":
         item_id = str(source.get("itemId") or "")
@@ -297,20 +293,28 @@ def _plan_one(
     return SkippedMapLayer(title, "This layer kind is not supported in QGIS.")
 
 
-def _data_layer_uri(
+def _data_layer_source(
     item_id: str,
     layer_key: str | None,
     item: Mapping[str, Any],
     *,
     portal_url: str,
     layer_authcfg_id: str,
-) -> str | None:
-    """The same public-vs-authed rule the Browser tree applies.
+) -> tuple[str, str]:
+    """(provider, uri) for a map's data-layer source.
 
-    Public items stay on the public tiles surface so the project keeps
-    rendering for anonymous viewers; everything else uses the authed
-    per-layer MVT route. Returns None for a non-spatial table.
+    The same defaults the Browser tree applies. Small layers (and
+    tables, which cannot render as MVT at all) become TRUE feature
+    layers through OGC API Features, so a map's layers arrive with
+    working attribute tables; layers over the feature-default
+    threshold, or with no featureCount to judge by, stay on vector
+    tiles, which are the only rendering that survives WV-Parcels
+    scale. Public items ride the public surfaces so the project keeps
+    working for anonymous viewers; everything else the signed-in
+    routes with the connection's layer key.
     """
+    from .browser.items import prefers_features
+
     data = item.get("data")
     layers = (
         data.get("layers")
@@ -325,26 +329,43 @@ def _data_layer_uri(
             if layer_key is None or str(lyr.get("id")) == layer_key:
                 matched = lyr
                 break
+    feature_count: int | None = None
     if matched is not None:
         geometry = matched.get("geometryType")
-        if not (isinstance(geometry, str) and geometry):
-            return None
+        has_geometry = isinstance(geometry, str) and bool(geometry)
+        raw_count = matched.get("featureCount")
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+            feature_count = raw_count
         layer_id = str(matched.get("id") or "")
         collection_id = f"{item_id}__{layer_id}" if layer_id else item_id
     else:
-        # v1/v2 item: single implicit spatial layer, bare-UUID alias.
+        # v1/v2 item: single implicit spatial layer, bare-UUID alias,
+        # no per-layer count to judge by, so it stays on tiles.
+        has_geometry = True
         layer_id = ""
         collection_id = item_id
 
+    is_public = str(item.get("access") or "") == "public"
+    if prefers_features(has_geometry, feature_count):
+        if not is_public and layer_authcfg_id:
+            return "OAPIF", authed_oapif_uri(
+                portal_url, collection_id, authcfg_id=layer_authcfg_id
+            )
+        return "OAPIF", oapif_uri(portal_url, collection_id)
+
     bbox = _bbox_of(item)
-    if str(item.get("access") or "") == "public":
-        return vector_tile_uri(portal_url, collection_id, extent=bbox)
+    if is_public:
+        return "vectortile", vector_tile_uri(
+            portal_url, collection_id, extent=bbox
+        )
     if layer_authcfg_id and layer_id:
-        return authed_vector_tile_uri(
+        return "vectortile", authed_vector_tile_uri(
             portal_url, item_id, layer_id,
             authcfg_id=layer_authcfg_id, extent=bbox,
         )
-    return vector_tile_uri(portal_url, collection_id, extent=bbox)
+    return "vectortile", vector_tile_uri(
+        portal_url, collection_id, extent=bbox
+    )
 
 
 def _plan_basemap(
@@ -448,7 +469,7 @@ def open_map_in_project(plan: MapOpenPlan, iface: Any) -> tuple[int, list[str]]:
             return QgsVectorTileLayer(planned.uri, planned.title)
         if planned.provider in ("wms", "arcgismapserver"):
             return QgsRasterLayer(planned.uri, planned.title, planned.provider)
-        if planned.provider == "arcgisfeatureserver":
+        if planned.provider in ("arcgisfeatureserver", "OAPIF"):
             from qgis.core import QgsVectorLayer  # type: ignore[import-not-found]
 
             return QgsVectorLayer(planned.uri, planned.title, planned.provider)

@@ -666,14 +666,19 @@ class DataLayerItem(QgsDataCollectionItem):
                 continue
             label = str(lyr.get("label") or layer_id)
             collection_id = f"{self._item.id}__{layer_id}"
-            # Spatial sublayers (geometryType present) default to
-            # vector tiles for fast viewing of huge datasets like
-            # WV Parcels at WV-extent zoom. Non-spatial tables
-            # (geometryType is null/absent) can't render as MVT;
-            # they fall through to OAPIF so QGIS can still pull
-            # rows into the attribute table.
+            # geometryType present means spatial; null/absent means a
+            # table, which can't render as MVT. The per-layer
+            # featureCount (stamped by ingest) drives the feature-vs-
+            # tiles default; see prefers_features.
             has_geometry = isinstance(lyr.get("geometryType"), str) and (
                 str(lyr.get("geometryType")) != ""
+            )
+            raw_count = lyr.get("featureCount")
+            feature_count = (
+                raw_count
+                if isinstance(raw_count, int)
+                and not isinstance(raw_count, bool)
+                else None
             )
             children.append(
                 _DataLayerSublayerItem(
@@ -684,6 +689,7 @@ class DataLayerItem(QgsDataCollectionItem):
                     label=label,
                     has_geometry=has_geometry,
                     layer_id=layer_id,
+                    feature_count=feature_count,
                 )
             )
         return children
@@ -740,6 +746,32 @@ def _features_uri(
     return oapif_uri(profile.portal_url, collection_id)
 
 
+#: Above this many features, a spatial sublayer defaults to vector
+#: tiles instead of a real feature layer. OAPIF fetches the viewport's
+#: features in pages of 1000, so 50k features at full extent is about
+#: 50 background requests: noticeable, workable. WV Parcels at 1.4M
+#: would be ~1400 and QGIS chokes long before that. Users expect an
+#: added layer to "just have" its attribute table, so everything small
+#: enough to load comfortably gets the real thing by default and only
+#: the monsters stay on tiles (with the same attribute escape hatch as
+#: before). An unknown count reads as huge, not small: the portal only
+#: omits it for pre-ingest or legacy layers, where guessing small
+#: risks the exact GUI stall the tile default exists to prevent.
+FEATURE_DEFAULT_MAX_COUNT = 50_000
+
+
+def prefers_features(
+    has_geometry: bool, feature_count: int | None
+) -> bool:
+    """Should this sublayer add as a true feature layer by default?"""
+    if not has_geometry:
+        return True  # tables cannot render as MVT at all
+    return (
+        feature_count is not None
+        and 0 <= feature_count <= FEATURE_DEFAULT_MAX_COUNT
+    )
+
+
 def _spatial_sublayer_uri(
     profile: ConnectionProfile,
     item: ItemSummary,
@@ -783,28 +815,28 @@ def _spatial_sublayer_uri(
 class _DataLayerSublayerItem(QgsLayerItem):
     """One sublayer leaf under a DataLayerItem.
 
-    Spatial sublayers (``has_geometry=True``) add as MVT vector
-    tiles by default. Vector tiles scale to county/state-extent
-    zoom on huge layers like WV Parcels (1.4M polygons) where an
-    OAPIF GeoJSON request would either time out or return a
-    multi-megabyte unfiltered dump that QGIS can't render. The
-    engine simplifies geometry and caps features per tile so
-    low-zoom tiles complete in sub-second time; high zoom shows
-    full detail. Which tile endpoint depends on the item's access;
-    see ``_spatial_sublayer_uri``.
+    The default add is a TRUE feature layer (OGC API Features)
+    whenever the layer is small enough to load comfortably: users
+    expect an added layer to have a working attribute table, and
+    ``prefers_features`` decides using the portal's per-layer
+    featureCount. Public items ride the public features surface;
+    everything else the signed-in one (/api/ogc, portal 0.9.28+)
+    with the connection's layer key attached.
+
+    Layers over ``FEATURE_DEFAULT_MAX_COUNT`` (or with no count)
+    keep the MVT vector tile default. Tiles scale to county/state
+    extent on layers like WV Parcels (1.4M polygons) where OAPIF
+    would issue over a thousand paged requests: the engine
+    simplifies geometry and caps features per tile so low-zoom
+    tiles complete in sub-second time. Which tile endpoint depends
+    on the item's access; see ``_spatial_sublayer_uri``.
 
     Non-spatial sublayers (tables, ``has_geometry=False``) can't
-    render as MVT -- ST_AsMVTGeom skips them. They ride OGC API
-    Features instead, so QGIS pulls rows into a real attribute
-    table: public items on the public surface, everything else on
-    the signed-in surface (/api/ogc, portal 0.9.28+) with the
-    connection's layer key attached. The old private-table dead end
-    ("this layer will load empty") is gone with it.
+    render as MVT at all, so they are always feature-backed.
 
-    Spatial sublayers also carry an "Add with full attributes"
-    context action that adds the same collection as an OAPIF
-    feature layer, for when the attribute table matters more than
-    tile rendering speed.
+    Each spatial leaf carries the inverse as a context action:
+    tile-default layers offer "Add with full attributes",
+    feature-default layers offer "Add as fast tiles".
     """
 
     def __init__(
@@ -817,17 +849,21 @@ class _DataLayerSublayerItem(QgsLayerItem):
         label: str,
         has_geometry: bool,
         layer_id: str | None,
+        feature_count: int | None = None,
     ) -> None:
-        if has_geometry:
+        self._features_default = prefers_features(
+            has_geometry, feature_count
+        )
+        if self._features_default:
+            uri = _features_uri(profile, item, collection_id)
+            layer_type = _LAYER_TYPE_VECTOR
+            provider_key = "OAPIF"
+        else:
             uri = _spatial_sublayer_uri(
                 profile, item, collection_id=collection_id, layer_id=layer_id
             )
             layer_type = _LAYER_TYPE_VECTOR_TILE
             provider_key = "vectortile"
-        else:
-            uri = _features_uri(profile, item, collection_id)
-            layer_type = _LAYER_TYPE_VECTOR
-            provider_key = "OAPIF"
         super().__init__(
             parent,
             label,
@@ -841,6 +877,7 @@ class _DataLayerSublayerItem(QgsLayerItem):
         self._collection_id = collection_id
         self._label = label
         self._has_geometry = has_geometry
+        self._layer_id = layer_id
         self._provider_key = provider_key
 
     @property
@@ -855,11 +892,32 @@ class _DataLayerSublayerItem(QgsLayerItem):
         # No sharing entry here: sharing acts on the whole ITEM, and
         # offering it per sublayer would read as per-layer sharing,
         # which the portal does not model. The parent node has it.
+        # Each spatial leaf offers the INVERSE of its default, so
+        # neither rendering is ever more than a right-click away.
         if not self._has_geometry:
             return []
         from qgis.PyQt.QtWidgets import QAction  # type: ignore[import-not-found]
-        # Vector tiles draw fast but have no attribute table (a QGIS
-        # limitation of the layer type). This is the escape hatch:
+
+        if self._features_default:
+            add = QAction("Add as fast tiles", parent)
+
+            def launch_tiles(_checked: bool = False) -> None:
+                from qgis.utils import iface  # type: ignore[import-not-found]
+
+                if iface is None:
+                    return
+                uri = _spatial_sublayer_uri(
+                    self._profile,
+                    self._item,
+                    collection_id=self._collection_id,
+                    layer_id=self._layer_id,
+                )
+                iface.addVectorTileLayer(uri, self._label)
+
+            add.triggered.connect(launch_tiles)
+            return [add]
+
+        # Tile-default (huge) layers keep the attribute escape hatch:
         # the same collection as a true feature layer through OGC API
         # Features, with the signed-in surface carrying private items.
         add = QAction("Add with full attributes", parent)
@@ -879,14 +937,14 @@ class _DataLayerSublayerItem(QgsLayerItem):
 
     def mimeUris(self) -> list[QgsMimeDataUtils.Uri]:
         u = QgsMimeDataUtils.Uri()
-        if self._has_geometry:
+        if self._provider_key == "vectortile":
             u.layerType = "vector-tile"
         else:
             u.layerType = "vector"
         u.providerKey = self._provider_key
         u.uri = self.uri()
         u.name = self._label
-        if not self._has_geometry:
+        if self._provider_key == "OAPIF":
             u.supportedCrs = ["EPSG:4326"]
             u.supportedFormats = ["application/geo+json"]
         return [u]

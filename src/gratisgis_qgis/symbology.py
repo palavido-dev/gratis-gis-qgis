@@ -262,17 +262,26 @@ def apply_portal_style(
     style: Mapping[str, Any] | None,
     renderer: Mapping[str, Any] | None,
 ) -> bool:
-    """Apply a portal layer's look to a QGIS vector tile layer.
+    """Apply a portal layer's look to a QGIS layer.
+
+    Vector tile layers get a ``QgsVectorTileBasicRenderer`` whose rows
+    mirror the portal's composition; true vector layers (the OAPIF
+    feature default) get a ``QgsRuleBasedRenderer`` built from the
+    SAME entry list, so a map opens with identical styling whichever
+    rendering a layer landed on. Both draw every matching entry, the
+    same layered painting the portal's own canvas does.
 
     Returns False for layers this cannot style (rasters, and vector
-    tile support missing from the build), which the caller reports
-    rather than hides.
+    support missing from the build), which the caller reports rather
+    than hides.
     """
     try:
         from qgis.core import (  # type: ignore[import-not-found]
             QgsFillSymbol,
             QgsLineSymbol,
             QgsMarkerSymbol,
+            QgsRuleBasedRenderer,
+            QgsVectorLayer,
             QgsVectorTileBasicRenderer,
             QgsVectorTileBasicRendererStyle,
             QgsVectorTileLayer,
@@ -280,7 +289,9 @@ def apply_portal_style(
         from qgis.PyQt.QtGui import QColor  # type: ignore[import-not-found]
     except Exception:  # pragma: no cover - stripped build
         return False
-    if not isinstance(layer, QgsVectorTileLayer):
+    is_tile = isinstance(layer, QgsVectorTileLayer)
+    is_vector = isinstance(layer, QgsVectorLayer)
+    if not (is_tile or is_vector):
         return False
 
     from qgis.core import Qgis, QgsWkbTypes  # type: ignore[import-not-found]
@@ -305,13 +316,7 @@ def apply_portal_style(
     def qcolor(rgba: tuple[int, int, int, int]) -> Any:
         return QColor(rgba[0], rgba[1], rgba[2], rgba[3])
 
-    styles = []
-    for entry in tile_style_entries(style, renderer):
-        row = QgsVectorTileBasicRendererStyle()
-        row.setStyleName(entry.label or entry.geometry)
-        row.setGeometryType(geometry_types[entry.geometry])
-        if entry.filter:
-            row.setFilterExpression(entry.filter)
+    def build_symbol(entry: StyleEntry) -> Any:
         if entry.geometry == "polygon":
             symbol = QgsFillSymbol.createSimple({})
             if entry.fill is not None:
@@ -334,7 +339,38 @@ def apply_portal_style(
                 first = symbol.symbolLayer(0)
                 with contextlib.suppress(AttributeError):
                     first.setStrokeColor(qcolor(entry.stroke))
-        row.setSymbol(symbol)
+        return symbol
+
+    entries = tile_style_entries(style, renderer)
+
+    if is_vector:
+        # Only the entries for this layer's actual geometry apply; a
+        # feature layer has exactly one, unlike a tile source.
+        by_value = {v: k for k, v in geometry_types.items()}
+        layer_geometry = by_value.get(layer.geometryType())
+        if layer_geometry is None:  # no-geometry table: nothing to style
+            return False
+        root = QgsRuleBasedRenderer.Rule(None)
+        for entry in entries:
+            if entry.geometry != layer_geometry:
+                continue
+            rule = QgsRuleBasedRenderer.Rule(build_symbol(entry))
+            if entry.filter:
+                rule.setFilterExpression(entry.filter)
+            rule.setLabel(entry.label or layer.name())
+            root.appendChild(rule)
+        layer.setRenderer(QgsRuleBasedRenderer(root))
+        layer.triggerRepaint()
+        return True
+
+    styles = []
+    for entry in entries:
+        row = QgsVectorTileBasicRendererStyle()
+        row.setStyleName(entry.label or entry.geometry)
+        row.setGeometryType(geometry_types[entry.geometry])
+        if entry.filter:
+            row.setFilterExpression(entry.filter)
+        row.setSymbol(build_symbol(entry))
         row.setEnabled(True)
         styles.append(row)
 

@@ -1470,6 +1470,37 @@ def _check_open_map() -> None:
                 "expected a calm refusal",
             ),
         )
+
+        # The feature-default path: small layers now open as TRUE
+        # vector layers, and the same portal style must land on them
+        # as a rule-based renderer (one rule per category plus the
+        # base catch-all), not silently no-op.
+        from qgis.core import QgsRuleBasedRenderer, QgsVectorLayer
+
+        memory = QgsVectorLayer("Polygon?crs=EPSG:4326", "Parcels", "memory")
+        styled = check(
+            "portal styling applies to a true vector layer",
+            lambda: _assert(
+                apply_portal_style(
+                    memory,
+                    {"polygon": {"fillColor": "#639922",
+                                 "strokeColor": "#27500a"}},
+                    {"kind": "unique-values", "field": "class",
+                     "categories": [{"value": "res", "color": "#7f77dd"}]},
+                )
+                is True,
+                "apply_portal_style refused a QgsVectorLayer",
+            ),
+        )
+        if styled is not None:
+            check(
+                "the vector renderer is rule-based: category + base",
+                lambda: _assert(
+                    isinstance(memory.renderer(), QgsRuleBasedRenderer)
+                    and len(memory.renderer().rootRule().children()) == 2,
+                    f"renderer {type(memory.renderer()).__name__}",
+                ),
+            )
     finally:
         project.clear()
 

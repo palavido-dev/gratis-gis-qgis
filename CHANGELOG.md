@@ -7,6 +7,29 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.16.0] - 2026-08-17
+
+### Changed
+
+- **Feature layers are the default.** Adding a portal layer now
+  gives a real feature layer with a working attribute table wherever
+  the layer is small enough to load comfortably; users expect an
+  added layer to just have its attributes, and tiles were a scale
+  workaround, not the product. The line is 50,000 features, judged
+  by the portal's per-layer count: above it (or when the count is
+  unknown, as on legacy layers) the fast tile default remains, with
+  "Add with full attributes" still one right-click away, and
+  feature-default layers gain the inverse "Add as fast tiles". The
+  rule applies uniformly to the Browser tree, search results, drag
+  and drop, and maps opened from the portal.
+- **Opened maps style their feature layers.** The map's saved
+  symbology (base style, unique values, class breaks) now lands on
+  true vector layers as a rule-based renderer, mirroring exactly
+  what the tile rendering shows.
+- **Tables in maps load their rows.** A geometry-less table
+  referenced by a map used to be skipped with directions to Clone;
+  it now arrives as an attribute-only feature layer.
+
 ## [0.15.2] - 2026-08-17
 
 ### Added
