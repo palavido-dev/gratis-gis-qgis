@@ -7,6 +7,38 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.14.0] - 2026-08-16
+
+### Fixed
+
+- **Maps now actually appear.** 0.13.0 shipped map opening with maps
+  filtered out of both the Browser tree and search, so there was
+  nothing to double-click. They now list under a Maps group at the
+  top of each folder, and search gains a Map type filter.
+
+### Added
+
+- **An Open GratisGIS map button on the toolbar.** Lists your
+  portal's maps and opens the one you pick, for when you know you
+  want a map and don't want to dig through the tree.
+
+- **Share with specific groups.** The Sharing window now lists your
+  portal groups with checkboxes alongside Only me / My organization /
+  Everyone. Groups get view access; finer permissions and geographic
+  limits stay in the portal.
+
+- **Right-click a layer in the Layers panel.** A GratisGIS submenu
+  with Publish (preselecting the clicked layer), Sync, and Clone for
+  offline use, so the portal actions live on the thing you right-
+  click, not only on the toolbar.
+
+- **Publish several layers as one data layer item.** The new
+  Processing algorithm "Publish layers as one GratisGIS data layer"
+  takes any number of vector layers and publishes them as a single
+  portal item with one layer each, waiting for every import. This is
+  how multi-layer items (a parcels layer plus its summary table) are
+  authored from QGIS.
+
 ## [0.13.0] - 2026-08-16
 
 ### Added
