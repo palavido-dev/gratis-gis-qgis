@@ -476,3 +476,55 @@ class TestProgress:
         _run(monkeypatch, _FakeClient(), gpkg, handle=_RecordingHandle())
         assert seen == sorted(seen), f"progress went backwards: {seen}"
         assert seen[-1] == 100.0
+
+
+class TestMultiLayerPublish:
+    """Several probed layers become one item with one layer each."""
+
+    def test_every_probed_layer_lands_on_the_item(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        client = _FakeClient(
+            layers=[_Probe("parcels"), _Probe("summary"), _Probe("roads")]
+        )
+        outcome = _run(monkeypatch, client, gpkg)
+        [created] = client.items.created
+        assert len(created["data"]["layers"]) == 3
+        assert len(outcome.layer_ids) == 3
+        assert len(outcome.jobs) == 3
+
+    def test_one_import_job_per_layer_in_order(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        """Each layer's rows load through its own job; a single job
+        would fill the first layer and leave the rest empty."""
+        client = _FakeClient(layers=[_Probe("parcels"), _Probe("summary")])
+        outcome = _run(monkeypatch, client, gpkg)
+        names = [row["source_layer_name"] for row in client.enqueued]
+        assert names == ["parcels", "summary"]
+        ids = [row["layer_id"] for row in client.enqueued]
+        assert list(outcome.layer_ids) == ids
+
+    def test_an_enqueue_failure_partway_still_cleans_up_the_item(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        client = _FakeClient(
+            layers=[_Probe("parcels"), _Probe("summary")],
+            enqueue_raises=RuntimeError("portal said no"),
+        )
+        notes: list[str] = []
+        with pytest.raises(RuntimeError):
+            _run(monkeypatch, client, gpkg, notes=notes)
+        assert client.items.deleted == ["item-1"]
+        assert notes
+
+    def test_the_single_layer_outcome_keeps_its_old_shape(
+        self, monkeypatch: pytest.MonkeyPatch, gpkg: str
+    ) -> None:
+        """The dialog polls outcome.job and reads outcome.layer_id;
+        the multi-layer fields must extend, not replace."""
+        client = _FakeClient()
+        outcome = _run(monkeypatch, client, gpkg)
+        assert outcome.job is client.job
+        assert outcome.layer_id == outcome.layer_ids[0]
+        assert len(outcome.layer_ids) == 1

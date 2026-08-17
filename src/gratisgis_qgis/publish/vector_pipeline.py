@@ -80,7 +80,16 @@ class VectorPublishOutcome:
     item_id: str
     layer_id: str
     job: Any
-    """The enqueued ``ImportJob``; the dialog polls it for progress."""
+    """The enqueued ``ImportJob``; the dialog polls it for progress.
+    With several layers this is the FIRST job, kept so the dialog's
+    single-job polling keeps working unchanged."""
+
+    layer_ids: tuple[str, ...] = ()
+    """Every layer created on the item, in stack order. Single-layer
+    publishes carry a one-element tuple."""
+
+    jobs: tuple[Any, ...] = ()
+    """Every enqueued job, matching ``layer_ids`` by index."""
 
 
 def run_vector_pipeline(
@@ -137,11 +146,16 @@ def run_vector_pipeline(
             "Check the layer's geometry validity in QGIS and try again."
         )
 
-    # One source layer, because the caller exported a single QGIS layer
-    # to a single-layer GeoPackage.
-    probe = staged.layers[0]
-    v3_layer = layer_from_probe(probe_layer=probe.to_api_dict())
-    envelope = build_data_layer_envelope(layers=[v3_layer])
+    # Every probed layer becomes a v3 layer on ONE item. The single-
+    # layer publish is the one-element case of the same shape, which
+    # is exactly how the portal's own multi-layer items (v3) model it.
+    # Order is the GeoPackage's layer order, which the exporters write
+    # as the QGIS stacking order.
+    probes = list(staged.layers)
+    v3_layers = [
+        layer_from_probe(probe_layer=probe.to_api_dict()) for probe in probes
+    ]
+    envelope = build_data_layer_envelope(layers=v3_layers)
 
     item = client.items.create(
         type="data_layer",
@@ -152,20 +166,27 @@ def run_vector_pipeline(
     )
     handle.set_progress(PCT_ITEM_CREATED)
 
-    # No transaction spans these two calls, so an enqueue failure used
-    # to strand a freshly created empty item on the portal. Cancellation
-    # is checked INSIDE the guard rather than before the create, so a
-    # cancel that lands in this window cleans up like any other failure
-    # instead of leaving the orphan it was trying to avoid.
+    # No transaction spans the create and the enqueues, so any enqueue
+    # failure cleans up the item rather than stranding it half-filled.
+    # Cancellation is checked INSIDE the guard rather than before the
+    # create, so a cancel that lands in this window cleans up like any
+    # other failure instead of leaving the orphan it was trying to
+    # avoid. With several layers, a failure partway leaves earlier
+    # jobs running against an item being deleted; the portal treats a
+    # job against a deleted item as a no-op, so the cleanup still wins.
+    jobs: list[Any] = []
     try:
-        _raise_if_canceled(handle)
-        job = client.import_jobs.enqueue(
-            item_id=item.id,
-            layer_id=v3_layer.id,
-            staging_id=staged.staging_id,
-            source_layer_name=probe.name,
-            mode="replace",
-        )
+        for probe, v3_layer in zip(probes, v3_layers, strict=True):
+            _raise_if_canceled(handle)
+            jobs.append(
+                client.import_jobs.enqueue(
+                    item_id=item.id,
+                    layer_id=v3_layer.id,
+                    staging_id=staged.staging_id,
+                    source_layer_name=probe.name,
+                    mode="replace",
+                )
+            )
     except BaseException:
         if _delete_item_quietly(client, item.id):
             cleanup_notes.append("The partly created portal item was removed.")
@@ -178,7 +199,11 @@ def run_vector_pipeline(
 
     handle.set_progress(PCT_ENQUEUED)
     return VectorPublishOutcome(
-        item_id=item.id, layer_id=v3_layer.id, job=job
+        item_id=item.id,
+        layer_id=v3_layers[0].id,
+        job=jobs[0],
+        layer_ids=tuple(layer.id for layer in v3_layers),
+        jobs=tuple(jobs),
     )
 
 

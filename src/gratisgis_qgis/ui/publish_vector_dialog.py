@@ -876,6 +876,62 @@ def _export_to_geopackage(layer: QgsVectorLayer) -> str:
     return path
 
 
+def _export_layers_to_geopackage(layers: list[QgsVectorLayer]) -> str:
+    """Write several layers into ONE temporary GeoPackage.
+
+    The multi-layer publish rides this: a GeoPackage holds any number
+    of layers, the portal's probe reports each one, and the pipeline
+    turns every probed layer into a v3 layer on a single item. The
+    first layer creates the file; the rest are added into it, which is
+    the writer's CreateOrOverwriteLayer mode.
+
+    Layer names deduplicate with a numeric suffix, because two QGIS
+    layers named "Parcels" would otherwise silently overwrite each
+    other inside the container and the item would come up one short.
+    """
+    if not layers:
+        raise RuntimeError("Nothing to publish.")
+    fd, path = tempfile.mkstemp(suffix=".gpkg", prefix="gratisgis-publish-")
+    os.close(fd)
+
+    no_error = resolve_enum(
+        (getattr(QgsVectorFileWriter, "WriterError", None), "NoError"),
+        (QgsVectorFileWriter, "NoError"),
+    )
+    create_or_overwrite_layer = resolve_enum(
+        (
+            getattr(QgsVectorFileWriter, "ActionOnExistingFile", None),
+            "CreateOrOverwriteLayer",
+        ),
+        (QgsVectorFileWriter, "CreateOrOverwriteLayer"),
+    )
+    transform_context = QgsCoordinateTransformContext()
+    seen_names: set[str] = set()
+    for index, layer in enumerate(layers):
+        options = QgsVectorFileWriter.SaveVectorOptions()
+        options.driverName = "GPKG"
+        options.fileEncoding = "UTF-8"
+        name = layer.name() or f"layer_{index + 1}"
+        if name in seen_names:
+            suffix = 2
+            while f"{name}_{suffix}" in seen_names:
+                suffix += 1
+            name = f"{name}_{suffix}"
+        seen_names.add(name)
+        options.layerName = name
+        if index > 0:
+            options.actionOnExistingFile = create_or_overwrite_layer
+        err, msg, *_ = QgsVectorFileWriter.writeAsVectorFormatV3(
+            layer, path, transform_context, options
+        )
+        if err != no_error:
+            _safe_unlink(path)
+            raise RuntimeError(
+                f"GeoPackage write failed on {name!r}: {msg or err}"
+            )
+    return path
+
+
 def _safe_unlink(path: str) -> None:
     import contextlib
 

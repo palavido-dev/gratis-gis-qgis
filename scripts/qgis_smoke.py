@@ -861,10 +861,12 @@ def _run_checks() -> None:
     from gratisgis_qgis.processing import GratisGISProcessingProvider
     from gratisgis_qgis.processing.provider import (
         CloneLayerAlgorithm,
+        PublishLayersAsItemAlgorithm,
         PublishVectorLayerAlgorithm,
     )
 
     check("construct PublishVectorLayerAlgorithm", PublishVectorLayerAlgorithm)
+    check("construct PublishLayersAsItemAlgorithm", PublishLayersAsItemAlgorithm)
     check("construct CloneLayerAlgorithm", CloneLayerAlgorithm)
     provider2 = check("construct the provider", GratisGISProcessingProvider)
     if provider2 is not None:
@@ -879,10 +881,11 @@ def _run_checks() -> None:
         try:
             algs = provider2.algorithms()
             check(
-                "both algorithms loaded",
+                "all three algorithms loaded",
                 lambda: _assert(
                     sorted(a.name() for a in algs)
-                    == ["clonelayer", "publishvectorlayer"],
+                    == ["clonelayer", "publishlayersasitem",
+                        "publishvectorlayer"],
                     f"algorithms: {[a.name() for a in algs]!r}",
                 ),
             )

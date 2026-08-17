@@ -16,10 +16,12 @@ import os
 from typing import Any
 
 from qgis.core import (  # type: ignore[import-not-found]
+    QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
     QgsProcessingParameterEnum,
     QgsProcessingParameterFileDestination,
+    QgsProcessingParameterMultipleLayers,
     QgsProcessingParameterString,
     QgsProcessingParameterVectorLayer,
     QgsProcessingProvider,
@@ -57,6 +59,7 @@ class GratisGISProcessingProvider(QgsProcessingProvider):
 
     def loadAlgorithms(self) -> None:  # QGIS API name
         self.addAlgorithm(PublishVectorLayerAlgorithm())
+        self.addAlgorithm(PublishLayersAsItemAlgorithm())
         self.addAlgorithm(CloneLayerAlgorithm())
 
 
@@ -178,6 +181,112 @@ class PublishVectorLayerAlgorithm(
         )
         feedback.pushInfo(f"Published as item {outcome.item_id}.")
         return {self.OUTPUT_ITEM_ID: outcome.item_id}
+
+
+class PublishLayersAsItemAlgorithm(
+    _ConnectionParamMixin, QgsProcessingAlgorithm
+):
+    """Several vector layers up as ONE portal data layer item.
+
+    The portal's v3 model carries any number of layers on an item (a
+    parcels polygon layer plus its summary table is the canonical
+    case), and this is how that shape is authored from QGIS: the
+    layers ride one multi-layer GeoPackage through the same pipeline
+    a single layer uses, and every import is waited to completion.
+    """
+
+    INPUT = "INPUT"
+    TITLE = "TITLE"
+    ACCESS = "ACCESS"
+    OUTPUT_ITEM_ID = "ITEM_ID"
+    OUTPUT_LAYER_COUNT = "LAYER_COUNT"
+
+    def name(self) -> str:  # QGIS API name
+        return "publishlayersasitem"
+
+    def displayName(self) -> str:  # QGIS API name
+        return "Publish layers as one GratisGIS data layer"
+
+    def shortHelpString(self) -> str:  # QGIS API name
+        return (
+            "Publishes several vector layers to the portal as a single "
+            "data layer item with one layer each, in the order given. "
+            "Waits for every import to finish and returns the item id."
+        )
+
+    def createInstance(self) -> PublishLayersAsItemAlgorithm:  # QGIS API name
+        return PublishLayersAsItemAlgorithm()
+
+    def initAlgorithm(self, _config: Any = None) -> None:  # QGIS API name
+        self.addParameter(
+            QgsProcessingParameterMultipleLayers(
+                self.INPUT,
+                "Layers to publish together",
+                layerType=QgsProcessing.SourceType.TypeVectorAnyGeometry
+                if hasattr(QgsProcessing, "SourceType")
+                else QgsProcessing.TypeVectorAnyGeometry,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterString(self.TITLE, "Title on the portal")
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.ACCESS,
+                "Who can see it",
+                options=[label for _value, label in ACCESS_CHOICES],
+                defaultValue=0,
+            )
+        )
+        self._add_connection_param()
+
+    def processAlgorithm(  # QGIS API name
+        self, parameters: Any, context: Any, feedback: Any
+    ) -> dict[str, Any]:
+        from ..publish.vector_pipeline import run_vector_pipeline
+        from ..ui.publish_vector_dialog import _export_layers_to_geopackage
+
+        layers = self.parameterAsLayerList(parameters, self.INPUT, context)
+        if not layers:
+            raise QgsProcessingException("No layers to publish.")
+        title = (
+            self.parameterAsString(parameters, self.TITLE, context) or ""
+        ).strip()
+        if not title:
+            raise QgsProcessingException("A title is required.")
+        access_index = self.parameterAsEnum(parameters, self.ACCESS, context)
+        access = ACCESS_CHOICES[access_index][0]
+        profile = self._profile(parameters, context)
+
+        handle = FeedbackHandle(feedback)
+        cleanup_notes: list[str] = []
+        try:
+            outcome = run_vector_pipeline(
+                handle,
+                profile=profile,
+                export=lambda: _export_layers_to_geopackage(list(layers)),
+                title=title,
+                description=None,
+                access=access,
+                cleanup_notes=cleanup_notes,
+            )
+        except Exception as exc:
+            notes = f" {' '.join(cleanup_notes)}" if cleanup_notes else ""
+            raise QgsProcessingException(f"{exc}{notes}") from exc
+
+        from ..portal import get_client
+
+        client = get_client(profile)
+        for job in outcome.jobs:
+            wait_for_import_job(client, job.id, handle)
+        feedback.pushInfo(
+            f"Published {len(outcome.layer_ids)} layer(s) as item "
+            f"{outcome.item_id}."
+        )
+        return {
+            self.OUTPUT_ITEM_ID: outcome.item_id,
+            self.OUTPUT_LAYER_COUNT: len(outcome.layer_ids),
+        }
 
 
 class CloneLayerAlgorithm(_ConnectionParamMixin, QgsProcessingAlgorithm):
