@@ -370,3 +370,101 @@ class TestOpenMapDialogPieces:
         dlg._status = SimpleNamespace(setText=told.append)
         dlg._open()
         assert told and "Pick a map" in told[0]
+
+
+class TestCanvasCamera:
+    """The saved viewport must survive QGIS's own first-layer zoom.
+
+    The canvas bridge auto-zooms to the first layer's full extent
+    through a deferred call, and a vector tile layer's full extent is
+    the whole world. A camera set synchronously during layer adds was
+    therefore thrown away a moment later: every portal map opened at
+    world extent. The fix queues the camera set behind the bridge's.
+    """
+
+    def test_the_camera_is_deferred_and_lands_on_the_saved_view(
+        self, monkeypatch: Any
+    ) -> None:
+        from types import SimpleNamespace
+
+        from tests.plugin.conftest import install_qgis_stub
+
+        delays: list[int] = []
+
+        class _QTimer:
+            @staticmethod
+            def singleShot(ms: int, fn: Any) -> None:
+                delays.append(ms)
+                fn()
+
+        class _Transform:
+            def __init__(self, *_args: Any) -> None:
+                pass
+
+            def transform(self, point: Any) -> Any:
+                return point
+
+        install_qgis_stub(
+            monkeypatch,
+            {
+                "qgis.PyQt.QtCore": {"QTimer": _QTimer},
+                "qgis.core": {
+                    "QgsCoordinateReferenceSystem": lambda *_a: object(),
+                    "QgsCoordinateTransform": _Transform,
+                    "QgsPointXY": lambda lon, lat: (lon, lat),
+                    "QgsProject": SimpleNamespace(
+                        instance=lambda: SimpleNamespace()
+                    ),
+                },
+            },
+        )
+        calls: list[tuple[Any, ...]] = []
+        canvas = SimpleNamespace(
+            mapSettings=lambda: SimpleNamespace(
+                destinationCrs=lambda: "canvas-crs"
+            ),
+            setCenter=lambda p: calls.append(("center", p)),
+            zoomScale=lambda s: calls.append(("scale", s)),
+            refresh=lambda: calls.append(("refresh",)),
+        )
+        iface = SimpleNamespace(mapCanvas=lambda: canvas)
+
+        from gratisgis_qgis.open_map import _point_canvas_when_settled
+
+        _point_canvas_when_settled(iface, (-80.06, 38.74, 9000.0))
+
+        # Queued (delay 0), not applied synchronously, and once run it
+        # centers, scales, and repaints in that order.
+        assert delays == [0]
+        assert calls == [
+            ("center", (-80.06, 38.74)),
+            ("scale", 9000.0),
+            ("refresh",),
+        ]
+
+    def test_a_broken_canvas_is_logged_not_raised(
+        self, monkeypatch: Any
+    ) -> None:
+        from types import SimpleNamespace
+
+        from tests.plugin.conftest import install_qgis_stub
+
+        class _QTimer:
+            @staticmethod
+            def singleShot(_ms: int, fn: Any) -> None:
+                fn()
+
+        install_qgis_stub(
+            monkeypatch, {"qgis.PyQt.QtCore": {"QTimer": _QTimer}}
+        )
+
+        def explode() -> Any:
+            raise RuntimeError("no canvas")
+
+        iface = SimpleNamespace(mapCanvas=explode)
+
+        from gratisgis_qgis.open_map import _point_canvas_when_settled
+
+        # Must not raise: a camera miss is a logged nuisance, not a
+        # failed map open.
+        _point_canvas_when_settled(iface, (0.0, 0.0, 1000.0))

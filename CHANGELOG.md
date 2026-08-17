@@ -7,6 +7,20 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [0.15.1] - 2026-08-17
+
+### Fixed
+
+- **Opening a portal map lands on its saved viewport.** Every map
+  opened at world extent: QGIS zooms to the first layer added to an
+  empty project through a deferred call, a vector tile layer's "full
+  extent" is the whole planet, and that zoom ran after (and threw
+  away) the camera the plugin had just set from the map's saved
+  center and zoom. The camera set is now queued behind QGIS's own,
+  so the saved view is what survives. It also now transforms into
+  the canvas CRS as it is at that moment, which on a fresh project
+  is only decided once that first layer arrives.
+
 ## [0.15.0] - 2026-08-17
 
 Needs GratisGIS portal 0.9.28 or newer for the private-layer parts.

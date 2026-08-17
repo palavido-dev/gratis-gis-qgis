@@ -494,11 +494,36 @@ def open_map_in_project(plan: MapOpenPlan, iface: Any) -> tuple[int, list[str]]:
         added += 1
 
     if plan.view is not None and iface is not None:
+        _point_canvas_when_settled(iface, plan.view)
+    return added, problems
+
+
+def _point_canvas_when_settled(
+    iface: Any, view: tuple[float, float, float]
+) -> None:
+    """Queue the camera set behind the layer-tree bridge's.
+
+    Adding the first layer to an empty project makes QGIS's canvas
+    bridge auto-zoom to that layer's full extent through a DEFERRED
+    call, and a vector tile layer's full extent is the whole world.
+    Setting the camera synchronously here therefore looked applied and
+    was then thrown away a moment later, which read as "portal maps
+    always open at world extent". A zero-delay timer queues our set
+    after the bridge's (both are queued; the bridge scheduled first),
+    so the saved viewport is what survives. Deferring also means the
+    bridge has already stamped the project CRS from that first layer,
+    so the transform in ``_point_canvas`` targets the real canvas CRS
+    rather than an empty project's default.
+    """
+    from qgis.PyQt.QtCore import QTimer  # type: ignore[import-not-found]
+
+    def apply() -> None:
         try:
-            _point_canvas(iface, plan.view)
+            _point_canvas(iface, view)
         except Exception:  # pragma: no cover - canvas quirks
             _log.exception("could not set the canvas view")
-    return added, problems
+
+    QTimer.singleShot(0, apply)
 
 
 def _point_canvas(iface: Any, view: tuple[float, float, float]) -> None:
@@ -512,11 +537,13 @@ def _point_canvas(iface: Any, view: tuple[float, float, float]) -> None:
 
     lon, lat, scale = view
     canvas = iface.mapCanvas()
-    project = QgsProject.instance()
+    # The canvas's own CRS, not a project snapshot: on a fresh project
+    # the CRS was just set by the first layer added above.
+    dest = canvas.mapSettings().destinationCrs()
     transform = QgsCoordinateTransform(
         QgsCoordinateReferenceSystem("EPSG:4326"),
-        project.crs(),
-        project,
+        dest,
+        QgsProject.instance(),
     )
     canvas.setCenter(transform.transform(QgsPointXY(lon, lat)))
     canvas.zoomScale(scale)
