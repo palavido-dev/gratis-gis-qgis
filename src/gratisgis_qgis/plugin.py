@@ -100,6 +100,8 @@ class GratisGISPlugin(QObject):
             ("Publish current project as GratisGIS map...",
              self._on_publish_project,
              "publish-map.svg", "/mActionSaveMapAsImage.svg"),
+            ("Open GratisGIS map in QGIS...", self._on_open_map,
+             "open-map.svg", "/mActionFileOpen.svg"),
             (None, None, None, None),
             ("Clone layer for offline use...", self._on_clone_offline,
              "clone.svg", "/mActionDuplicateLayer.svg"),
@@ -351,6 +353,13 @@ class GratisGISPlugin(QObject):
             self._iface.mainWindow(),
             preselect_layer_id=layer_id,
         )
+        dlg.exec()
+
+    def _on_open_map(self) -> None:
+        """Pick one of the portal's maps and open it as a layer stack."""
+        from .ui.open_map_dialog import OpenMapDialog
+
+        dlg = OpenMapDialog(self._iface, self._iface.mainWindow())
         dlg.exec()
 
     def _on_publish_vector(self) -> None:

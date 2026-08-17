@@ -779,10 +779,10 @@ def _run_checks() -> None:
     ]
     theme_names = _re.findall(r'"(/m[A-Za-z0-9]+\.svg|/search\.svg)"', source)
     check(
-        "the toolbar names six branded icons",
+        "the toolbar names seven branded icons",
         lambda: _assert(
-            len(brand_names) == 6,
-            f"expected 6 brand icon names, found {brand_names!r}",
+            len(brand_names) == 7,
+            f"expected 7 brand icon names, found {brand_names!r}",
         ),
     )
     for name in brand_names:

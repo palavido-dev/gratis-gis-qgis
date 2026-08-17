@@ -364,7 +364,7 @@ class TestBrandIcons:
 
     NAMES = (
         "connect.svg", "search.svg", "publish-layer.svg",
-        "publish-map.svg", "clone.svg", "sync.svg",
+        "publish-map.svg", "open-map.svg", "clone.svg", "sync.svg",
     )
     BRAND_STROKES = frozenset({"#5c6b58", "#c2a26e"})
 

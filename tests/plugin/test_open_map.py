@@ -269,3 +269,104 @@ class TestReferencedItemIds:
             basemap="bm-1",
         ))
         assert ids == ["bm-1", "d-1", "t-1"]
+
+
+import pytest  # noqa: E402  (fixture support for the dialog tests)
+
+from tests.plugin.conftest import install_qgis_stub  # noqa: E402
+
+
+@pytest.fixture
+def dlg_mod(monkeypatch: Any) -> Any:
+    install_qgis_stub(
+        monkeypatch,
+        {
+            "qgis.PyQt.QtCore": {
+                "Qt": type(
+                    "Qt", (),
+                    {"ItemDataRole": type("R", (), {"UserRole": 32})},
+                ),
+                "QSettings": type("QSettings", (), {}),
+            },
+            "qgis.PyQt.QtWidgets": {
+                name: type(name, (), {})
+                for name in (
+                    "QComboBox", "QDialog", "QDialogButtonBox", "QLabel",
+                    "QListWidget", "QListWidgetItem", "QVBoxLayout",
+                    "QWidget",
+                )
+            },
+        },
+    )
+    from gratisgis_qgis.ui import open_map_dialog
+
+    return open_map_dialog
+
+
+class TestOpenMapDialogPieces:
+    """The picker's decisions, without its widgets."""
+
+    def test_map_rows_keeps_only_maps_in_portal_order(
+        self, dlg_mod: Any
+    ) -> None:
+        from types import SimpleNamespace
+
+        open_map_dialog = dlg_mod
+
+        items = [
+            SimpleNamespace(id="a", type="map", title="First", access="org"),
+            SimpleNamespace(id="b", type="data_layer", title="Not me",
+                            access="org"),
+            SimpleNamespace(id="c", type="map", title="", access=""),
+        ]
+        assert open_map_dialog.map_rows(items) == [
+            ("a", "First", "org"),
+            ("c", "Untitled map", ""),
+        ]
+
+    def test_open_launches_the_flow_for_the_picked_row(
+        self, dlg_mod: Any, monkeypatch: Any
+    ) -> None:
+        from types import SimpleNamespace
+
+        import gratisgis_qgis.open_map as open_map_mod
+
+        open_map_dialog = dlg_mod
+
+        launched: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            open_map_mod,
+            "launch_open_map",
+            lambda _p, item_id, title, _i: launched.append((item_id, title)),
+        )
+        dlg = open_map_dialog.OpenMapDialog.__new__(
+            open_map_dialog.OpenMapDialog
+        )
+        dlg._iface = SimpleNamespace()
+        dlg._signed_in = ["demo"]
+        dlg._store = SimpleNamespace(  # type: ignore[assignment]
+            get=lambda _n: SimpleNamespace(name="demo")
+        )
+        dlg._connection_combo = SimpleNamespace(currentIndex=lambda: 0)
+        dlg._list = SimpleNamespace(
+            currentItem=lambda: SimpleNamespace(
+                data=lambda _r: ("m-1", "WV overview")
+            )
+        )
+        dlg.accept = lambda: None  # type: ignore[method-assign]
+        dlg._open()
+        assert launched == [("m-1", "WV overview")]
+
+    def test_open_with_no_selection_asks_for_one(self, dlg_mod: Any) -> None:
+        from types import SimpleNamespace
+
+        open_map_dialog = dlg_mod
+
+        dlg = open_map_dialog.OpenMapDialog.__new__(
+            open_map_dialog.OpenMapDialog
+        )
+        told: list[str] = []
+        dlg._list = SimpleNamespace(currentItem=lambda: None)
+        dlg._status = SimpleNamespace(setText=told.append)
+        dlg._open()
+        assert told and "Pick a map" in told[0]
