@@ -23,8 +23,8 @@ def sharing_mod(monkeypatch: pytest.MonkeyPatch) -> Any:
             "qgis.PyQt.QtWidgets": {
                 name: type(name, (), {})
                 for name in (
-                    "QDialog", "QDialogButtonBox", "QLabel", "QMessageBox",
-                    "QRadioButton", "QVBoxLayout", "QWidget",
+                    "QCheckBox", "QDialog", "QDialogButtonBox", "QLabel",
+                    "QMessageBox", "QRadioButton", "QVBoxLayout", "QWidget",
                 )
             },
             "qgis.PyQt.QtCore": {"QSettings": type("QSettings", (), {})},
@@ -168,3 +168,120 @@ class TestEveryLeafOffersSharing:
             assert "Sharing..." in recorded, (
                 f"{type(leaf).__name__} offers no sharing action"
             )
+
+
+class TestGroupShareDiff:
+    def test_only_the_changed_boxes_become_calls(self, sharing_mod: Any) -> None:
+        """An untouched group's share row carries admin-set geographic
+        limits; rewriting it would churn them."""
+        to_share, to_unshare = sharing_mod.plan_group_share_changes(
+            ["g-1", "g-2"], ["g-2", "g-3"]
+        )
+        assert to_share == ["g-3"]
+        assert to_unshare == ["g-1"]
+
+    def test_no_change_means_no_calls(self, sharing_mod: Any) -> None:
+        assert sharing_mod.plan_group_share_changes(["g-1"], ["g-1"]) == ([], [])
+
+    def test_starting_from_nothing_shares_everything_chosen(
+        self, sharing_mod: Any
+    ) -> None:
+        assert sharing_mod.plan_group_share_changes([], ["b", "a"]) == (
+            ["a", "b"],
+            [],
+        )
+
+
+class TestSharingDialogGroups:
+    class _Box:
+        def __init__(self, checked: bool) -> None:
+            self._checked = checked
+
+        def isChecked(self) -> bool:  # Qt API name
+            return self._checked
+
+    def test_chosen_groups_reads_the_checked_boxes(
+        self, sharing_mod: Any
+    ) -> None:
+        dlg = sharing_mod.SharingDialog.__new__(sharing_mod.SharingDialog)
+        dlg._group_boxes = [
+            ("g-1", self._Box(True)),
+            ("g-2", self._Box(False)),
+            ("g-3", self._Box(True)),
+        ]
+        assert dlg._chosen_groups() == ["g-1", "g-3"]
+
+    def test_a_dialog_without_a_group_section_chooses_none(
+        self, sharing_mod: Any
+    ) -> None:
+        """The fetch-failure fallback opens without the section, and
+        saving from it must not unshare anything."""
+        dlg = sharing_mod.SharingDialog.__new__(sharing_mod.SharingDialog)
+        dlg._group_boxes = []
+        assert dlg._chosen_groups() == []
+
+
+class TestClientGroupSurface:
+    """The wire shapes the sharing dialog depends on."""
+
+    def test_group_shares_are_read_off_the_item_payload(self) -> None:
+        from gratisgis_client.endpoints.items import ItemsEndpoint
+
+        class _Http:
+            def request_json(self, method: str, path: str, **_kw: Any) -> Any:
+                assert (method, path) == ("GET", "/items/i-1")
+                return {
+                    "id": "i-1",
+                    "shares": [
+                        {"principalType": "group", "principalId": "g-1"},
+                        {"principalType": "user", "principalId": "u-9"},
+                        {"principalType": "group", "principalId": "g-1"},
+                        {"principalType": "group", "principalId": "g-2"},
+                    ],
+                }
+
+        endpoint = ItemsEndpoint(_Http())  # type: ignore[arg-type]
+        assert endpoint.list_group_shares("i-1") == ["g-1", "g-2"]
+
+    def test_share_and_unshare_speak_the_portal_dto(self) -> None:
+        from gratisgis_client.endpoints.items import ItemsEndpoint
+
+        calls: list[tuple[str, str, dict[str, Any]]] = []
+
+        class _Http:
+            def request_json(self, method: str, path: str, **kw: Any) -> Any:
+                calls.append((method, path, kw.get("json") or {}))
+                return {}
+
+        endpoint = ItemsEndpoint(_Http())  # type: ignore[arg-type]
+        endpoint.share_with_group("i-1", "g-1")
+        endpoint.unshare_with_group("i-1", "g-1")
+        assert calls[0] == (
+            "POST",
+            "/items/i-1/share",
+            {"principalType": "group", "principalId": "g-1",
+             "permission": "view"},
+        )
+        assert calls[1] == (
+            "DELETE",
+            "/items/i-1/share",
+            {"principalType": "group", "principalId": "g-1"},
+        )
+
+    def test_the_group_list_tolerates_junk_rows(self) -> None:
+        from gratisgis_client.endpoints.groups import GroupsEndpoint
+
+        class _Http:
+            def request_json(self, _m: str, _p: str, **_kw: Any) -> Any:
+                return [
+                    {"id": "g-1", "name": "Field crew"},
+                    {"name": "no id"},
+                    "not a dict",
+                    {"id": "g-2"},
+                ]
+
+        groups = GroupsEndpoint(_Http()).list()  # type: ignore[arg-type]
+        assert [(g.id, g.name) for g in groups] == [
+            ("g-1", "Field crew"),
+            ("g-2", "g-2"),
+        ]

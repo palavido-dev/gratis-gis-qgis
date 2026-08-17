@@ -258,19 +258,51 @@ def sharing_action(
     def launch(_checked: bool = False) -> None:
         from qgis.utils import iface  # type: ignore[import-not-found]
 
+        from ..portal import get_client
+        from ..tasks import run_in_task
         from ..ui.sharing_dialog import SharingDialog
 
         profile = ConnectionStore().get(profile_name)
         if profile is None or not profile.authcfg_id:
             _log.info("sharing: not signed in to %r", profile_name)
             return
-        SharingDialog(
-            profile,
-            item.id,
-            item.title,
-            item.access or "private",
-            iface.mainWindow() if iface else None,
-        ).exec()
+        parent_widget = iface.mainWindow() if iface else None
+
+        # Groups and current shares come from the portal, so they are
+        # fetched on a worker before the dialog opens; the dialog
+        # itself never talks to the network except on Save.
+        def fetch(_handle: object) -> tuple[list, list[str]]:
+            client = get_client(profile)
+            return (client.groups.list(), client.items.list_group_shares(item.id))
+
+        def done(result: tuple[list, list[str]]) -> None:
+            groups, shared = result
+            SharingDialog(
+                profile,
+                item.id,
+                item.title,
+                item.access or "private",
+                parent_widget,
+                groups=[(g.id, g.name) for g in groups],
+                shared_group_ids=shared,
+            ).exec()
+
+        def failed(exc: BaseException) -> None:
+            # The audience choice still works without the group list;
+            # opening with less is better than not opening.
+            _log.warning("sharing: group fetch failed", exc_info=exc)
+            SharingDialog(
+                profile,
+                item.id,
+                item.title,
+                item.access or "private",
+                parent_widget,
+            ).exec()
+
+        run_in_task(
+            "GratisGIS: load sharing details", fetch, done, failed,
+            cancelable=False,
+        )
 
     action.triggered.connect(launch)
     return action

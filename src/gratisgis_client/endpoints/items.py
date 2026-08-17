@@ -129,6 +129,52 @@ class ItemsEndpoint:
         body = self._http.request_json("PATCH", f"/items/{item_id}", json=patch)
         return Item.from_api(body)
 
+    def list_group_shares(self, item_id: str) -> builtins.list[str]:
+        """Group ids this item is currently shared with.
+
+        Read off the full item payload, which carries every share row;
+        user-principal shares are filtered out here because the plugin
+        surface (today) manages group shares only.
+        """
+        body = self._http.request_json("GET", f"/items/{item_id}")
+        payload = body if isinstance(body, dict) else {}
+        shares = payload.get("shares")
+        out: builtins.list[str] = []
+        for share in shares if isinstance(shares, list) else []:
+            if not isinstance(share, dict):
+                continue
+            if share.get("principalType") != "group":
+                continue
+            principal = str(share.get("principalId") or "")
+            if principal and principal not in out:
+                out.append(principal)
+        return out
+
+    def share_with_group(
+        self, item_id: str, group_id: str, *, permission: str = "view"
+    ) -> None:
+        """Grant a group access to an item.
+
+        The portal upserts, so re-sharing an already-shared group is
+        safe, and the portal is the enforcer of who may share at all.
+        """
+        self._http.request_json(
+            "POST",
+            f"/items/{item_id}/share",
+            json={
+                "principalType": "group",
+                "principalId": group_id,
+                "permission": permission,
+            },
+        )
+
+    def unshare_with_group(self, item_id: str, group_id: str) -> None:
+        self._http.request_json(
+            "DELETE",
+            f"/items/{item_id}/share",
+            json={"principalType": "group", "principalId": group_id},
+        )
+
     def delete(self, item_id: str) -> None:
         """Soft-delete an item (moves to trash, can be restored)."""
         self._http.request_json("DELETE", f"/items/{item_id}")

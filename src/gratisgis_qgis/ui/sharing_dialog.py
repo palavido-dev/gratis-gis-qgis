@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from qgis.PyQt.QtWidgets import (  # type: ignore[import-not-found]
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QLabel,
@@ -64,6 +65,23 @@ def plan_sharing_change(current: str, chosen: str) -> str | None:
     return chosen
 
 
+def plan_group_share_changes(
+    current: list[str], chosen: list[str]
+) -> tuple[list[str], list[str]]:
+    """(groups to share with, groups to unshare), both sorted.
+
+    A diff rather than a rewrite: only the boxes the user actually
+    changed turn into portal calls, so an untouched group's share row
+    (and any geographic limit an admin put on it) is never churned.
+    """
+    current_set = set(current)
+    chosen_set = set(chosen)
+    return (
+        sorted(chosen_set - current_set),
+        sorted(current_set - chosen_set),
+    )
+
+
 def sharing_error_text(exc: BaseException) -> str:
     """A refusal as a sentence about the situation, not the wire.
 
@@ -90,11 +108,15 @@ class SharingDialog(QDialog):
         item_title: str,
         current_access: str,
         parent: QWidget | None = None,
+        *,
+        groups: list[tuple[str, str]] | None = None,
+        shared_group_ids: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self._profile = profile
         self._item_id = item_id
         self._current = current_access
+        self._initial_groups = list(shared_group_ids or [])
         self.setWindowTitle(f"Sharing: {item_title}")
         self.setMinimumWidth(420)
 
@@ -111,6 +133,25 @@ class SharingDialog(QDialog):
             layout.addWidget(note)
             self._radios.append((value, radio))
 
+        # Group shares sit alongside the audience, not inside it: a
+        # private item shared with a group is exactly how the portal
+        # models "these people and nobody else".
+        self._group_boxes: list[tuple[str, QCheckBox]] = []
+        if groups:
+            layout.addWidget(QLabel("Also share with these groups:"))
+            for group_id, group_name in groups:
+                box = QCheckBox(group_name)
+                box.setChecked(group_id in self._initial_groups)
+                layout.addWidget(box)
+                self._group_boxes.append((group_id, box))
+            note = QLabel(
+                "Groups get view access. Finer permissions and "
+                "geographic limits are managed in the portal."
+            )
+            note.setStyleSheet("color: gray;")
+            note.setWordWrap(True)
+            layout.addWidget(note)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -125,14 +166,30 @@ class SharingDialog(QDialog):
                 return value
         return self._current
 
+    def _chosen_groups(self) -> list[str]:
+        return [
+            group_id
+            for group_id, box in self._group_boxes
+            if box.isChecked()
+        ]
+
     def _on_save(self) -> None:
         access = plan_sharing_change(self._current, self._chosen())
-        if access is None:
+        to_share, to_unshare = plan_group_share_changes(
+            self._initial_groups, self._chosen_groups()
+        )
+        if access is None and not to_share and not to_unshare:
             self.accept()
             return
 
         def save(_handle: Any) -> None:
-            get_client(self._profile).items.update(self._item_id, access=access)
+            client = get_client(self._profile)
+            if access is not None:
+                client.items.update(self._item_id, access=access)
+            for group_id in to_share:
+                client.items.share_with_group(self._item_id, group_id)
+            for group_id in to_unshare:
+                client.items.unshare_with_group(self._item_id, group_id)
 
         def done(_result: Any) -> None:
             # The item may have moved between buckets (My Content

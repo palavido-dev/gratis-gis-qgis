@@ -29,6 +29,7 @@ from gratisgis_client.auth.storage import TokenStorage
 from gratisgis_client.config import PortalConfig
 from gratisgis_client.endpoints.api_keys import ApiKeysEndpoint
 from gratisgis_client.endpoints.features import FeaturesEndpoint
+from gratisgis_client.endpoints.groups import GroupsEndpoint
 from gratisgis_client.endpoints.import_jobs import ImportJobsEndpoint
 from gratisgis_client.endpoints.ingest import IngestEndpoint
 from gratisgis_client.endpoints.items import ItemsEndpoint
@@ -75,6 +76,7 @@ class GratisGISClient:
         self.storage = StorageEndpoint(self._http)
         self.tile_layer = TileLayerEndpoint(self._http)
         self.api_keys = ApiKeysEndpoint(self._http)
+        self.groups = GroupsEndpoint(self._http)
 
     @property
     def config(self) -> PortalConfig:
