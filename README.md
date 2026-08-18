@@ -1,12 +1,15 @@
 # GratisGIS for QGIS
 
-A QGIS plugin that makes GratisGIS portals feel native inside QGIS:
-browse portal content from the Browser panel, search the portal,
-drag layers and maps to the canvas, publish vector and raster data,
-push edits back, and clone layers for offline work.
+The official QGIS plugin for [GratisGIS](https://gratisgis.org), the
+open source self-hosted geospatial portal. It makes a portal feel
+native inside QGIS: browse and search portal content, add layers
+with working attribute tables, open portal maps with their saved
+styling, publish vector and raster data, push edits back, share
+items, and clone layers for offline work.
 
-**Status:** Pre-alpha, v0.2.0. Works against GratisGIS v0.9.x
-portals. Not yet listed in the QGIS Plugin Repository.
+**Status:** Stable, v1.0.2. Submitted to the QGIS Plugin Repository
+(approval in progress). Requires a GratisGIS portal running 0.9.29
+or newer.
 
 **License:** AGPL-3.0-or-later. Same as GratisGIS itself.
 
@@ -30,32 +33,36 @@ install needs no pip steps.
 ## What works today
 
 - Browser panel tree per portal connection, with My Content,
-  Shared with Me, Org Content, and Public buckets.
-- Search dock for full-text portal search, plus a per-item
-  properties dialog.
-- Drag data layers, maps, basemaps, tile layers, and connected
-  services onto the canvas.
-- Publish a vector layer as a portal data_layer (GeoPackage export,
-  staged upload, import job with progress).
+  Shared with Me, Org Content, and Public buckets, plus a search
+  dock and a per-item properties dialog.
+- Layers add as real feature layers with working attribute tables
+  by default; very large layers render as fast vector tiles, with
+  the feature version one right-click away (and the reverse).
+- Open a portal map in QGIS with its saved layers, symbology,
+  visibility, groups, and viewport, from the Browser or the
+  toolbar's map picker.
+- Publish a vector layer, several layers as one item, or the whole
+  QGIS project as a portal map; published maps keep QGIS symbology.
+  Drag a local layer onto My Content to publish it.
 - Publish PMTiles / GeoTIFF / MBTiles as a portal tile_layer.
-- Publish the current QGIS project as a portal map.
 - Push QGIS edits (adds, deletes, geometry and attribute changes)
-  back to portal layers.
-- Clone a portal layer to a local GeoPackage for offline use.
-- Sign-in, publishes, clone, and push all run as background tasks
-  with progress and cancel; the UI stays responsive.
+  back to portal layers, and clone layers to a local GeoPackage for
+  offline work, from dialogs, the Layers panel context menu, or as
+  Processing algorithms (batchable in the model designer).
+- Share items from QGIS: private, organization, public, or specific
+  groups.
+- Everything slow runs as a background task with progress and
+  cancel; the UI stays responsive.
 
 ## Private layers
 
 Signing in mints a read-only portal API key, stores it in the QGIS
 authentication database, and attaches it to non-public layer URIs so
-private and org-shared layers render on the canvas; the key is
-revoked at sign-out. Edits always go through your signed-in OAuth
-session, never the key, so a leaked layer URI cannot modify data.
-
-Known limits: private non-spatial tables are clone-to-edit, layers
-added from the search dock use the public surface, and tile_layer
-items are served from the public surface only.
+private and org-shared content works everywhere: spatial layers,
+tables, rasters, and the signed-in feature surface that powers
+attribute tables. The key is revoked at sign-out. Edits always go
+through your signed-in OAuth session, never the key, so a leaked
+layer URI cannot modify data.
 
 ## Authentication
 
