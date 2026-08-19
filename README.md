@@ -17,10 +17,14 @@ or newer.
 
 ## Install
 
-Download the plugin zip from the
-[releases page](https://github.com/palavido-dev/gratis-gis-qgis/releases),
-then in QGIS: Plugins > Manage and Install Plugins > Install from ZIP.
-Or build the zip yourself from a checkout:
+The plugin is in the official
+[QGIS plugin repository](https://plugins.qgis.org/plugins/gratisgis_qgis/):
+in QGIS, open Plugins > Manage and Install Plugins, search for
+**GratisGIS**, and install.
+
+To install a specific build instead, download the zip from the
+[releases page](https://github.com/palavido-dev/gratis-gis-qgis/releases)
+and use Install from ZIP, or build it yourself from a checkout:
 
 ```
 python scripts/make_zip.py
