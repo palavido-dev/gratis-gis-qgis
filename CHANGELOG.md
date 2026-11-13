@@ -7,6 +7,14 @@ and the project tracks [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 for the client library; the QGIS plugin uses its own version line in
 `metadata.txt` so that QGIS Plugin Repository semantics are honored.
 
+## [1.0.3] - 2026-11-13
+
+### Changed
+
+- **New logo.** The plugin icon is the new GratisGIS mark, a G drawn
+  as two contour rings around a point on a teal tile, matching the
+  portal and gratisgis.org. No functional changes.
+
 ## [1.0.2] - 2026-08-17
 
 ### Fixed

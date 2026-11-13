@@ -4,14 +4,16 @@
     The GratisGIS brand mark, copied from the portal
     (apps/portal-web/public/icon.svg in the gratis-gis repo) so the
     Plugin Manager, the Plugins menu, and the toolbar fallback all
-    show the same mark the portal shows. If the portal mark changes,
-    re-copy it here; nothing generates this file.
+    show the same mark the portal and gratisgis.org show. If the
+    portal mark changes, re-copy it here; nothing generates this file.
 
-    Contour brand: deep sage ground, warm-paper G, tan inner arc.
+    Contour G: a G drawn as two contour rings around a point, in warm
+    paper on a brand teal tile.
   -->
-  <rect width="512" height="512" rx="96" fill="#5c6b58"/>
-  <g fill="none" stroke="#f6f3ea" stroke-linecap="round">
-    <path d="M272 88 C 152 88 88 176 88 256 C 88 356 164 424 272 424 C 348 424 402 378 418 316 L 288 316" stroke-width="44"/>
-    <path d="M272 176 C 196 176 164 214 164 256 C 164 306 208 340 272 340" stroke-width="34" stroke="#dcc39a"/>
+  <rect width="512" height="512" rx="96" fill="#0b6e69"/>
+  <g transform="translate(35.2 35.2) scale(9.2)" fill="none" stroke="#f4f2ec" stroke-linecap="round" stroke-linejoin="round" stroke-width="3.6">
+    <path d="M36.73 11.27A18 18 0 1 0 42 24H32"/>
+    <path d="M32.49 15.51A12 12 0 1 0 36 24" opacity="0.6"/>
+    <circle cx="24" cy="24" r="3.4" fill="#f4f2ec" stroke="none"/>
   </g>
 </svg>
