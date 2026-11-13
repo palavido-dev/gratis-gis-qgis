@@ -412,7 +412,7 @@ class TestBrandIcons:
     def test_the_plugin_logo_is_the_portal_mark(self) -> None:
         """The mark is a copy; this pins what makes it the SAME mark.
 
-        The sage ground and the G stroke are the recognisable parts.
+        The teal ground and the contour G stroke are the recognisable parts.
         If the portal rebrands, apps/portal-web/public/icon.svg gets
         re-copied here and these constants move with it.
         """
@@ -423,8 +423,10 @@ class TestBrandIcons:
         svg = (
             Path(gratisgis_qgis.__file__).parent / "resources" / "icon.svg"
         ).read_text(encoding="utf-8")
-        assert 'fill="#5c6b58"' in svg, "the sage ground is gone"
-        assert "M272 88" in svg, "the G stroke is not the portal's"
+        assert 'fill="#0b6e69"' in svg, "the teal ground is gone"
+        assert "M36.73 11.27A18 18 0 1 0 42 24H32" in svg, (
+            "the G stroke is not the portal's"
+        )
 
     def test_a_bundled_icon_is_preferred_over_the_fallback(
         self, plugin_mod: ModuleType
